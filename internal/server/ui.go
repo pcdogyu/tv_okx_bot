@@ -251,6 +251,10 @@ const tvbotHTML = `<!doctype html>
       white-space: nowrap;
       overflow-wrap: normal;
     }
+    th.order-okx,
+    td.order-okx {
+      width: 25%;
+    }
     th {
       color: var(--muted);
       font-size: 12px;
@@ -344,6 +348,9 @@ const tvbotHTML = `<!doctype html>
       gap: 10px;
       margin: 12px 0;
     }
+    .asset-metrics {
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+    }
     .symbol-metrics {
       grid-template-columns: repeat(4, minmax(0, 1fr));
     }
@@ -369,12 +376,24 @@ const tvbotHTML = `<!doctype html>
       border-radius: 8px;
       background: #fff;
       padding: 10px;
-      min-height: 280px;
+      min-height: 460px;
     }
     #usdt-chart {
       width: 100%;
-      height: 260px;
+      height: 420px;
       display: block;
+    }
+    .chart-grid {
+      stroke: #edf1f7;
+      stroke-width: 1;
+    }
+    .chart-axis {
+      stroke: #d8dee9;
+      stroke-width: 1;
+    }
+    .chart-label {
+      fill: #647089;
+      font-size: 12px;
     }
     .symbol-table-wrap {
       overflow-x: auto;
@@ -419,9 +438,10 @@ const tvbotHTML = `<!doctype html>
     @media (max-width: 880px) {
       .bar { align-items: flex-start; flex-direction: column; }
       nav { justify-content: flex-start; }
-      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .symbol-metrics { grid-template-columns: 1fr; }
+      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics { grid-template-columns: 1fr; }
       main { padding: 12px; }
       section { padding: 12px; }
+      #usdt-chart { height: 320px; }
     }
   </style>
 </head>
@@ -481,8 +501,9 @@ const tvbotHTML = `<!doctype html>
           <button class="btn primary" type="button" id="refresh-analysis">刷新分析</button>
         </div>
       </div>
-      <div class="analysis-metrics">
+      <div class="analysis-metrics asset-metrics">
         <div class="analysis-card"><div class="label">资产估值</div><div class="value" id="analysis-total-eq">-</div></div>
+        <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-usdt-eq">-</div></div>
         <div class="analysis-card"><div class="label">可用权益</div><div class="value" id="analysis-avail-eq">-</div></div>
         <div class="analysis-card"><div class="label">调整权益</div><div class="value" id="analysis-adj-eq">-</div></div>
         <div class="analysis-card"><div class="label">资产数</div><div class="value" id="analysis-asset-count">-</div></div>
@@ -496,10 +517,10 @@ const tvbotHTML = `<!doctype html>
       </table>
       <div class="chart-wrap">
         <div class="section-head" style="margin-bottom:8px">
-          <h3>USDT-USD 最近 3 天价格</h3>
+          <h3>USDT估值 最近 3 天</h3>
           <span class="muted" id="analysis-updated">-</span>
         </div>
-        <svg id="usdt-chart" role="img" aria-label="USDT-USD price chart"></svg>
+        <svg id="usdt-chart" role="img" aria-label="USDT valuation chart"></svg>
       </div>
       <div class="analysis-metrics">
         <div class="analysis-card"><div class="label">净盈亏</div><div class="value" id="analysis-net-pnl">-</div></div>
@@ -645,7 +666,7 @@ const tvbotHTML = `<!doctype html>
       </div>
       <table>
         <thead>
-          <tr><th>时间</th><th>状态</th><th>API</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th>OKX / 原因</th></tr>
+          <tr><th>时间</th><th>状态</th><th>API</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th class="order-okx">OKX / 返回</th></tr>
         </thead>
         <tbody id="order-rows"></tbody>
       </table>
@@ -772,6 +793,80 @@ const tvbotHTML = `<!doctype html>
       return (formatted === "-" ? asText(v) : formatted) + " USDT";
     }
 
+    function chartPointDate(point) {
+      if (!point) return null;
+      if (point.date instanceof Date) return point.date;
+      if (point.date) {
+        const date = new Date(point.date);
+        if (!Number.isNaN(date.getTime())) return date;
+      }
+      if (point.ts !== null && point.ts !== undefined && point.ts !== "") {
+        const ms = Number(point.ts);
+        if (Number.isFinite(ms)) return new Date(ms);
+      }
+      if (!point.time) return null;
+      const date = new Date(point.time);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    function chartTimeLabel(date) {
+      if (!date || Number.isNaN(date.getTime())) return "";
+      const parts = new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+      }).formatToParts(date).reduce((acc, part) => {
+        if (part.type !== "literal") acc[part.type] = part.value;
+        return acc;
+      }, {});
+      return parts.month + "-" + parts.day + " " + parts.hour + ":" + parts.minute;
+    }
+
+    function chartTickIndexes(length, maxTicks) {
+      if (length <= 0) return [];
+      if (length === 1) return [0];
+      const count = Math.min(maxTicks, length);
+      const indexes = [];
+      for (let i = 0; i < count; i++) {
+        indexes.push(Math.round(i * (length - 1) / (count - 1)));
+      }
+      return Array.from(new Set(indexes));
+    }
+
+    function chartAxisValue(v) {
+      const formatted = formatNumber(v);
+      return formatted === "-" ? asText(v) : formatted;
+    }
+
+    function usdtBalanceDetail(balance) {
+      const details = balance && Array.isArray(balance.details) ? balance.details : [];
+      return details.find((row) => String(row.ccy || "").toUpperCase() === "USDT") || null;
+    }
+
+    function usdtValuationPoints(pricePoints, balance) {
+      const usdt = usdtBalanceDetail(balance);
+      const currentValue = Number(usdt && usdt.eq_usd);
+      if (!Number.isFinite(currentValue)) return [];
+      const priced = (Array.isArray(pricePoints) ? pricePoints : []).map((point, index) => {
+        return { index: index, price: Number(point.close), date: chartPointDate(point) };
+      }).filter((point) => Number.isFinite(point.price));
+      if (!priced.length) {
+        return [{ index: 0, value: currentValue, date: balance && balance.updated_at ? new Date(balance.updated_at) : null }];
+      }
+      const latest = priced[priced.length - 1];
+      const multiplier = latest.price > 0 ? currentValue / latest.price : 0;
+      return priced.map((point) => {
+        return {
+          index: point.index,
+          value: multiplier > 0 ? point.price * multiplier : currentValue,
+          date: point.date
+        };
+      });
+    }
+
     function pill(text, tone) {
       return '<span class="pill ' + (tone || "") + '">' + escapeHTML(asText(text)) + '</span>';
     }
@@ -841,6 +936,7 @@ const tvbotHTML = `<!doctype html>
       renderAPIKeys();
       renderTemplateAPIs();
       renderAnalysisAPIs();
+      renderOrders();
       updateMetrics();
     }
 
@@ -1113,6 +1209,13 @@ const tvbotHTML = `<!doctype html>
       return apiAccounts().find((account) => account.id === id) || null;
     }
 
+    function apiDisplayName(id) {
+      const apiID = String(id || "").trim();
+      if (!apiID) return "-";
+      const account = selectedAPIAccount(apiID);
+      return account && account.name ? account.name : apiID;
+    }
+
     function fillAPIForm(id) {
       const account = selectedAPIAccount(id);
       $("key-id").value = account ? account.id : (id || "default");
@@ -1174,12 +1277,14 @@ const tvbotHTML = `<!doctype html>
           "</tr>";
       });
       $("analysis-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">暂无 OKX 成交历史</td></tr>';
-      drawUSDTChart(state.analysis.price_points || []);
+      drawUSDTChart(usdtValuationPoints(state.analysis.price_points || [], state.analysis.balance || null));
     }
 
     function renderAnalysisBalance(balance) {
       const details = balance && Array.isArray(balance.details) ? balance.details : [];
       $("analysis-total-eq").textContent = balance ? formatUSD(balance.total_eq) : "-";
+      const usdt = usdtBalanceDetail(balance);
+      $("analysis-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
       $("analysis-avail-eq").textContent = balance ? formatUSD(balance.avail_eq) : "-";
       $("analysis-adj-eq").textContent = balance ? formatUSD(balance.adj_eq) : "-";
       $("analysis-asset-count").textContent = balance ? String(details.length) : "-";
@@ -1199,33 +1304,67 @@ const tvbotHTML = `<!doctype html>
 
     function drawUSDTChart(points) {
       const svg = $("usdt-chart");
-      const width = Math.max(600, svg.clientWidth || 600);
-      const height = 260;
-      const pad = { left: 54, right: 16, top: 18, bottom: 34 };
+      const rect = svg.getBoundingClientRect();
+      const parentWidth = svg.parentElement ? svg.parentElement.clientWidth : 0;
+      const width = Math.max(900, Math.floor(rect.width || parentWidth || (window.innerWidth - 72) || 900));
+      const height = Math.max(320, Math.floor(rect.height || svg.clientHeight || 420));
+      const pad = { left: 64, right: 24, top: 18, bottom: 58 };
+      const plotWidth = width - pad.left - pad.right;
+      const plotHeight = height - pad.top - pad.bottom;
+      const plotBottom = height - pad.bottom;
       svg.setAttribute("viewBox", "0 0 " + width + " " + height);
       svg.innerHTML = "";
       if (!points.length) {
-        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">暂无价格数据</text>';
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">暂无 USDT估值数据</text>';
         return;
       }
-      const values = points.map((p) => Number(p.close)).filter((v) => Number.isFinite(v));
-      if (!values.length) {
-        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">暂无价格数据</text>';
+      const chartPoints = points.map((point, index) => {
+        return { point: point, index: index, value: Number(point.value), date: chartPointDate(point) };
+      }).filter((point) => Number.isFinite(point.value));
+      if (!chartPoints.length) {
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">暂无 USDT估值数据</text>';
         return;
       }
+      const values = chartPoints.map((point) => point.value);
       const min = Math.min.apply(null, values);
       const max = Math.max.apply(null, values);
       const span = max - min || 0.0001;
-      const x = (i) => pad.left + (points.length === 1 ? 0 : i * (width - pad.left - pad.right) / (points.length - 1));
-      const y = (v) => pad.top + (max - v) * (height - pad.top - pad.bottom) / span;
-      const path = points.map((p, i) => (i === 0 ? "M" : "L") + x(i).toFixed(2) + " " + y(Number(p.close)).toFixed(2)).join(" ");
+      const timed = chartPoints.filter((point) => point.date);
+      const timeValues = timed.map((point) => point.date.getTime());
+      const minTime = timeValues.length ? Math.min.apply(null, timeValues) : 0;
+      const maxTime = timeValues.length ? Math.max.apply(null, timeValues) : 0;
+      const timeSpan = maxTime - minTime;
+      const x = (point) => {
+        if (timeSpan > 0 && point.date) return pad.left + (point.date.getTime() - minTime) * plotWidth / timeSpan;
+        if (chartPoints.length === 1) return pad.left + plotWidth / 2;
+        return pad.left + point.index * plotWidth / Math.max(1, points.length - 1);
+      };
+      const y = (v) => pad.top + (max - v) * plotHeight / span;
+      const path = chartPoints.map((point, i) => (i === 0 ? "M" : "L") + x(point).toFixed(2) + " " + y(point.value).toFixed(2)).join(" ");
+      let grid = "";
+      const yTickCount = 5;
+      for (let i = 0; i < yTickCount; i++) {
+        const ratio = yTickCount === 1 ? 0 : i / (yTickCount - 1);
+        const lineY = pad.top + ratio * plotHeight;
+        const labelValue = max - ratio * span;
+        grid += '<line class="chart-grid" x1="' + pad.left + '" y1="' + lineY.toFixed(2) + '" x2="' + (width - pad.right) + '" y2="' + lineY.toFixed(2) + '"/>';
+        grid += '<text class="chart-label" x="8" y="' + (lineY + 4).toFixed(2) + '">' + chartAxisValue(labelValue) + '</text>';
+      }
+      const xTicks = chartTickIndexes(chartPoints.length, 6);
+      xTicks.forEach((tickIndex) => {
+        const point = chartPoints[tickIndex];
+        const lineX = x(point);
+        const anchor = tickIndex === 0 ? "start" : (tickIndex === chartPoints.length - 1 ? "end" : "middle");
+        grid += '<line class="chart-grid" x1="' + lineX.toFixed(2) + '" y1="' + pad.top + '" x2="' + lineX.toFixed(2) + '" y2="' + plotBottom + '"/>';
+        grid += '<text class="chart-label" x="' + lineX.toFixed(2) + '" y="' + (height - 22) + '" text-anchor="' + anchor + '">' + escapeHTML(chartTimeLabel(point.date)) + '</text>';
+      });
+      const last = chartPoints[chartPoints.length - 1];
       svg.innerHTML =
-        '<line x1="' + pad.left + '" y1="' + pad.top + '" x2="' + pad.left + '" y2="' + (height - pad.bottom) + '" stroke="#d8dee9"/>' +
-        '<line x1="' + pad.left + '" y1="' + (height - pad.bottom) + '" x2="' + (width - pad.right) + '" y2="' + (height - pad.bottom) + '" stroke="#d8dee9"/>' +
-        '<text x="8" y="' + (pad.top + 4) + '" fill="#647089" font-size="12">' + max.toFixed(4) + '</text>' +
-        '<text x="8" y="' + (height - pad.bottom) + '" fill="#647089" font-size="12">' + min.toFixed(4) + '</text>' +
+        grid +
+        '<line class="chart-axis" x1="' + pad.left + '" y1="' + pad.top + '" x2="' + pad.left + '" y2="' + plotBottom + '"/>' +
+        '<line class="chart-axis" x1="' + pad.left + '" y1="' + plotBottom + '" x2="' + (width - pad.right) + '" y2="' + plotBottom + '"/>' +
         '<path d="' + path + '" fill="none" stroke="#1f6feb" stroke-width="2.4"/>' +
-        '<circle cx="' + x(points.length - 1).toFixed(2) + '" cy="' + y(Number(points[points.length - 1].close)).toFixed(2) + '" r="4" fill="#1f6feb"/>';
+        '<circle cx="' + x(last).toFixed(2) + '" cy="' + y(last.value).toFixed(2) + '" r="4" fill="#1f6feb"/>';
     }
 
     function renderOrders() {
@@ -1233,6 +1372,7 @@ const tvbotHTML = `<!doctype html>
         const okxResult = order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : "";
         const errorText = [order.error_code, order.error].filter(Boolean).join(": ");
         const okx = okxResult || errorText || "-";
+        const apiID = order.api_id || (order.result && order.result.api_id);
         const tone = order.status === "submitted" ? "ok" : (order.status === "failed" || order.status === "rejected" ? "bad" : "warn");
         const canRetry = order.status === "failed" && order.signal_id;
         const retrying = canRetry && state.retrying[order.signal_id];
@@ -1240,12 +1380,12 @@ const tvbotHTML = `<!doctype html>
         return "<tr>" +
           '<td class="time">' + escapeHTML(shanghaiTime(order.accepted_at)) + "</td>" +
           "<td>" + pill(order.status, tone) + "</td>" +
-          "<td>" + escapeHTML(asText(order.api_id || (order.result && order.result.api_id))) + "</td>" +
+          "<td>" + escapeHTML(apiDisplayName(apiID)) + "</td>" +
           "<td>" + escapeHTML(asText(order.action)) + "</td>" +
           "<td>" + escapeHTML(asText(order.coinpair)) + "</td>" +
           "<td>" + escapeHTML(asText(order.price)) + "</td>" +
           "<td>" + escapeHTML(asText(order.amount)) + "</td>" +
-          '<td><div class="okx-cell"><span class="okx-text">' + escapeHTML(okx) + "</span>" + retryButton + "</div></td>" +
+          '<td class="order-okx"><div class="okx-cell"><span class="okx-text">' + escapeHTML(okx) + "</span>" + retryButton + "</div></td>" +
           "</tr>";
       });
       $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="8" class="muted">-</td></tr>';
@@ -1316,6 +1456,7 @@ const tvbotHTML = `<!doctype html>
       renderAPIKeys();
       renderTemplateAPIs();
       renderAnalysisAPIs();
+      renderOrders();
       updateMetrics();
       toast("API Key 已保存");
     }
@@ -1346,6 +1487,7 @@ const tvbotHTML = `<!doctype html>
       renderAPIKeys();
       renderTemplateAPIs();
       renderAnalysisAPIs();
+      renderOrders();
       updateMetrics();
       toast("API Key 已删除");
     }

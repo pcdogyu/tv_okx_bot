@@ -111,9 +111,24 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("tvbot ui should include market/limit order type setting")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("资产估值")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("USDT估值")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("USDT估值 最近 3 天")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-total-eq")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-usdt-eq")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) {
 		t.Fatalf("tvbot ui should include OKX balance analysis")
+	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("chart-grid")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("chartTimeLabel")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("chartTickIndexes")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("usdtValuationPoints")) {
+		t.Fatalf("tvbot ui should render full-width chart grid and time axis")
+	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("账户名称")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("OKX / 返回")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("order-okx")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("apiDisplayName")) {
+		t.Fatalf("tvbot ui should render order API names and wider OKX return column")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("activateTab")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("localStorage")) ||
