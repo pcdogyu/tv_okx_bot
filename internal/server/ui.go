@@ -452,6 +452,12 @@ const tvbotHTML = `<!doctype html>
       gap: 6px;
       flex-wrap: wrap;
     }
+    .position-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: nowrap;
+      white-space: nowrap;
+    }
     .btn.small {
       min-height: 28px;
       padding: 4px 8px;
@@ -665,7 +671,7 @@ const tvbotHTML = `<!doctype html>
       <div class="symbol-table-wrap">
         <table class="symbol-table">
           <thead>
-            <tr><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>杠杆</th><th>保证金模式</th><th>保证金</th><th>强平价</th><th>更新时间</th></tr>
+            <tr><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>杠杆</th><th>保证金模式</th><th>保证金</th><th>强平价</th><th>操作</th></tr>
           </thead>
           <tbody id="position-rows"></tbody>
         </table>
@@ -867,7 +873,7 @@ const tvbotHTML = `<!doctype html>
 
   <script>
     const activeTabStorageKey = "tvbot.active_tab";
-    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, analysis: null, analysisError: "", positions: null, positionsError: "", symbols: null, symbolsError: "", upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, positionClosing: {}, analysis: null, analysisError: "", positions: null, positionsError: "", symbols: null, symbolsError: "", upgrade: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -1492,6 +1498,21 @@ const tvbotHTML = `<!doctype html>
       return '<td' + (tone ? ' class="' + tone + '"' : "") + ">" + escapeHTML(formatted) + "</td>";
     }
 
+    function positionCloseRowKey(row) {
+      return String(row.instId || "").toUpperCase() + "|" + String(row.posSide || "net").toLowerCase();
+    }
+
+    function positionActionCell(row) {
+      const key = positionCloseRowKey(row);
+      const closing = !!state.positionClosing[key];
+      const instID = escapeHTML(asText(row.instId));
+      const posSide = escapeHTML(String(row.posSide || ""));
+      return '<td><div class="position-actions">' +
+        '<button class="btn small danger" type="button" data-position-close="market" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"' + (closing ? " disabled" : "") + '>市价平仓</button>' +
+        '<button class="btn small" type="button" data-position-close="limit" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"' + (closing ? " disabled" : "") + '>限价平仓</button>' +
+        '</div></td>';
+    }
+
     function renderPositions() {
       const rows = state.positions && Array.isArray(state.positions.positions) ? state.positions.positions : [];
       const totalUpl = positionSum(rows, "upl");
@@ -1518,7 +1539,7 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(asText(row.mgnMode)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.liqPx)) + "</td>" +
-          "<td>" + escapeHTML(shanghaiTimeFromOKX(row.uTime)) + "</td>" +
+          positionActionCell(row) +
           "</tr>";
       }).join("") || '<tr><td colspan="13" class="muted">暂无当前持仓</td></tr>';
     }
@@ -1800,6 +1821,34 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
+    async function closePosition(button) {
+      const mode = button.dataset.positionClose;
+      const instID = button.dataset.instId || "";
+      const posSide = button.dataset.posSide || "";
+      const key = instID.toUpperCase() + "|" + (posSide || "net").toLowerCase();
+      if (!instID || !mode || state.positionClosing[key]) return;
+      state.positionClosing[key] = true;
+      renderPositions();
+      try {
+        const result = await api("/tvbot/positions/close", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            api_id: $("position-api-id").value,
+            inst_id: instID,
+            pos_side: posSide,
+            mode
+          })
+        });
+        toast(mode === "market" ? "市价平仓已提交" : "限价平仓已启动 " + asText(result.px));
+        await loadPositions();
+        window.setTimeout(() => loadPositions().catch((err) => toast(err.message)), mode === "market" ? 1600 : 5200);
+      } finally {
+        delete state.positionClosing[key];
+        renderPositions();
+      }
+    }
+
     async function checkOKX() {
       $("okx-output").textContent = "checking...";
       try {
@@ -1885,6 +1934,11 @@ const tvbotHTML = `<!doctype html>
       const button = event.target.closest("button[data-retry-id]");
       if (!button) return;
       retryOrder(button.dataset.retryId).catch((err) => toast(err.message));
+    });
+    $("position-rows").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-position-close]");
+      if (!button) return;
+      closePosition(button).catch((err) => toast(err.message));
     });
     $("refresh-orders").addEventListener("click", () => loadOrders().then(() => toast("订单已刷新")).catch((err) => toast(err.message)));
     $("refresh-upgrade").addEventListener("click", () => loadUpgrade().then(() => toast("升级状态已刷新")).catch((err) => toast(err.message)));

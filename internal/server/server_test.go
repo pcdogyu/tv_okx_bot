@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,7 +142,13 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-profit")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-loss")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("signedCell")) {
+		!bytes.Contains(ui.Body.Bytes(), []byte("signedCell")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("市价平仓")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("限价平仓")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions/close")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-position-close")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("<th>操作</th>")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("<th>更新时间</th>")) {
 		t.Fatalf("tvbot ui should include current positions tab")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("币对配置")) ||
@@ -908,6 +915,201 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	}
 	if resp.Positions[0].InstID != "BTC-USDT-SWAP" || resp.Positions[0].Upl != "500" {
 		t.Fatalf("bad position data: %#v", resp.Positions[0])
+	}
+}
+
+func TestTVBotPositionMarketClosePlacesReduceOnlyOrder(t *testing.T) {
+	srv := newTestServer(t)
+	var sawOrder bool
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			if r.URL.Query().Get("instType") != "SWAP" {
+				t.Fatalf("bad positions query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"cross","posId":"1","posSide":"net","pos":"2","availPos":"2","avgPx":"64000","markPx":"65000","upl":"500","uplRatio":"0.015","lever":"5","notionalUsd":"130000","margin":"26000","uTime":"1784880000000"}]}`))
+		case "/api/v5/trade/order":
+			sawOrder = true
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["instId"] != "BTC-USDT-SWAP" || body["tdMode"] != "cross" || body["side"] != "sell" || body["ordType"] != "market" || body["sz"] != "2" || body["reduceOnly"] != true {
+				t.Fatalf("unexpected market close order: %#v", body)
+			}
+			if _, ok := body["posSide"]; ok {
+				t.Fatalf("net close order should not send posSide: %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"market-1","clOrdId":"close-1","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reqBody := []byte(`{"api_id":"default","inst_id":"BTC-USDT-SWAP","pos_side":"net","mode":"market"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/positions/close", bytes.NewReader(reqBody))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("market close status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !sawOrder {
+		t.Fatal("expected OKX market order")
+	}
+	var resp positionCloseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.Status != "submitted" || resp.Mode != "market" || resp.OrdID != "market-1" {
+		t.Fatalf("bad market close response: %#v", resp)
+	}
+}
+
+func TestTVBotPositionLimitCloseReplacesAndFallsBackToMarket(t *testing.T) {
+	oldPoll := positionClosePollInterval
+	oldTimeout := positionCloseLimitTimeout
+	oldJobs := positionCloseJobs
+	positionClosePollInterval = 10 * time.Millisecond
+	positionCloseLimitTimeout = 45 * time.Millisecond
+	positionCloseJobs = newPositionCloseRegistry()
+	t.Cleanup(func() {
+		positionClosePollInterval = oldPoll
+		positionCloseLimitTimeout = oldTimeout
+		positionCloseJobs = oldJobs
+	})
+
+	srv := newTestServer(t)
+	var mu sync.Mutex
+	var orderBodies []map[string]any
+	cancelCount := 0
+	tickerCalls := 0
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posId":"1","posSide":"long","pos":"0.5","availPos":"0.5","avgPx":"64000","markPx":"65000","upl":"500","uplRatio":"0.015","lever":"5","notionalUsd":"32500","margin":"6500","uTime":"1784880000000"}]}`))
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instId") != "BTC-USDT-SWAP" {
+				t.Fatalf("bad instrument query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","tickSz":"0.1","lotSz":"0.1","minSz":"0.1","ctVal":"0.01","state":"live"}]}`))
+		case "/api/v5/market/ticker":
+			mu.Lock()
+			tickerCalls++
+			call := tickerCalls
+			mu.Unlock()
+			if r.URL.Query().Get("instId") != "BTC-USDT-SWAP" {
+				t.Fatalf("bad ticker query: %s", r.URL.RawQuery)
+			}
+			if call == 1 {
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","bidPx":"99.9","askPx":"100.1","last":"100","ts":"1784880000000"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","bidPx":"100.1","askPx":"100.3","last":"100.2","ts":"1784880005000"}]}`))
+		case "/api/v5/trade/order":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			orderBodies = append(orderBodies, body)
+			orderIndex := len(orderBodies)
+			mu.Unlock()
+			if body["instId"] != "BTC-USDT-SWAP" || body["tdMode"] != "isolated" || body["side"] != "sell" || body["sz"] != "0.5" || body["posSide"] != "long" {
+				t.Fatalf("unexpected close order: %#v", body)
+			}
+			ordID := fmt.Sprintf("order-%d", orderIndex)
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"` + ordID + `","clOrdId":"close","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/trade/cancel-order":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["instId"] != "BTC-USDT-SWAP" || body["ordId"] == "" {
+				t.Fatalf("unexpected cancel order: %#v", body)
+			}
+			mu.Lock()
+			cancelCount++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"` + body["ordId"] + `","clOrdId":"close","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/positions/close", bytes.NewReader([]byte(`{"api_id":"default","inst_id":"BTC-USDT-SWAP","pos_side":"long","mode":"limit"}`)))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("limit close status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp positionCloseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.Status != "running" || resp.Px != "99.9" {
+		t.Fatalf("bad limit close response: %#v", resp)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	var got []map[string]any
+	var gotCancels int
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got = append([]map[string]any(nil), orderBodies...)
+		gotCancels = cancelCount
+		mu.Unlock()
+		hasMarket := false
+		for _, body := range got {
+			if body["ordType"] == "market" {
+				hasMarket = true
+			}
+		}
+		if hasMarket {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(got) < 3 || got[0]["ordType"] != "limit" || got[0]["px"] != "99.9" || got[1]["ordType"] != "limit" || got[1]["px"] != "100.1" || got[len(got)-1]["ordType"] != "market" {
+		t.Fatalf("expected initial limit, replacement limit, and fallback market orders: %#v", got)
+	}
+	if gotCancels < 2 {
+		t.Fatalf("expected cancels before replacement and fallback, got %d", gotCancels)
 	}
 }
 

@@ -216,10 +216,24 @@ type PlaceOrderRequest struct {
 	OrdType        string              `json:"ordType"`
 	Px             string              `json:"px,omitempty"`
 	Sz             string              `json:"sz"`
+	ReduceOnly     bool                `json:"reduceOnly,omitempty"`
 	AttachAlgoOrds []map[string]string `json:"attachAlgoOrds,omitempty"`
 }
 
 type OrderAck struct {
+	ClOrdID string `json:"clOrdId"`
+	OrdID   string `json:"ordId"`
+	SCode   string `json:"sCode"`
+	SMsg    string `json:"sMsg"`
+}
+
+type CancelOrderRequest struct {
+	InstID  string `json:"instId"`
+	OrdID   string `json:"ordId,omitempty"`
+	ClOrdID string `json:"clOrdId,omitempty"`
+}
+
+type CancelOrderAck struct {
 	ClOrdID string `json:"clOrdId"`
 	OrdID   string `json:"ordId"`
 	SCode   string `json:"sCode"`
@@ -257,6 +271,23 @@ type MarketCandle struct {
 	Close   string
 	Volume  string
 	Confirm string
+}
+
+type Ticker struct {
+	InstType  string `json:"instType"`
+	InstID    string `json:"instId"`
+	Last      string `json:"last"`
+	LastSz    string `json:"lastSz"`
+	AskPx     string `json:"askPx"`
+	AskSz     string `json:"askSz"`
+	BidPx     string `json:"bidPx"`
+	BidSz     string `json:"bidSz"`
+	Open24h   string `json:"open24h"`
+	High24h   string `json:"high24h"`
+	Low24h    string `json:"low24h"`
+	VolCcy24h string `json:"volCcy24h"`
+	Vol24h    string `json:"vol24h"`
+	TS        string `json:"ts"`
 }
 
 type Fill struct {
@@ -321,6 +352,24 @@ func (c Client) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (OrderAck
 	return data[0], env, nil
 }
 
+func (c Client) CancelOrder(ctx context.Context, req CancelOrderRequest) (CancelOrderAck, Envelope, error) {
+	env, err := c.Do(ctx, http.MethodPost, "/api/v5/trade/cancel-order", nil, req, true)
+	if err != nil {
+		return CancelOrderAck{}, env, err
+	}
+	var data []CancelOrderAck
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return CancelOrderAck{}, env, err
+	}
+	if len(data) == 0 {
+		return CancelOrderAck{}, env, errors.New("okx cancel order response data is empty")
+	}
+	if data[0].SCode != "" && data[0].SCode != "0" {
+		return data[0], env, fmt.Errorf("okx cancel order rejected %s: %s", data[0].SCode, data[0].SMsg)
+	}
+	return data[0], env, nil
+}
+
 func (c Client) AccountBalance(ctx context.Context) (Envelope, error) {
 	return c.Do(ctx, http.MethodGet, "/api/v5/account/balance", nil, nil, true)
 }
@@ -376,6 +425,23 @@ func (c Client) SwapInstruments(ctx context.Context) ([]Instrument, Envelope, er
 		return nil, env, err
 	}
 	return data, env, nil
+}
+
+func (c Client) MarketTicker(ctx context.Context, instID string) (Ticker, Envelope, error) {
+	q := url.Values{}
+	q.Set("instId", strings.ToUpper(strings.TrimSpace(instID)))
+	env, err := c.Do(ctx, http.MethodGet, "/api/v5/market/ticker", q, nil, false)
+	if err != nil {
+		return Ticker{}, env, err
+	}
+	var data []Ticker
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return Ticker{}, env, err
+	}
+	if len(data) == 0 {
+		return Ticker{}, env, errors.New("okx ticker response data is empty")
+	}
+	return data[0], env, nil
 }
 
 func (c Client) MarketCandles(ctx context.Context, instID, bar string, limit int) ([]MarketCandle, Envelope, error) {

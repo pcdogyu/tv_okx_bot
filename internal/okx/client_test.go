@@ -236,6 +236,124 @@ func TestClientPositionsSignsPrivateDemoRequest(t *testing.T) {
 	}
 }
 
+func TestClientPlaceOrderSendsReduceOnly(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
+	secret := "secret"
+	var saw bool
+	reqBody := PlaceOrderRequest{
+		InstID:     "BTC-USDT-SWAP",
+		TDMode:     "cross",
+		ClOrdID:    "PC1784880000000000001",
+		Side:       "sell",
+		OrdType:    "market",
+		Sz:         "2",
+		ReduceOnly: true,
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		saw = true
+		if r.URL.Path != "/api/v5/trade/order" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+		timestamp := fixedNow.UTC().Format("2006-01-02T15:04:05.000Z")
+		wantSign := sign(timestamp, http.MethodPost, "/api/v5/trade/order", string(bodyBytes), secret)
+		if r.Header.Get("OK-ACCESS-TIMESTAMP") != timestamp || r.Header.Get("OK-ACCESS-SIGN") != wantSign {
+			t.Fatal("invalid OKX signature headers")
+		}
+		if body["reduceOnly"] != true || body["ordType"] != "market" || body["side"] != "sell" || body["sz"] != "2" {
+			t.Fatalf("unexpected order body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"100","clOrdId":"PC1784880000000000001","sCode":"0","sMsg":""}]}`))
+	}))
+	defer ts.Close()
+
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "key", SecretKey: secret, Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return fixedNow },
+	}
+	ack, _, err := client.PlaceOrder(context.Background(), reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saw || ack.OrdID != "100" || ack.ClOrdID != reqBody.ClOrdID {
+		t.Fatalf("bad ack saw=%v ack=%#v", saw, ack)
+	}
+}
+
+func TestClientCancelOrderSignsPrivateRequest(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
+	secret := "secret"
+	reqBody := CancelOrderRequest{InstID: "BTC-USDT-SWAP", OrdID: "100"}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/trade/cancel-order" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+		timestamp := fixedNow.UTC().Format("2006-01-02T15:04:05.000Z")
+		wantSign := sign(timestamp, http.MethodPost, "/api/v5/trade/cancel-order", string(bodyBytes), secret)
+		if r.Header.Get("OK-ACCESS-TIMESTAMP") != timestamp || r.Header.Get("OK-ACCESS-SIGN") != wantSign {
+			t.Fatal("invalid OKX signature headers")
+		}
+		if body["instId"] != "BTC-USDT-SWAP" || body["ordId"] != "100" {
+			t.Fatalf("unexpected cancel body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"100","clOrdId":"","sCode":"0","sMsg":""}]}`))
+	}))
+	defer ts.Close()
+
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "key", SecretKey: secret, Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return fixedNow },
+	}
+	ack, _, err := client.CancelOrder(context.Background(), reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.OrdID != "100" {
+		t.Fatalf("bad cancel ack: %#v", ack)
+	}
+}
+
+func TestClientMarketTickerParsesBidAsk(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/market/ticker" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("instId") != "BTC-USDT-SWAP" {
+			t.Fatalf("bad ticker query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("OK-ACCESS-KEY") != "" {
+			t.Fatal("public ticker request should not be signed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","bidPx":"99.9","askPx":"100.1","last":"100","ts":"1784880000000"}]}`))
+	}))
+	defer ts.Close()
+
+	client := Client{BaseURL: ts.URL, HTTPClient: ts.Client()}
+	ticker, _, err := client.MarketTicker(context.Background(), "btc-usdt-swap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ticker.InstID != "BTC-USDT-SWAP" || ticker.BidPx != "99.9" || ticker.AskPx != "100.1" {
+		t.Fatalf("bad ticker: %#v", ticker)
+	}
+}
+
 func TestClientFillsHistorySignsPrivateDemoRequest(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
 	secret := "secret"
