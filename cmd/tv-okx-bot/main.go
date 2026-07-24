@@ -82,6 +82,10 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	upgradeStatusFile := os.Getenv("TV_OKX_UPGRADE_STATUS_FILE")
+	if upgradeStatusFile == "" {
+		upgradeStatusFile = filepath.Join(upgradeRunner.WorkDir, "data", "upgrade-status.json")
+	}
 	handler := &server.Server{
 		ConfigStore: config.NewStore(*configPath, cfg),
 		Orders:      orderStore,
@@ -99,7 +103,7 @@ func runServe(args []string) error {
 		AdminUser:  secrets.AdminUser,
 		AdminPass:  secrets.AdminPassword,
 		Logger:     logger,
-		Upgrade:    upgrade.NewManager(upgradeRunner),
+		Upgrade:    upgrade.NewManager(upgradeRunner, upgrade.WithStatusFile(upgradeStatusFile)),
 	}
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
