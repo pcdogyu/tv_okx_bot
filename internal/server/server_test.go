@@ -1113,6 +1113,83 @@ func TestTVBotPositionLimitCloseReplacesAndFallsBackToMarket(t *testing.T) {
 	}
 }
 
+func TestLowMarginPositionMonitorStartsLimitClose(t *testing.T) {
+	oldPoll := positionClosePollInterval
+	oldTimeout := positionCloseLimitTimeout
+	oldJobs := positionCloseJobs
+	positionClosePollInterval = time.Hour
+	positionCloseLimitTimeout = time.Hour
+	positionCloseJobs = newPositionCloseRegistry()
+	t.Cleanup(func() {
+		positionClosePollInterval = oldPoll
+		positionCloseLimitTimeout = oldTimeout
+		positionCloseJobs = oldJobs
+	})
+
+	srv := newTestServer(t)
+	var mu sync.Mutex
+	var orders []map[string]any
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posId":"1","posSide":"long","pos":"0.5","availPos":"0.5","avgPx":"64000","markPx":"65000","upl":"500","uplRatio":"0.015","lever":"5","notionalUsd":"32500","margin":"9.99","uTime":"1784880000000"},
+				{"instType":"SWAP","instId":"ETH-USDT-SWAP","mgnMode":"isolated","posId":"2","posSide":"short","pos":"1","availPos":"1","avgPx":"2500","markPx":"2490","upl":"10","uplRatio":"0.01","lever":"5","notionalUsd":"2490","margin":"10","uTime":"1784880000000"},
+				{"instType":"SWAP","instId":"DOGE-USDT-SWAP","mgnMode":"isolated","posId":"3","posSide":"long","pos":"100","availPos":"100","avgPx":"0.2","markPx":"0.21","upl":"1","uplRatio":"0.01","lever":"5","notionalUsd":"21","margin":"","uTime":"1784880000000"}
+			]}`))
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instId") != "BTC-USDT-SWAP" {
+				t.Fatalf("low margin monitor should only query BTC instrument, got %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","tickSz":"0.1","lotSz":"0.1","minSz":"0.1","ctVal":"0.01","state":"live"}]}`))
+		case "/api/v5/market/ticker":
+			if r.URL.Query().Get("instId") != "BTC-USDT-SWAP" {
+				t.Fatalf("bad ticker query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","bidPx":"99.9","askPx":"100.1","last":"100","ts":"1784880000000"}]}`))
+		case "/api/v5/trade/order":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			orders = append(orders, body)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"low-margin-1","clOrdId":"close","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.closeLowMarginPositions(context.Background())
+	mu.Lock()
+	defer mu.Unlock()
+	if len(orders) != 1 {
+		t.Fatalf("expected exactly one low margin close order, got %#v", orders)
+	}
+	got := orders[0]
+	if got["instId"] != "BTC-USDT-SWAP" || got["ordType"] != "limit" || got["side"] != "sell" || got["px"] != "99.9" || got["sz"] != "0.5" || got["posSide"] != "long" {
+		t.Fatalf("unexpected low margin close order: %#v", got)
+	}
+}
+
 func TestTVBotAPIKeysTestUsesSelectedStoredAccount(t *testing.T) {
 	var seenAPIKey string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

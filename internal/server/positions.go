@@ -19,11 +19,13 @@ import (
 )
 
 var (
-	errPositionNotOpen        = errors.New("position is not open")
-	positionClosePollInterval = 5 * time.Second
-	positionCloseLimitTimeout = 300 * time.Second
-	positionCloseJobs         = newPositionCloseRegistry()
-	positionCloseSeq          uint64
+	errPositionNotOpen             = errors.New("position is not open")
+	positionClosePollInterval      = 5 * time.Second
+	positionCloseLimitTimeout      = 300 * time.Second
+	lowMarginPositionCheckInterval = time.Minute
+	lowMarginPositionThresholdUSDT = 10.0
+	positionCloseJobs              = newPositionCloseRegistry()
+	positionCloseSeq               uint64
 )
 
 type positionsResponse struct {
@@ -111,6 +113,76 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *Server) StartLowMarginPositionMonitor(ctx context.Context) {
+	if s.ConfigStore == nil || s.OKXCredentials == nil {
+		return
+	}
+	go s.runLowMarginPositionMonitor(ctx, lowMarginPositionCheckInterval)
+}
+
+func (s *Server) runLowMarginPositionMonitor(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = lowMarginPositionCheckInterval
+	}
+	s.closeLowMarginPositions(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.closeLowMarginPositions(ctx)
+		}
+	}
+}
+
+func (s *Server) closeLowMarginPositions(ctx context.Context) {
+	ids := configuredAPIIDs(s.OKXCredentials.Status())
+	if len(ids) == 0 {
+		return
+	}
+	cfg := s.ConfigStore.Get()
+	for _, requestedAPIID := range ids {
+		scanCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err := s.closeLowMarginPositionsForAPI(scanCtx, cfg, requestedAPIID)
+		cancel()
+		if err != nil && s.Logger != nil {
+			s.Logger.Warn("failed to scan low margin positions", "api_id", requestedAPIID, "error", err)
+		}
+	}
+}
+
+func (s *Server) closeLowMarginPositionsForAPI(ctx context.Context, cfg config.Config, requestedAPIID string) error {
+	client, apiID, err := s.okxClientForCredentials(cfg, requestedAPIID)
+	if err != nil {
+		return err
+	}
+	positions, _, err := client.Positions(ctx, "SWAP")
+	if err != nil {
+		return err
+	}
+	for _, position := range openPositions(positions) {
+		margin, low := lowMarginPosition(position, lowMarginPositionThresholdUSDT)
+		if !low {
+			continue
+		}
+		orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		order, started, err := s.startLimitPositionClose(orderCtx, apiID, cfg, client, position)
+		cancel()
+		if err != nil {
+			if s.Logger != nil {
+				s.Logger.Warn("failed to start low margin position close", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "margin", margin, "error", err)
+			}
+			continue
+		}
+		if started && s.Logger != nil {
+			s.Logger.Info("low margin position close started", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "margin", margin, "px", order.Px, "ord_id", order.Ack.OrdID)
+		}
+	}
+	return nil
+}
+
 func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
@@ -174,18 +246,15 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 			Message: "market close order submitted",
 		})
 	case "limit":
-		key := positionCloseKey(apiID, position.InstID, position.PosSide)
-		if !positionCloseJobs.start(key) {
-			writeError(w, http.StatusConflict, "position_close_running", "limit close is already running for this position")
-			return
-		}
-		order, err := placeLimitPositionClose(ctx, cfg, client, position)
+		order, started, err := s.startLimitPositionClose(ctx, apiID, cfg, client, position)
 		if err != nil {
-			positionCloseJobs.done(key)
 			writeError(w, http.StatusBadGateway, "position_close_failed", err.Error())
 			return
 		}
-		go s.watchLimitPositionClose(apiID, cfg, client, order)
+		if !started {
+			writeError(w, http.StatusConflict, "position_close_running", "limit close is already running for this position")
+			return
+		}
 		writeJSON(w, http.StatusAccepted, positionCloseResponse{
 			OK:      true,
 			Status:  "running",
@@ -199,6 +268,20 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 			Message: "limit close order started",
 		})
 	}
+}
+
+func (s *Server) startLimitPositionClose(ctx context.Context, apiID string, cfg config.Config, client okx.Client, position okx.Position) (positionCloseOrder, bool, error) {
+	key := positionCloseKey(apiID, position.InstID, position.PosSide)
+	if !positionCloseJobs.start(key) {
+		return positionCloseOrder{}, false, nil
+	}
+	order, err := placeLimitPositionClose(ctx, cfg, client, position)
+	if err != nil {
+		positionCloseJobs.done(key)
+		return positionCloseOrder{}, false, err
+	}
+	go s.watchLimitPositionClose(apiID, cfg, client, order)
+	return order, true, nil
 }
 
 func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requestedAPIID, instType string) (positionsResponse, error) {
@@ -254,6 +337,17 @@ func openPositions(positions []okx.Position) []okx.Position {
 		}
 	}
 	return out
+}
+
+func lowMarginPosition(position okx.Position, threshold float64) (float64, bool) {
+	if threshold <= 0 || !isOpenPosition(position.Pos) {
+		return 0, false
+	}
+	margin, err := strconv.ParseFloat(strings.TrimSpace(position.Margin), 64)
+	if err != nil || margin < 0 {
+		return 0, false
+	}
+	return margin, margin < threshold
 }
 
 func currentOpenPosition(ctx context.Context, client okx.Client, instID, posSide string) (okx.Position, error) {
