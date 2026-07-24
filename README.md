@@ -70,6 +70,14 @@ sudo systemctl restart tv-okx-bot.service
 sudo systemctl status tv-okx-bot.service
 ```
 
+For manual upgrades on the Ubuntu server, run:
+
+```bash
+sudo bash upgrade.sh
+```
+
+The script uses `/opt/tv_okx_bot`, `/opt/tv_okx_bot/tv-okx-bot`, and `tv-okx-bot.service` by default. Override them with `TV_OKX_WORKDIR`, `TV_OKX_BINARY`, and `TV_OKX_SERVICE` when needed.
+
 The Go service listens on `127.0.0.1:18080` by default. Nginx listens on public `80/443` and proxies to the Go service. To install Nginx and a Let's Encrypt certificate for `tvbot.lmitis.com`, run:
 
 ```bash
