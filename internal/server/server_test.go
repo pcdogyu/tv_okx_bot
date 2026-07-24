@@ -67,8 +67,15 @@ func TestRoutes(t *testing.T) {
 	if admin.Code != http.StatusUnauthorized {
 		t.Fatalf("tvbot without token code=%d", admin.Code)
 	}
-	if admin.Header().Get("WWW-Authenticate") == "" {
-		t.Fatal("expected Basic auth challenge")
+	if admin.Header().Get("WWW-Authenticate") != "" {
+		t.Fatal("tvbot should not trigger browser Basic auth challenge")
+	}
+	docReq := httptest.NewRequest(http.MethodGet, "/tvbot/", nil)
+	docReq.Header.Set("Accept", "text/html")
+	doc := httptest.NewRecorder()
+	srv.ServeHTTP(doc, docReq)
+	if doc.Code != http.StatusFound || !strings.HasPrefix(doc.Header().Get("Location"), "/tvbot/login") {
+		t.Fatalf("tvbot document without session code=%d location=%q", doc.Code, doc.Header().Get("Location"))
 	}
 	basicReq := httptest.NewRequest(http.MethodGet, "/tvbot/config", nil)
 	basicReq.SetBasicAuth("admin", "Admin123")
@@ -76,6 +83,35 @@ func TestRoutes(t *testing.T) {
 	srv.ServeHTTP(basic, basicReq)
 	if basic.Code != http.StatusOK {
 		t.Fatalf("tvbot with basic auth code=%d body=%s", basic.Code, basic.Body.String())
+	}
+	loginPage := httptest.NewRecorder()
+	srv.ServeHTTP(loginPage, httptest.NewRequest(http.MethodGet, "/tvbot/login?next=/tvbot/config", nil))
+	if loginPage.Code != http.StatusOK || !bytes.Contains(loginPage.Body.Bytes(), []byte("管理员登录")) {
+		t.Fatalf("login page code=%d body=%s", loginPage.Code, loginPage.Body.String())
+	}
+	loginReq := httptest.NewRequest(http.MethodPost, "/tvbot/login", strings.NewReader("username=admin&password=Admin123&next=%2Ftvbot%2Fconfig"))
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	login := httptest.NewRecorder()
+	srv.ServeHTTP(login, loginReq)
+	if login.Code != http.StatusSeeOther || login.Header().Get("Location") != "/tvbot/config" {
+		t.Fatalf("login code=%d location=%q body=%s", login.Code, login.Header().Get("Location"), login.Body.String())
+	}
+	var sessionCookie *http.Cookie
+	for _, cookie := range login.Result().Cookies() {
+		if cookie.Name == adminSessionCookieName {
+			sessionCookie = cookie
+			break
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Value == "" || !sessionCookie.HttpOnly {
+		t.Fatalf("login did not set admin session cookie: %#v", login.Result().Cookies())
+	}
+	cookieReq := httptest.NewRequest(http.MethodGet, "/tvbot/config", nil)
+	cookieReq.AddCookie(sessionCookie)
+	cookieRR := httptest.NewRecorder()
+	srv.ServeHTTP(cookieRR, cookieReq)
+	if cookieRR.Code != http.StatusOK {
+		t.Fatalf("tvbot with session cookie code=%d body=%s", cookieRR.Code, cookieRR.Body.String())
 	}
 	uiReq := httptest.NewRequest(http.MethodGet, "/tvbot/", nil)
 	uiReq.SetBasicAuth("admin", "Admin123")

@@ -2,13 +2,17 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +41,11 @@ type Server struct {
 	Upgrade        *upgrade.Manager
 	BuildInfo      BuildInfo
 }
+
+const (
+	adminSessionCookieName = "tvbot_admin_session"
+	adminSessionTTL        = 12 * time.Hour
+)
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
@@ -221,10 +230,18 @@ func (s *Server) execute(signalID string, signal trading.Signal, cfg config.Conf
 }
 
 func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/tvbot")
+	if path == "/login" || path == "/login/" {
+		s.handleTVBotLogin(w, r)
+		return
+	}
+	if path == "/logout" || path == "/logout/" {
+		s.handleTVBotLogout(w, r)
+		return
+	}
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	path := strings.TrimPrefix(r.URL.Path, "/tvbot")
 	if path == "" || path == "/" {
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is allowed")
@@ -748,11 +765,68 @@ func mergeMissingCredentials(creds *okx.Credentials, stored okx.Credentials) {
 	}
 }
 
+func (s *Server) handleTVBotLogin(w http.ResponseWriter, r *http.Request) {
+	next := sanitizeAdminNext(r.URL.Query().Get("next"))
+	switch r.Method {
+	case http.MethodGet:
+		if s.authorized(r) {
+			http.Redirect(w, r, next, http.StatusFound)
+			return
+		}
+		writeHTML(w, http.StatusOK, renderTVBotLoginHTML("", next, s.BuildInfo))
+	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		if err := r.ParseForm(); err != nil {
+			writeHTML(w, http.StatusBadRequest, renderTVBotLoginHTML("登录请求无效", next, s.BuildInfo))
+			return
+		}
+		next = sanitizeAdminNext(r.FormValue("next"))
+		if !s.validAdminPassword(r.FormValue("username"), r.FormValue("password")) {
+			writeHTML(w, http.StatusUnauthorized, renderTVBotLoginHTML("用户名或密码错误", next, s.BuildInfo))
+			return
+		}
+		s.setAdminSessionCookie(w, r)
+		http.Redirect(w, r, next, http.StatusSeeOther)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and POST are allowed")
+	}
+}
+
+func (s *Server) handleTVBotLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and POST are allowed")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+	http.Redirect(w, r, "/tvbot/login", http.StatusSeeOther)
+}
+
+func (s *Server) validAdminPassword(user, pass string) bool {
+	user = strings.TrimSpace(user)
+	if user == "" || s.AdminUser == "" || s.AdminPass == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(user), []byte(s.AdminUser)) == 1 &&
+		subtle.ConstantTimeCompare([]byte(pass), []byte(s.AdminPass)) == 1
+}
+
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if s.authorized(r) {
 		return true
 	}
-	w.Header().Set("WWW-Authenticate", `Basic realm="tv-okx-bot"`)
+	if requestWantsHTML(r) {
+		next := sanitizeAdminNext(r.URL.RequestURI())
+		http.Redirect(w, r, "/tvbot/login?next="+url.QueryEscape(next), http.StatusFound)
+		return false
+	}
 	writeError(w, http.StatusUnauthorized, "unauthorized", "admin credentials are required")
 	return false
 }
@@ -762,12 +836,106 @@ func (s *Server) authorized(r *http.Request) bool {
 	if s.AdminToken != "" && got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.AdminToken)) == 1 {
 		return true
 	}
+	if s.validAdminSessionCookie(r) {
+		return true
+	}
 	user, pass, ok := r.BasicAuth()
 	if !ok || s.AdminUser == "" || s.AdminPass == "" {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(user), []byte(s.AdminUser)) == 1 &&
 		subtle.ConstantTimeCompare([]byte(pass), []byte(s.AdminPass)) == 1
+}
+
+func (s *Server) setAdminSessionCookie(w http.ResponseWriter, r *http.Request) {
+	expires := s.now().Add(adminSessionTTL)
+	payload := s.AdminUser + "|" + strconv.FormatInt(expires.Unix(), 10)
+	encodedPayload := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	token := encodedPayload + "." + s.signAdminSession(encodedPayload)
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  expires,
+		MaxAge:   int(adminSessionTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+	})
+}
+
+func (s *Server) validAdminSessionCookie(r *http.Request) bool {
+	cookie, err := r.Cookie(adminSessionCookieName)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	wantSig := s.signAdminSession(parts[0])
+	if wantSig == "" || !hmac.Equal([]byte(parts[1]), []byte(wantSig)) {
+		return false
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return false
+	}
+	payloadParts := strings.Split(string(payloadBytes), "|")
+	if len(payloadParts) != 2 || payloadParts[0] != s.AdminUser {
+		return false
+	}
+	expiresUnix, err := strconv.ParseInt(payloadParts[1], 10, 64)
+	if err != nil {
+		return false
+	}
+	return s.now().Unix() <= expiresUnix
+}
+
+func (s *Server) signAdminSession(encodedPayload string) string {
+	secret := s.adminSessionSecret()
+	if secret == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(encodedPayload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) adminSessionSecret() string {
+	if strings.TrimSpace(s.AdminToken) != "" {
+		return s.AdminToken
+	}
+	if s.AdminUser == "" || s.AdminPass == "" {
+		return ""
+	}
+	return s.AdminUser + "|" + s.AdminPass
+}
+
+func requestWantsHTML(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	accept := r.Header.Get("Accept")
+	return strings.Contains(accept, "text/html") ||
+		r.Header.Get("Sec-Fetch-Dest") == "document" ||
+		r.URL.Path == "/tvbot" ||
+		r.URL.Path == "/tvbot/"
+}
+
+func sanitizeAdminNext(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+		return "/tvbot/"
+	}
+	if strings.HasPrefix(raw, "/tvbot") || strings.HasPrefix(raw, "/upgrade") {
+		return raw
+	}
+	return "/tvbot/"
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (s *Server) now() time.Time {

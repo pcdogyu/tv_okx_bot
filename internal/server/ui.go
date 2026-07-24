@@ -38,6 +38,149 @@ func renderTVBotHTML(info BuildInfo) string {
 	return strings.Replace(tvbotHTML, "{{APP_FOOTER}}", html.EscapeString(info.FooterText()), 1)
 }
 
+func renderTVBotLoginHTML(message, next string, info BuildInfo) string {
+	errorHTML := ""
+	if strings.TrimSpace(message) != "" {
+		errorHTML = `<p class="error">` + html.EscapeString(message) + `</p>`
+	}
+	page := strings.Replace(tvbotLoginHTML, "{{ERROR}}", errorHTML, 1)
+	page = strings.Replace(page, "{{NEXT}}", html.EscapeString(sanitizeAdminNext(next)), 1)
+	page = strings.Replace(page, "{{APP_FOOTER}}", html.EscapeString(info.FooterText()), 1)
+	return page
+}
+
+const tvbotLoginHTML = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TV OKX Bot 登录</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --line: #d8dee9;
+      --text: #172033;
+      --muted: #647089;
+      --blue: #1f6feb;
+      --red: #c24135;
+      --shadow: 0 18px 44px rgba(23, 32, 51, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        linear-gradient(135deg, rgba(31, 111, 235, 0.08), rgba(19, 138, 85, 0.08)),
+        var(--bg);
+    }
+    main {
+      width: min(420px, 100%);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+      font-weight: 800;
+      font-size: 18px;
+    }
+    .logo {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      background: #172033;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    form {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 18px;
+      font-size: 22px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      margin: 14px 0;
+      color: var(--muted);
+      font-weight: 650;
+    }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 11px 12px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      outline: none;
+    }
+    input:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.14);
+    }
+    button {
+      width: 100%;
+      border: 1px solid var(--blue);
+      border-radius: 6px;
+      padding: 11px 12px;
+      margin-top: 8px;
+      color: white;
+      background: var(--blue);
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    .error {
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border: 1px solid rgba(194, 65, 53, 0.35);
+      border-radius: 6px;
+      color: var(--red);
+      background: rgba(194, 65, 53, 0.08);
+    }
+    footer {
+      margin-top: 16px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand"><span class="logo">TV</span><span>OKX Bot</span></div>
+    <form method="post" action="/tvbot/login" autocomplete="on">
+      <h1>管理员登录</h1>
+      {{ERROR}}
+      <input type="hidden" name="next" value="{{NEXT}}">
+      <label>用户名<input name="username" autocomplete="username" required autofocus></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">登录</button>
+    </form>
+    <footer>{{APP_FOOTER}}</footer>
+  </main>
+</body>
+</html>`
+
 const tvbotHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
