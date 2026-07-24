@@ -96,6 +96,9 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("订单分析")) {
 		t.Fatalf("tvbot ui should include order analysis tab")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("Code by Yuhao@jiansutech.com - 2026-07-24T03:00:00Z - testhash - testbranch")) {
+		t.Fatalf("tvbot ui should include build footer")
+	}
 }
 
 func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
@@ -577,6 +580,7 @@ func newTestServer(t *testing.T) *Server {
 		AdminUser:      "admin",
 		AdminPass:      "Admin123",
 		Upgrade:        upgrade.NewManager(fakeUpgradeRunner{done: make(chan struct{}, 1)}),
+		BuildInfo:      BuildInfo{CommitTime: "2026-07-24T03:00:00Z", CommitHash: "testhash", CommitBranch: "testbranch"},
 		Now: func() time.Time {
 			return time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
 		},

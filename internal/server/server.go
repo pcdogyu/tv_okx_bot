@@ -34,6 +34,7 @@ type Server struct {
 	Logger         *slog.Logger
 	Now            func() time.Time
 	Upgrade        *upgrade.Manager
+	BuildInfo      BuildInfo
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -228,7 +229,7 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is allowed")
 			return
 		}
-		writeHTML(w, http.StatusOK, tvbotHTML)
+		writeHTML(w, http.StatusOK, renderTVBotHTML(s.BuildInfo))
 		return
 	}
 	switch path {

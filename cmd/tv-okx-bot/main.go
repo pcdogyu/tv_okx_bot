@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
@@ -19,6 +21,12 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 	"github.com/pcdogyu/tv_okx_bot/internal/upgrade"
+)
+
+var (
+	commitTime   string
+	commitHash   string
+	commitBranch string
 )
 
 func main() {
@@ -100,6 +108,7 @@ func runServe(args []string) error {
 	if upgradeStatusFile == "" {
 		upgradeStatusFile = filepath.Join(upgradeRunner.WorkDir, "data", "upgrade-status.json")
 	}
+	buildInfo := resolveBuildInfo(upgradeRunner.WorkDir)
 	handler := &server.Server{
 		ConfigStore: config.NewStore(*configPath, cfg),
 		Orders:      orderStore,
@@ -116,14 +125,48 @@ func runServe(args []string) error {
 		AdminPass:      secrets.AdminPassword,
 		Logger:         logger,
 		Upgrade:        upgrade.NewManager(upgradeRunner, upgrade.WithStatusFile(upgradeStatusFile)),
+		BuildInfo:      buildInfo,
 	}
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	logger.Info("tv okx bot listening", "addr", cfg.Server.Addr, "env", cfg.Trading.Env)
+	logger.Info("tv okx bot listening", "addr", cfg.Server.Addr, "env", cfg.Trading.Env, "commit", buildInfo.CommitHash, "branch", buildInfo.CommitBranch)
 	return srv.ListenAndServe()
+}
+
+func resolveBuildInfo(workDir string) server.BuildInfo {
+	info := server.BuildInfo{
+		CommitTime:   strings.TrimSpace(commitTime),
+		CommitHash:   strings.TrimSpace(commitHash),
+		CommitBranch: strings.TrimSpace(commitBranch),
+	}
+	if info.CommitTime == "" {
+		info.CommitTime = gitOutput(workDir, "log", "-1", "--format=%cI")
+	}
+	if info.CommitHash == "" {
+		info.CommitHash = gitOutput(workDir, "rev-parse", "--short", "HEAD")
+	}
+	if info.CommitBranch == "" {
+		info.CommitBranch = gitOutput(workDir, "rev-parse", "--abbrev-ref", "HEAD")
+	}
+	return info
+}
+
+func gitOutput(workDir string, args ...string) string {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmdArgs := append([]string{"-C", workDir}, args...)
+	out, err := exec.CommandContext(ctx, "git", cmdArgs...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func runTemplate(args []string) error {

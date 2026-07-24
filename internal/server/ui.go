@@ -1,11 +1,40 @@
 package server
 
-import "net/http"
+import (
+	"html"
+	"net/http"
+	"strings"
+)
+
+type BuildInfo struct {
+	CommitTime   string
+	CommitHash   string
+	CommitBranch string
+}
+
+func (b BuildInfo) FooterText() string {
+	return "Code by Yuhao@jiansutech.com - " +
+		buildInfoValue(b.CommitTime) + " - " +
+		buildInfoValue(b.CommitHash) + " - " +
+		buildInfoValue(b.CommitBranch)
+}
+
+func buildInfoValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
 
 func writeHTML(w http.ResponseWriter, status int, html string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(html))
+}
+
+func renderTVBotHTML(info BuildInfo) string {
+	return strings.Replace(tvbotHTML, "{{APP_FOOTER}}", html.EscapeString(info.FooterText()), 1)
 }
 
 const tvbotHTML = `<!doctype html>
@@ -31,6 +60,9 @@ const tvbotHTML = `<!doctype html>
     * { box-sizing: border-box; }
     body {
       margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
       font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--text);
       background: var(--bg);
@@ -103,6 +135,7 @@ const tvbotHTML = `<!doctype html>
     }
     main {
       width: 100%;
+      flex: 1;
       margin: 0 auto;
       padding: 18px;
     }
@@ -338,6 +371,15 @@ const tvbotHTML = `<!doctype html>
       z-index: 10;
     }
     .toast.show { display: block; }
+    .build-footer {
+      width: 100%;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 8px 18px 18px;
+      overflow-wrap: anywhere;
+    }
     @media (max-width: 880px) {
       .bar { align-items: flex-start; flex-direction: column; }
       nav { justify-content: flex-start; }
@@ -543,6 +585,7 @@ const tvbotHTML = `<!doctype html>
       <pre id="upgrade-output">-</pre>
     </section>
   </main>
+  <footer class="build-footer">{{APP_FOOTER}}</footer>
   <div class="toast" id="toast"></div>
 
   <script>
