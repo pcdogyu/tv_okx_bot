@@ -46,7 +46,7 @@ go run ./cmd/tv-okx-bot check-okx --config config.example.json
 
 - `GET /` returns `302` to `https://www.mext.go.jp/`.
 - `POST /tvorder` accepts TradingView alerts.
-- `/tvbot/*` is a JSON management API and accepts browser Basic Auth. Default credentials are `admin` / `Admin123`. `X-Admin-Token` is still supported when `ADMIN_TOKEN` is set.
+- `/tvbot/` is the browser dashboard. `/tvbot/config`, `/tvbot/symbols`, `/tvbot/templates`, `/tvbot/orders`, and `/tvbot/check-okx` remain JSON APIs. Admin access accepts browser Basic Auth. Default credentials are `admin` / `Admin123`. `X-Admin-Token` is still supported when `ADMIN_TOKEN` is set.
 - `POST /upgrade` runs `git pull --ff-only`, `go test ./...`, `go build`, replaces the service binary, and restarts the Ubuntu systemd service.
 - `GET /upgrade` returns the latest upgrade status.
 - Every other path returns local JSON `404`.

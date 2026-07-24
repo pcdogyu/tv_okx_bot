@@ -118,18 +118,7 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is allowed")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok": true,
-			"routes": []string{
-				"GET /tvbot/config",
-				"PUT /tvbot/config",
-				"GET /tvbot/symbols",
-				"PUT /tvbot/symbols",
-				"POST /tvbot/templates",
-				"GET /tvbot/orders",
-				"POST /tvbot/check-okx",
-			},
-		})
+		writeHTML(w, http.StatusOK, tvbotHTML)
 		return
 	}
 	switch path {

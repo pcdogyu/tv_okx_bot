@@ -73,6 +73,19 @@ func TestRoutes(t *testing.T) {
 	if basic.Code != http.StatusOK {
 		t.Fatalf("tvbot with basic auth code=%d body=%s", basic.Code, basic.Body.String())
 	}
+	uiReq := httptest.NewRequest(http.MethodGet, "/tvbot/", nil)
+	uiReq.SetBasicAuth("admin", "Admin123")
+	ui := httptest.NewRecorder()
+	srv.ServeHTTP(ui, uiReq)
+	if ui.Code != http.StatusOK {
+		t.Fatalf("tvbot ui code=%d body=%s", ui.Code, ui.Body.String())
+	}
+	if got := ui.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("tvbot ui content-type=%q", got)
+	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("OKX Bot")) || !bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/config")) {
+		t.Fatalf("tvbot ui body does not look like dashboard")
+	}
 }
 
 func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
