@@ -253,7 +253,7 @@ const tvbotHTML = `<!doctype html>
     }
     th.order-okx,
     td.order-okx {
-      width: 25%;
+      width: 37.5%;
     }
     th {
       color: var(--muted);
