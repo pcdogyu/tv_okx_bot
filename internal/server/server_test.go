@@ -87,6 +87,9 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("OKX Bot")) || !bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/config")) {
 		t.Fatalf("tvbot ui body does not look like dashboard")
 	}
+	if bytes.Contains(ui.Body.Bytes(), []byte("max-width: 1240px")) || !bytes.Contains(ui.Body.Bytes(), []byte("Asia/Shanghai")) {
+		t.Fatalf("tvbot ui should use full-width layout and Shanghai order times")
+	}
 }
 
 func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {

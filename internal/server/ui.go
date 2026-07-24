@@ -44,7 +44,7 @@ const tvbotHTML = `<!doctype html>
       box-shadow: 0 2px 12px rgba(23, 32, 51, 0.04);
     }
     .bar {
-      max-width: 1240px;
+      width: 100%;
       margin: 0 auto;
       padding: 14px 18px;
       display: flex;
@@ -102,7 +102,7 @@ const tvbotHTML = `<!doctype html>
       border-color: var(--green);
     }
     main {
-      max-width: 1240px;
+      width: 100%;
       margin: 0 auto;
       padding: 18px;
     }
@@ -212,6 +212,10 @@ const tvbotHTML = `<!doctype html>
       text-align: left;
       vertical-align: top;
       overflow-wrap: anywhere;
+    }
+    td.time {
+      white-space: nowrap;
+      overflow-wrap: normal;
     }
     th {
       color: var(--muted);
@@ -502,6 +506,26 @@ const tvbotHTML = `<!doctype html>
       return asText(v);
     }
 
+    function shanghaiTime(v) {
+      if (!v) return "-";
+      const date = new Date(v);
+      if (Number.isNaN(date.getTime())) return asText(v);
+      const parts = new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      }).formatToParts(date).reduce((acc, part) => {
+        if (part.type !== "literal") acc[part.type] = part.value;
+        return acc;
+      }, {});
+      return parts.year + "-" + parts.month + "-" + parts.day + " " + parts.hour + ":" + parts.minute + ":" + parts.second;
+    }
+
     function pill(text, tone) {
       return '<span class="pill ' + (tone || "") + '">' + escapeHTML(asText(text)) + '</span>';
     }
@@ -669,7 +693,7 @@ const tvbotHTML = `<!doctype html>
         const okx = order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : order.error || "-";
         const tone = order.status === "submitted" ? "ok" : (order.status === "failed" ? "bad" : "warn");
         return "<tr>" +
-          "<td>" + escapeHTML(asText(order.accepted_at)) + "</td>" +
+          '<td class="time">' + escapeHTML(shanghaiTime(order.accepted_at)) + "</td>" +
           "<td>" + pill(order.status, tone) + "</td>" +
           "<td>" + escapeHTML(asText(order.api_id || (order.result && order.result.api_id))) + "</td>" +
           "<td>" + escapeHTML(asText(order.action)) + "</td>" +
