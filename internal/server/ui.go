@@ -271,6 +271,48 @@ const tvbotHTML = `<!doctype html>
       gap: 6px;
       flex-wrap: wrap;
     }
+    .analysis-controls {
+      display: flex;
+      gap: 10px;
+      align-items: end;
+      flex-wrap: wrap;
+    }
+    .analysis-controls label { min-width: 260px; }
+    .analysis-metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .analysis-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+      min-height: 70px;
+    }
+    .analysis-card .label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .analysis-card .value {
+      margin-top: 5px;
+      font-size: 18px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .chart-wrap {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px;
+      min-height: 280px;
+    }
+    #usdt-chart {
+      width: 100%;
+      height: 260px;
+      display: block;
+    }
     pre {
       margin: 0;
       white-space: pre-wrap;
@@ -299,7 +341,7 @@ const tvbotHTML = `<!doctype html>
     @media (max-width: 880px) {
       .bar { align-items: flex-start; flex-direction: column; }
       nav { justify-content: flex-start; }
-      .status, .grid, .grid.two, .split, .api-key-layout { grid-template-columns: 1fr; }
+      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics { grid-template-columns: 1fr; }
       main { padding: 12px; }
       section { padding: 12px; }
     }
@@ -311,6 +353,7 @@ const tvbotHTML = `<!doctype html>
       <div class="brand"><span class="mark">TV</span><span>OKX Bot</span></div>
       <nav aria-label="sections">
         <button type="button" data-tab="dashboard" aria-selected="true">总览</button>
+        <button type="button" data-tab="analysis">订单分析</button>
         <button type="button" data-tab="config">配置</button>
         <button type="button" data-tab="apiKeys">API Key</button>
         <button type="button" data-tab="orderSettings">下单设置</button>
@@ -349,6 +392,36 @@ const tvbotHTML = `<!doctype html>
           <pre id="okx-output">-</pre>
         </div>
       </div>
+    </section>
+
+    <section id="analysis">
+      <div class="section-head">
+        <h2>订单分析</h2>
+        <div class="analysis-controls">
+          <label>交易 API<select id="analysis-api-id"></select></label>
+          <button class="btn primary" type="button" id="refresh-analysis">刷新分析</button>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <div class="section-head" style="margin-bottom:8px">
+          <h3>USDT-USD 最近 3 天价格</h3>
+          <span class="muted" id="analysis-updated">-</span>
+        </div>
+        <svg id="usdt-chart" role="img" aria-label="USDT-USD price chart"></svg>
+      </div>
+      <div class="analysis-metrics">
+        <div class="analysis-card"><div class="label">净盈亏</div><div class="value" id="analysis-net-pnl">-</div></div>
+        <div class="analysis-card"><div class="label">胜率</div><div class="value" id="analysis-win-rate">-</div></div>
+        <div class="analysis-card"><div class="label">盈利因子</div><div class="value" id="analysis-profit-factor">-</div></div>
+        <div class="analysis-card"><div class="label">盈亏比</div><div class="value" id="analysis-payoff-ratio">-</div></div>
+        <div class="analysis-card"><div class="label">成交数</div><div class="value" id="analysis-trades">-</div></div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>币对</th><th>成交数</th><th>盈利数</th><th>亏损数</th><th>净盈亏</th><th>手续费</th><th>胜率</th><th>盈利因子</th><th>盈亏比</th></tr>
+        </thead>
+        <tbody id="analysis-rows"></tbody>
+      </table>
     </section>
 
     <section id="apiKeys">
@@ -399,6 +472,7 @@ const tvbotHTML = `<!doctype html>
       <div class="grid">
         <label>监听地址<input id="cfg-addr" autocomplete="off"></label>
         <label>数据文件<input id="cfg-data-file" autocomplete="off"></label>
+        <label>SQLite 数据库<input id="cfg-database-file" autocomplete="off"></label>
         <label>OKX Base URL<input id="cfg-base-url" autocomplete="off"></label>
         <label>交易环境<select id="cfg-env"><option value="demo">demo</option><option value="live">live</option></select></label>
         <label>保证金模式<select id="cfg-margin"><option value="isolated">isolated</option><option value="cross">cross</option></select></label>
@@ -472,7 +546,7 @@ const tvbotHTML = `<!doctype html>
   <div class="toast" id="toast"></div>
 
   <script>
-    const state = { config: null, apiKeys: null, selectedAPIID: "", orders: [], upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", orders: [], analysis: null, analysisError: "", upgrade: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -497,6 +571,23 @@ const tvbotHTML = `<!doctype html>
     function asText(v) {
       if (v === null || v === undefined || v === "") return "-";
       return String(v);
+    }
+
+    function formatNumber(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+    }
+
+    function formatPct(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return (n * 100).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%";
+    }
+
+    function formatFactor(row) {
+      if (row && row.profit_factor_text) return row.profit_factor_text;
+      return formatNumber(row ? row.profit_factor : null);
     }
 
     function riskText(v) {
@@ -536,6 +627,7 @@ const tvbotHTML = `<!doctype html>
 
     async function loadAll() {
       await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadUpgrade()]);
+      await loadAnalysis(false);
       renderDashboard();
     }
 
@@ -550,6 +642,7 @@ const tvbotHTML = `<!doctype html>
       state.apiKeys = await api("/tvbot/api-keys");
       renderAPIKeys();
       renderTemplateAPIs();
+      renderAnalysisAPIs();
       updateMetrics();
     }
 
@@ -566,6 +659,21 @@ const tvbotHTML = `<!doctype html>
       updateMetrics();
     }
 
+    async function loadAnalysis(refresh) {
+      const qs = new URLSearchParams({ price_days: "3", pnl_days: "30" });
+      const selected = $("analysis-api-id") ? $("analysis-api-id").value : "";
+      if (selected) qs.set("api_id", selected);
+      if (refresh) qs.set("refresh", "true");
+      try {
+        state.analysis = await api("/tvbot/analysis?" + qs.toString());
+        state.analysisError = "";
+      } catch (err) {
+        state.analysis = null;
+        state.analysisError = err.message;
+      }
+      renderAnalysis();
+    }
+
     function updateMetrics() {
       $("metric-env").textContent = state.config && state.config.trading ? state.config.trading.env : "-";
       $("metric-api-keys").textContent = state.apiKeys && state.apiKeys.configured ? (state.apiKeys.active_id || "已配置") : "未配置";
@@ -579,6 +687,7 @@ const tvbotHTML = `<!doctype html>
       const rows = [
         ["服务地址", state.config.server ? state.config.server.addr : "-"],
         ["数据文件", state.config.data_file],
+        ["SQLite 数据库", state.config.database_file],
         ["交易环境", t.env],
         ["实盘开关", t.allow_live_trading ? "enabled" : "disabled"],
         ["保证金模式", t.default_margin_mode],
@@ -598,6 +707,7 @@ const tvbotHTML = `<!doctype html>
       const trading = cfg.trading || {};
       $("cfg-addr").value = cfg.server && cfg.server.addr ? cfg.server.addr : "";
       $("cfg-data-file").value = cfg.data_file || "";
+      $("cfg-database-file").value = cfg.database_file || "";
       $("cfg-base-url").value = trading.base_url || "";
       $("cfg-env").value = trading.env || "demo";
       $("cfg-margin").value = trading.default_margin_mode || "isolated";
@@ -688,6 +798,81 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
+    function renderAnalysisAPIs() {
+      const select = $("analysis-api-id");
+      const current = select.value;
+      const options = apiAccounts().map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
+      select.innerHTML = '<option value="">默认交易 API</option>' + options.join("");
+      select.value = current || (state.apiKeys && state.apiKeys.active_id ? state.apiKeys.active_id : "");
+    }
+
+    function renderAnalysis() {
+      if (!state.analysis) {
+        $("analysis-updated").textContent = state.analysisError || "-";
+        $("analysis-net-pnl").textContent = "-";
+        $("analysis-win-rate").textContent = "-";
+        $("analysis-profit-factor").textContent = "-";
+        $("analysis-payoff-ratio").textContent = "-";
+        $("analysis-trades").textContent = "-";
+        $("analysis-rows").innerHTML = '<tr><td colspan="9" class="muted">' + escapeHTML(state.analysisError || "-") + '</td></tr>';
+        drawUSDTChart([]);
+        return;
+      }
+      const summary = state.analysis.summary || {};
+      $("analysis-updated").textContent = "更新时间 " + shanghaiTime(state.analysis.refreshed_at) + " / API " + asText(state.analysis.api_id);
+      $("analysis-net-pnl").textContent = formatNumber(summary.net_pnl) + " USDT";
+      $("analysis-win-rate").textContent = formatPct(summary.win_rate);
+      $("analysis-profit-factor").textContent = formatFactor(summary);
+      $("analysis-payoff-ratio").textContent = formatNumber(summary.payoff_ratio);
+      $("analysis-trades").textContent = asText(summary.trade_count);
+      const rows = (state.analysis.symbols || []).map((row) => {
+        return "<tr>" +
+          "<td>" + escapeHTML(asText(row.inst_id)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.trade_count)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.wins)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.losses)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.net_pnl)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.fees)) + "</td>" +
+          "<td>" + escapeHTML(formatPct(row.win_rate)) + "</td>" +
+          "<td>" + escapeHTML(formatFactor(row)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.payoff_ratio)) + "</td>" +
+          "</tr>";
+      });
+      $("analysis-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">暂无 OKX 成交历史</td></tr>';
+      drawUSDTChart(state.analysis.price_points || []);
+    }
+
+    function drawUSDTChart(points) {
+      const svg = $("usdt-chart");
+      const width = Math.max(600, svg.clientWidth || 600);
+      const height = 260;
+      const pad = { left: 54, right: 16, top: 18, bottom: 34 };
+      svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+      svg.innerHTML = "";
+      if (!points.length) {
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">暂无价格数据</text>';
+        return;
+      }
+      const values = points.map((p) => Number(p.close)).filter((v) => Number.isFinite(v));
+      if (!values.length) {
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">暂无价格数据</text>';
+        return;
+      }
+      const min = Math.min.apply(null, values);
+      const max = Math.max.apply(null, values);
+      const span = max - min || 0.0001;
+      const x = (i) => pad.left + (points.length === 1 ? 0 : i * (width - pad.left - pad.right) / (points.length - 1));
+      const y = (v) => pad.top + (max - v) * (height - pad.top - pad.bottom) / span;
+      const path = points.map((p, i) => (i === 0 ? "M" : "L") + x(i).toFixed(2) + " " + y(Number(p.close)).toFixed(2)).join(" ");
+      svg.innerHTML =
+        '<line x1="' + pad.left + '" y1="' + pad.top + '" x2="' + pad.left + '" y2="' + (height - pad.bottom) + '" stroke="#d8dee9"/>' +
+        '<line x1="' + pad.left + '" y1="' + (height - pad.bottom) + '" x2="' + (width - pad.right) + '" y2="' + (height - pad.bottom) + '" stroke="#d8dee9"/>' +
+        '<text x="8" y="' + (pad.top + 4) + '" fill="#647089" font-size="12">' + max.toFixed(4) + '</text>' +
+        '<text x="8" y="' + (height - pad.bottom) + '" fill="#647089" font-size="12">' + min.toFixed(4) + '</text>' +
+        '<path d="' + path + '" fill="none" stroke="#1f6feb" stroke-width="2.4"/>' +
+        '<circle cx="' + x(points.length - 1).toFixed(2) + '" cy="' + y(Number(points[points.length - 1].close)).toFixed(2) + '" r="4" fill="#1f6feb"/>';
+    }
+
     function renderOrders() {
       const rows = (state.orders || []).map((order) => {
         const okxResult = order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : "";
@@ -716,6 +901,7 @@ const tvbotHTML = `<!doctype html>
       const patch = {
         server: { addr: $("cfg-addr").value.trim() },
         data_file: $("cfg-data-file").value.trim(),
+        database_file: $("cfg-database-file").value.trim(),
         trading: {
           env: $("cfg-env").value,
           allow_live_trading: $("cfg-live").checked,
@@ -768,6 +954,7 @@ const tvbotHTML = `<!doctype html>
       $("key-passphrase").value = "";
       renderAPIKeys();
       renderTemplateAPIs();
+      renderAnalysisAPIs();
       updateMetrics();
       toast("API Key 已保存");
     }
@@ -792,6 +979,7 @@ const tvbotHTML = `<!doctype html>
       state.selectedAPIID = state.apiKeys.active_id || "";
       renderAPIKeys();
       renderTemplateAPIs();
+      renderAnalysisAPIs();
       updateMetrics();
       toast("API Key 已删除");
     }
@@ -842,6 +1030,9 @@ const tvbotHTML = `<!doctype html>
         document.querySelectorAll("main section").forEach((s) => s.classList.remove("active"));
         button.setAttribute("aria-selected", "true");
         $(button.dataset.tab).classList.add("active");
+        if (button.dataset.tab === "analysis" && !state.analysis) {
+          loadAnalysis(false).catch((err) => toast(err.message));
+        }
       });
     });
 
@@ -874,6 +1065,8 @@ const tvbotHTML = `<!doctype html>
       state.selectedAPIID = $("key-selected").value;
       fillAPIForm(state.selectedAPIID);
     });
+    $("analysis-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
+    $("refresh-analysis").addEventListener("click", () => loadAnalysis(true).then(() => toast("分析已刷新")).catch((err) => toast(err.message)));
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
     $("copy-template").addEventListener("click", async () => {
       await navigator.clipboard.writeText($("template-output").value);

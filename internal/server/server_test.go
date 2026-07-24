@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -90,6 +92,9 @@ func TestRoutes(t *testing.T) {
 	}
 	if bytes.Contains(ui.Body.Bytes(), []byte("max-width: 1240px")) || !bytes.Contains(ui.Body.Bytes(), []byte("Asia/Shanghai")) {
 		t.Fatalf("tvbot ui should use full-width layout and Shanghai order times")
+	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("订单分析")) {
+		t.Fatalf("tvbot ui should include order analysis tab")
 	}
 }
 
@@ -369,6 +374,88 @@ func TestTVBotAPIKeysSaveAndMask(t *testing.T) {
 	}
 }
 
+func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
+	srv := newTestServer(t)
+	fillTime1 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
+	fillTime2 := time.Date(2026, 7, 23, 4, 0, 0, 0, time.UTC).UnixMilli()
+	candleTime1 := time.Date(2026, 7, 23, 2, 0, 0, 0, time.UTC).UnixMilli()
+	candleTime2 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
+	var sawCandles, sawFills bool
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/market/candles":
+			sawCandles = true
+			if r.URL.Query().Get("instId") != "USDT-USD" || r.URL.Query().Get("bar") != "1H" || r.URL.Query().Get("limit") != "72" {
+				t.Fatalf("bad candle query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"0","msg":"","data":[["%d","0.9990","0.9992","0.9989","0.9991","10","10","10","1"],["%d","0.9991","0.9993","0.9990","0.9992","12","12","12","1"]]}`, candleTime2, candleTime1)))
+		case "/api/v5/trade/fills-history":
+			sawFills = true
+			if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
+				t.Fatalf("missing private OKX headers")
+			}
+			if r.URL.Query().Get("instType") != "SWAP" || r.URL.Query().Get("limit") != "100" {
+				t.Fatalf("bad fills query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"t1","ordId":"o1","side":"sell","fillPx":"50000","fillSz":"1","fillPnl":"2.5","fee":"-0.1","feeCcy":"USDT","fillTime":"%d"},
+				{"instType":"SWAP","instId":"ETH-USDT-SWAP","tradeId":"t2","ordId":"o2","side":"buy","fillPx":"2500","fillSz":"1","fillPnl":"-1","fee":"-0.05","feeCcy":"USDT","fillTime":"%d"}
+			]}`, fillTime2, fillTime1)))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	unauth := httptest.NewRecorder()
+	srv.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/tvbot/analysis", nil))
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("analysis without auth code=%d", unauth.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/analysis?refresh=true", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("analysis code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !sawCandles || !sawFills {
+		t.Fatalf("expected OKX candle and fills calls candles=%v fills=%v", sawCandles, sawFills)
+	}
+	var resp analysisResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.PricePoints) != 2 || resp.PriceInstID != "USDT-USD" || resp.PriceBar != "1H" {
+		t.Fatalf("bad price data: %#v", resp)
+	}
+	if resp.Summary.TradeCount != 2 || resp.Summary.Wins != 1 || resp.Summary.Losses != 1 {
+		t.Fatalf("bad summary counts: %#v", resp.Summary)
+	}
+	if math.Abs(resp.Summary.NetPnL-1.35) > 0.0000001 || resp.Summary.WinRate != 0.5 {
+		t.Fatalf("bad summary metrics: %#v", resp.Summary)
+	}
+	if len(resp.Symbols) != 2 {
+		t.Fatalf("expected symbol stats: %#v", resp.Symbols)
+	}
+}
+
 func TestTVBotAPIKeysTestUsesSelectedStoredAccount(t *testing.T) {
 	var seenAPIKey string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -468,12 +555,15 @@ func TestUpgradeEndpointRequiresAdminAndStartsRunner(t *testing.T) {
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	cfg := config.Default()
-	cfg.DataFile = filepath.Join(t.TempDir(), "orders.json")
-	orderStore, err := storage.NewOrderStore(cfg.DataFile)
+	dir := t.TempDir()
+	cfg.DataFile = filepath.Join(dir, "orders.json")
+	cfg.DatabaseFile = filepath.Join(dir, "tvbot.db")
+	orderStore, err := storage.NewSQLiteOrderStore(cfg.DatabaseFile, cfg.DataFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentialStore, err := okx.NewCredentialStore(filepath.Join(t.TempDir(), "okx-credentials.json"), okx.Credentials{})
+	t.Cleanup(func() { _ = orderStore.Close() })
+	credentialStore, err := okx.NewCredentialStore(filepath.Join(dir, "okx-credentials.json"), okx.Credentials{})
 	if err != nil {
 		t.Fatal(err)
 	}
