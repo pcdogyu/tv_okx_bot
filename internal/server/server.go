@@ -57,6 +57,7 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	var signal trading.Signal
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&signal); err != nil {
+		s.logTVOrderRejected(r, trading.Signal{}, "bad_json", err)
 		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 		return
 	}
@@ -66,10 +67,12 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 	cfg.OrderSettings().ApplyToSignal(&signal)
 	now := s.now()
 	if err := signal.Validate(now, time.Duration(cfg.Trading.SignalTTLSeconds)*time.Second, cfg); err != nil {
+		s.logTVOrderRejected(r, signal, "invalid_signal", err)
 		writeError(w, http.StatusBadRequest, "invalid_signal", err.Error())
 		return
 	}
 	if !s.validSignalToken(tokenSignal, signal) {
+		s.logTVOrderRejected(r, signal, "invalid_token", errors.New("token validation failed"))
 		writeError(w, http.StatusUnauthorized, "invalid_token", "token validation failed")
 		return
 	}
@@ -162,6 +165,40 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "unknown /tvbot endpoint")
 	}
+}
+
+func (s *Server) logTVOrderRejected(r *http.Request, signal trading.Signal, code string, err error) {
+	if s.Logger == nil {
+		return
+	}
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	s.Logger.Warn("tvorder rejected",
+		"code", code,
+		"message", msg,
+		"client_ip", clientIP(r),
+		"user_agent", r.UserAgent(),
+		"action", signal.Action,
+		"api_id", signal.APIID,
+		"coinpair", signal.Coinpair,
+		"ticker", signal.Ticker,
+		"sent_at", signal.SentAt,
+	)
+}
+
+func clientIP(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+		if i := strings.Index(forwarded, ","); i >= 0 {
+			return strings.TrimSpace(forwarded[:i])
+		}
+		return forwarded
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+	return r.RemoteAddr
 }
 
 func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
