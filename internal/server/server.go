@@ -246,6 +246,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handleOrderRetry(w, r, path)
 	case path == "/analysis":
 		s.handleAnalysis(w, r)
+	case path == "/positions":
+		s.handlePositions(w, r)
 	case path == "/api-keys":
 		s.handleAPIKeys(w, r)
 	case path == "/api-keys/test":

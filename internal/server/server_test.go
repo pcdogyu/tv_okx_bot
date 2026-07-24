@@ -99,6 +99,12 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("订单分析")) {
 		t.Fatalf("tvbot ui should include order analysis tab")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("持仓")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("position-api-id")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("position-rows")) {
+		t.Fatalf("tvbot ui should include current positions tab")
+	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("币对配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) {
@@ -728,6 +734,70 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 	}
 	if len(resp.Symbols) != 2 {
 		t.Fatalf("expected symbol stats: %#v", resp.Symbols)
+	}
+}
+
+func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
+	srv := newTestServer(t)
+	var sawPositions bool
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/account/positions" {
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+		sawPositions = true
+		if r.URL.Query().Get("instType") != "SWAP" {
+			t.Fatalf("bad positions query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
+			t.Fatalf("missing private OKX headers")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+			{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posId":"1","posSide":"long","pos":"0.5","availPos":"0.5","avgPx":"64000","markPx":"65000","upl":"500","uplRatio":"0.015","lever":"5","liqPx":"51000","notionalUsd":"32500","margin":"6500","mgnRatio":"100","uTime":"1784880000000"},
+			{"instType":"SWAP","instId":"ETH-USDT-SWAP","mgnMode":"isolated","posId":"2","posSide":"short","pos":"0","availPos":"0","avgPx":"2500","markPx":"2490","upl":"0","uplRatio":"0","lever":"5","notionalUsd":"0","uTime":"1784880000000"}
+		]}`))
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	unauth := httptest.NewRecorder()
+	srv.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/tvbot/positions", nil))
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("positions without auth code=%d", unauth.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/positions?api_id=default", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("positions code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !sawPositions {
+		t.Fatal("expected OKX positions call")
+	}
+	var resp positionsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.APIID != "default" || resp.Count != 1 || len(resp.Positions) != 1 {
+		t.Fatalf("bad positions response: %#v", resp)
+	}
+	if resp.Positions[0].InstID != "BTC-USDT-SWAP" || resp.Positions[0].Upl != "500" {
+		t.Fatalf("bad position data: %#v", resp.Positions[0])
 	}
 }
 

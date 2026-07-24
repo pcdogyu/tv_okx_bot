@@ -354,6 +354,9 @@ const tvbotHTML = `<!doctype html>
     .symbol-metrics {
       grid-template-columns: repeat(4, minmax(0, 1fr));
     }
+    .position-metrics {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
     .analysis-card {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -438,7 +441,7 @@ const tvbotHTML = `<!doctype html>
     @media (max-width: 880px) {
       .bar { align-items: flex-start; flex-direction: column; }
       nav { justify-content: flex-start; }
-      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics { grid-template-columns: 1fr; }
+      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics { grid-template-columns: 1fr; }
       main { padding: 12px; }
       section { padding: 12px; }
       #usdt-chart { height: 320px; }
@@ -451,6 +454,7 @@ const tvbotHTML = `<!doctype html>
       <div class="brand"><span class="mark">TV</span><span>OKX Bot</span></div>
       <nav aria-label="sections">
         <button type="button" data-tab="dashboard" aria-selected="true">总览</button>
+        <button type="button" data-tab="positions">持仓</button>
         <button type="button" data-tab="analysis">订单分析</button>
         <button type="button" data-tab="symbols">币对配置</button>
         <button type="button" data-tab="config">订单配置</button>
@@ -490,6 +494,30 @@ const tvbotHTML = `<!doctype html>
           <h3>OKX 检查</h3>
           <pre id="okx-output">-</pre>
         </div>
+      </div>
+    </section>
+
+    <section id="positions">
+      <div class="section-head">
+        <h2>当前持仓</h2>
+        <div class="analysis-controls">
+          <label>交易 API<select id="position-api-id"></select></label>
+          <button class="btn primary" type="button" id="refresh-positions">刷新持仓</button>
+        </div>
+      </div>
+      <div class="analysis-metrics position-metrics">
+        <div class="analysis-card"><div class="label">持仓数</div><div class="value" id="positions-count">-</div></div>
+        <div class="analysis-card"><div class="label">未实现盈亏</div><div class="value" id="positions-upl">-</div></div>
+        <div class="analysis-card"><div class="label">名义价值</div><div class="value" id="positions-notional">-</div></div>
+        <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="positions-updated">-</div></div>
+      </div>
+      <div class="symbol-table-wrap">
+        <table class="symbol-table">
+          <thead>
+            <tr><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>杠杆</th><th>保证金模式</th><th>保证金</th><th>强平价</th><th>更新时间</th></tr>
+          </thead>
+          <tbody id="position-rows"></tbody>
+        </table>
       </div>
     </section>
 
@@ -688,7 +716,7 @@ const tvbotHTML = `<!doctype html>
 
   <script>
     const activeTabStorageKey = "tvbot.active_tab";
-    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, analysis: null, analysisError: "", symbols: null, symbolsError: "", upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, analysis: null, analysisError: "", positions: null, positionsError: "", symbols: null, symbolsError: "", upgrade: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -903,6 +931,9 @@ const tvbotHTML = `<!doctype html>
       if (target === "analysis" && !state.analysis) {
         loadAnalysis(false).catch((err) => toast(err.message));
       }
+      if (target === "positions" && !state.positions) {
+        loadPositions().catch((err) => toast(err.message));
+      }
       if (target === "symbols" && !state.symbols) {
         loadSymbols(true).catch((err) => toast(err.message));
       }
@@ -936,6 +967,7 @@ const tvbotHTML = `<!doctype html>
       renderAPIKeys();
       renderTemplateAPIs();
       renderAnalysisAPIs();
+      renderPositionAPIs();
       renderOrders();
       updateMetrics();
     }
@@ -966,6 +998,20 @@ const tvbotHTML = `<!doctype html>
         state.analysisError = err.message;
       }
       renderAnalysis();
+    }
+
+    async function loadPositions() {
+      const qs = new URLSearchParams({ inst_type: "SWAP" });
+      const selected = $("position-api-id") ? $("position-api-id").value : "";
+      if (selected) qs.set("api_id", selected);
+      try {
+        state.positions = await api("/tvbot/positions?" + qs.toString());
+        state.positionsError = "";
+      } catch (err) {
+        state.positions = null;
+        state.positionsError = err.message;
+      }
+      renderPositions();
     }
 
     async function loadSymbols(showLoading) {
@@ -1242,6 +1288,69 @@ const tvbotHTML = `<!doctype html>
       select.value = current || (state.apiKeys && state.apiKeys.active_id ? state.apiKeys.active_id : "");
     }
 
+    function renderPositionAPIs() {
+      const select = $("position-api-id");
+      const current = select.value;
+      const options = apiAccounts().map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
+      select.innerHTML = '<option value="">默认交易 API</option>' + options.join("");
+      select.value = current || (state.apiKeys && state.apiKeys.active_id ? state.apiKeys.active_id : "");
+    }
+
+    function positionSideText(posSide, pos) {
+      const side = String(posSide || "").toLowerCase();
+      if (side === "long") return "多";
+      if (side === "short") return "空";
+      if (side === "net") {
+        const value = Number(pos);
+        if (Number.isFinite(value) && value < 0) return "净空";
+        if (Number.isFinite(value) && value > 0) return "净多";
+        return "净持仓";
+      }
+      return asText(posSide);
+    }
+
+    function positionPercent(v) {
+      if (v === null || v === undefined || v === "") return "-";
+      const formatted = formatPct(v);
+      return formatted === "-" ? asText(v) : formatted;
+    }
+
+    function positionSum(rows, field) {
+      return rows.reduce((sum, row) => {
+        const value = Number(row[field]);
+        return Number.isFinite(value) ? sum + value : sum;
+      }, 0);
+    }
+
+    function renderPositions() {
+      const rows = state.positions && Array.isArray(state.positions.positions) ? state.positions.positions : [];
+      $("positions-count").textContent = state.positions ? asText(state.positions.count || rows.length) : "-";
+      $("positions-upl").textContent = state.positions ? formatNumber(positionSum(rows, "upl")) + " USDT" : "-";
+      $("positions-notional").textContent = state.positions ? formatUSD(positionSum(rows, "notionalUsd")) : "-";
+      $("positions-updated").textContent = state.positions && state.positions.refreshed_at ? shanghaiTime(state.positions.refreshed_at) : "-";
+      if (!state.positions) {
+        $("position-rows").innerHTML = '<tr><td colspan="13" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
+        return;
+      }
+      $("position-rows").innerHTML = rows.map((row) => {
+        return "<tr>" +
+          "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
+          "<td>" + escapeHTML(positionSideText(row.posSide, row.pos)) + "</td>" +
+          "<td>" + escapeHTML(formatAssetAmount(row.pos)) + "</td>" +
+          "<td>" + escapeHTML(formatAssetAmount(row.availPos)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.avgPx)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.markPx)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.upl)) + "</td>" +
+          "<td>" + escapeHTML(positionPercent(row.uplRatio)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.lever)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.mgnMode)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.liqPx)) + "</td>" +
+          "<td>" + escapeHTML(shanghaiTimeFromOKX(row.uTime)) + "</td>" +
+          "</tr>";
+      }).join("") || '<tr><td colspan="13" class="muted">暂无当前持仓</td></tr>';
+    }
+
     function renderAnalysis() {
       if (!state.analysis) {
         $("analysis-updated").textContent = state.analysisError || "-";
@@ -1456,6 +1565,7 @@ const tvbotHTML = `<!doctype html>
       renderAPIKeys();
       renderTemplateAPIs();
       renderAnalysisAPIs();
+      renderPositionAPIs();
       renderOrders();
       updateMetrics();
       toast("API Key 已保存");
@@ -1487,6 +1597,7 @@ const tvbotHTML = `<!doctype html>
       renderAPIKeys();
       renderTemplateAPIs();
       renderAnalysisAPIs();
+      renderPositionAPIs();
       renderOrders();
       updateMetrics();
       toast("API Key 已删除");
@@ -1591,6 +1702,8 @@ const tvbotHTML = `<!doctype html>
     });
     $("analysis-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
     $("refresh-analysis").addEventListener("click", () => loadAnalysis(true).then(() => toast("分析已刷新")).catch((err) => toast(err.message)));
+    $("position-api-id").addEventListener("change", () => loadPositions().catch((err) => toast(err.message)));
+    $("refresh-positions").addEventListener("click", () => loadPositions().then(() => toast("持仓已刷新")).catch((err) => toast(err.message)));
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
     $("copy-template").addEventListener("click", async () => {
       await navigator.clipboard.writeText($("template-output").value);

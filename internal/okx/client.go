@@ -275,6 +275,29 @@ type Fill struct {
 	RawJSON  string `json:"-"`
 }
 
+type Position struct {
+	InstType    string `json:"instType"`
+	InstID      string `json:"instId"`
+	MgnMode     string `json:"mgnMode"`
+	PosID       string `json:"posId"`
+	PosSide     string `json:"posSide"`
+	Pos         string `json:"pos"`
+	AvailPos    string `json:"availPos"`
+	AvgPx       string `json:"avgPx"`
+	MarkPx      string `json:"markPx"`
+	Upl         string `json:"upl"`
+	UplRatio    string `json:"uplRatio"`
+	Lever       string `json:"lever"`
+	LiqPx       string `json:"liqPx"`
+	NotionalUsd string `json:"notionalUsd"`
+	Margin      string `json:"margin"`
+	MgnRatio    string `json:"mgnRatio"`
+	Adl         string `json:"adl"`
+	CTime       string `json:"cTime"`
+	UTime       string `json:"uTime"`
+	Ccy         string `json:"ccy"`
+}
+
 func (c Client) SetLeverage(ctx context.Context, req SetLeverageRequest) error {
 	_, err := c.Do(ctx, http.MethodPost, "/api/v5/account/set-leverage", nil, req, true)
 	return err
@@ -315,6 +338,26 @@ func (c Client) AccountBalanceSnapshot(ctx context.Context) (AccountBalanceData,
 		return AccountBalanceData{}, env, errors.New("okx account balance data is empty")
 	}
 	return data[0], env, nil
+}
+
+func (c Client) AccountPositions(ctx context.Context, instType string) (Envelope, error) {
+	q := url.Values{}
+	if strings.TrimSpace(instType) != "" {
+		q.Set("instType", strings.ToUpper(strings.TrimSpace(instType)))
+	}
+	return c.Do(ctx, http.MethodGet, "/api/v5/account/positions", q, nil, true)
+}
+
+func (c Client) Positions(ctx context.Context, instType string) ([]Position, Envelope, error) {
+	env, err := c.AccountPositions(ctx, instType)
+	if err != nil {
+		return nil, env, err
+	}
+	var data []Position
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return nil, env, err
+	}
+	return data, env, nil
 }
 
 func (c Client) Instruments(ctx context.Context) (Envelope, error) {
