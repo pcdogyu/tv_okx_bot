@@ -177,6 +177,46 @@ func TestTVOrderPassesSelectedAPIID(t *testing.T) {
 	}
 }
 
+func TestTVOrderAppliesConfiguredOrderSettings(t *testing.T) {
+	srv := newTestServer(t)
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.OrderAmountUSDT = 250
+	cfg.Trading.Leverage = 8
+	cfg.Trading.RiskType = string(trading.RiskTrailing)
+	cfg.Trading.TrailingPct = 1.5
+	srv.ConfigStore = config.NewStore("", cfg)
+	signal := trading.Signal{
+		Action:   trading.ActionLong,
+		APIID:    "main",
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		SentAt:   "2026-07-24T03:00:00Z",
+		Ticker:   "BTCUSDT",
+	}
+	signal.Normalize()
+	signal.Token = srv.Token.Generate(signal.CanonicalWebhookTokenPayload())
+	body, err := json.Marshal(signal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		if got.Amount.Value != 250 || got.Leverage != 8 || got.Risk.Type != trading.RiskTrailing {
+			t.Fatalf("configured settings not applied: %#v", got)
+		}
+		if got.Risk.TrailingPct == nil || got.Risk.TrailingPct.Value != 1.5 {
+			t.Fatalf("trailing setting not applied: %#v", got.Risk)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor was not called")
+	}
+}
+
 func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	srv := newTestServer(t)
 	reqBody := []byte(`{"price_source":"high","api_id":"backup","leverage":3,"amount":50}`)
@@ -196,6 +236,9 @@ func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	}
 	if bytes.Contains([]byte(resp.JSON), []byte(`"risk"`)) {
 		t.Fatalf("template should not include risk: %s", resp.JSON)
+	}
+	if bytes.Contains([]byte(resp.JSON), []byte(`"amount"`)) || bytes.Contains([]byte(resp.JSON), []byte(`"leverage"`)) {
+		t.Fatalf("template should not include server-side order settings: %s", resp.JSON)
 	}
 }
 

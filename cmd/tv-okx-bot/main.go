@@ -126,8 +126,8 @@ func runServe(args []string) error {
 func runTemplate(args []string) error {
 	fs := flag.NewFlagSet("template", flag.ContinueOnError)
 	priceSource := fs.String("price-source", "close", "close, high or low")
-	leverage := fs.Int("leverage", 0, "order leverage")
-	amount := fs.Float64("amount", 0, "USDT notional amount")
+	leverage := fs.Int("leverage", 0, "deprecated; order leverage is configured on the server")
+	amount := fs.Float64("amount", 0, "deprecated; USDT notional amount is configured on the server")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -201,6 +201,6 @@ func resolveDataPath(configPath, dataFile string) string {
 func usage() error {
 	return fmt.Errorf(`usage:
   tv-okx-bot serve --config config.json [--addr :8080]
-  tv-okx-bot template --leverage 5 --amount 100 [--price-source close]
+  tv-okx-bot template [--price-source close]
   tv-okx-bot check-okx --config config.json`)
 }

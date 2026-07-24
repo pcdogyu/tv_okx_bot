@@ -34,12 +34,20 @@ type ServerConfig struct {
 }
 
 type TradingConfig struct {
-	Env               string `json:"env"`
-	AllowLiveTrading  bool   `json:"allow_live_trading"`
-	BaseURL           string `json:"base_url"`
-	DefaultMarginMode string `json:"default_margin_mode"`
-	PositionMode      string `json:"position_mode"`
-	SignalTTLSeconds  int    `json:"signal_ttl_seconds"`
+	Env                       string  `json:"env"`
+	AllowLiveTrading          bool    `json:"allow_live_trading"`
+	BaseURL                   string  `json:"base_url"`
+	DefaultMarginMode         string  `json:"default_margin_mode"`
+	PositionMode              string  `json:"position_mode"`
+	SignalTTLSeconds          int     `json:"signal_ttl_seconds"`
+	OrderAmountUSDT           float64 `json:"order_amount_usdt"`
+	Leverage                  int     `json:"leverage"`
+	RiskType                  string  `json:"risk_type"`
+	TakeProfitPct             float64 `json:"take_profit_pct"`
+	StopLossPct               float64 `json:"stop_loss_pct"`
+	TrailingPct               float64 `json:"trailing_pct"`
+	LongLimitPriceMultiplier  float64 `json:"long_limit_price_multiplier"`
+	ShortLimitPriceMultiplier float64 `json:"short_limit_price_multiplier"`
 }
 
 type SymbolConfig struct {
@@ -55,12 +63,20 @@ func Default() Config {
 		Server:   ServerConfig{Addr: ":8080"},
 		DataFile: "data/orders.json",
 		Trading: TradingConfig{
-			Env:               EnvDemo,
-			AllowLiveTrading:  false,
-			BaseURL:           "https://www.okx.com",
-			DefaultMarginMode: MarginIsolated,
-			PositionMode:      PositionNet,
-			SignalTTLSeconds:  120,
+			Env:                       EnvDemo,
+			AllowLiveTrading:          false,
+			BaseURL:                   "https://www.okx.com",
+			DefaultMarginMode:         MarginIsolated,
+			PositionMode:              PositionNet,
+			SignalTTLSeconds:          120,
+			OrderAmountUSDT:           100,
+			Leverage:                  5,
+			RiskType:                  string(trading.RiskTPSL),
+			TakeProfitPct:             2,
+			StopLossPct:               1,
+			TrailingPct:               1,
+			LongLimitPriceMultiplier:  0.997,
+			ShortLimitPriceMultiplier: 1.003,
 		},
 		Symbols: map[string]SymbolConfig{
 			"BTC": {
@@ -147,6 +163,31 @@ func (c *Config) Normalize() {
 	if c.Trading.SignalTTLSeconds <= 0 {
 		c.Trading.SignalTTLSeconds = 120
 	}
+	if c.Trading.OrderAmountUSDT <= 0 {
+		c.Trading.OrderAmountUSDT = 100
+	}
+	if c.Trading.Leverage <= 0 {
+		c.Trading.Leverage = 5
+	}
+	c.Trading.RiskType = strings.ToLower(strings.TrimSpace(c.Trading.RiskType))
+	if c.Trading.RiskType == "" {
+		c.Trading.RiskType = string(trading.RiskTPSL)
+	}
+	if c.Trading.TakeProfitPct <= 0 {
+		c.Trading.TakeProfitPct = 2
+	}
+	if c.Trading.StopLossPct <= 0 {
+		c.Trading.StopLossPct = 1
+	}
+	if c.Trading.TrailingPct <= 0 {
+		c.Trading.TrailingPct = 1
+	}
+	if c.Trading.LongLimitPriceMultiplier <= 0 {
+		c.Trading.LongLimitPriceMultiplier = 0.997
+	}
+	if c.Trading.ShortLimitPriceMultiplier <= 0 {
+		c.Trading.ShortLimitPriceMultiplier = 1.003
+	}
 	if c.Symbols == nil {
 		c.Symbols = map[string]SymbolConfig{}
 	}
@@ -178,6 +219,26 @@ func (c Config) Validate() error {
 	case PositionNet, PositionLongShort:
 	default:
 		return fmt.Errorf("unsupported position mode %q", c.Trading.PositionMode)
+	}
+	switch trading.RiskType(c.Trading.RiskType) {
+	case trading.RiskNone, trading.RiskTPSL, trading.RiskTrailing:
+	default:
+		return fmt.Errorf("unsupported risk type %q", c.Trading.RiskType)
+	}
+	if c.Trading.OrderAmountUSDT <= 0 {
+		return errors.New("order_amount_usdt must be positive")
+	}
+	if c.Trading.Leverage <= 0 {
+		return errors.New("leverage must be positive")
+	}
+	if trading.RiskType(c.Trading.RiskType) == trading.RiskTPSL && (c.Trading.TakeProfitPct <= 0 || c.Trading.StopLossPct <= 0) {
+		return errors.New("take_profit_pct and stop_loss_pct must be positive for tp_sl")
+	}
+	if trading.RiskType(c.Trading.RiskType) == trading.RiskTrailing && c.Trading.TrailingPct <= 0 {
+		return errors.New("trailing_pct must be positive for trailing")
+	}
+	if c.Trading.LongLimitPriceMultiplier <= 0 || c.Trading.ShortLimitPriceMultiplier <= 0 {
+		return errors.New("limit price multipliers must be positive")
 	}
 	for key, sym := range c.Symbols {
 		if sym.Coinpair == "" || sym.InstID == "" {
@@ -223,6 +284,27 @@ func (c Config) MarginMode() string {
 
 func (c Config) PositionMode() string {
 	return c.Trading.PositionMode
+}
+
+func (c Config) OrderSettings() trading.OrderSettings {
+	risk := trading.Risk{Type: trading.RiskType(c.Trading.RiskType)}
+	switch risk.Type {
+	case trading.RiskTPSL:
+		tp := trading.NewFlexibleFloat(c.Trading.TakeProfitPct)
+		sl := trading.NewFlexibleFloat(c.Trading.StopLossPct)
+		risk.TPPct = &tp
+		risk.SLPct = &sl
+	case trading.RiskTrailing:
+		trailing := trading.NewFlexibleFloat(c.Trading.TrailingPct)
+		risk.TrailingPct = &trailing
+	}
+	return trading.OrderSettings{
+		Amount:                    trading.NewFlexibleFloat(c.Trading.OrderAmountUSDT),
+		Leverage:                  c.Trading.Leverage,
+		Risk:                      risk,
+		LongLimitPriceMultiplier:  c.Trading.LongLimitPriceMultiplier,
+		ShortLimitPriceMultiplier: c.Trading.ShortLimitPriceMultiplier,
+	}.Normalize()
 }
 
 func (c Config) LiveTradingAllowedByEnvironment() bool {

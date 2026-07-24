@@ -9,7 +9,15 @@
     "base_url": "https://www.okx.com",
     "default_margin_mode": "isolated",
     "position_mode": "net",
-    "signal_ttl_seconds": 120
+    "signal_ttl_seconds": 120,
+    "order_amount_usdt": 100,
+    "leverage": 5,
+    "risk_type": "tp_sl",
+    "take_profit_pct": 2,
+    "stop_loss_pct": 1,
+    "trailing_pct": 1,
+    "long_limit_price_multiplier": 0.997,
+    "short_limit_price_multiplier": 1.003
   },
   "symbols": {
     "BTC": {
@@ -28,4 +36,3 @@
     }
   }
 }
-

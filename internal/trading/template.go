@@ -29,12 +29,6 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		Leverage: req.Leverage,
 		Amount:   req.Amount,
 	}
-	if signal.Leverage <= 0 {
-		return TemplateResponse{}, fmt.Errorf("leverage must be positive")
-	}
-	if !signal.Amount.Set || signal.Amount.Value <= 0 {
-		return TemplateResponse{}, fmt.Errorf("amount must be positive")
-	}
 	token := generator.Generate(req.CanonicalTokenPayload())
 	payload := map[string]any{
 		"action":   signal.Action,
@@ -42,8 +36,6 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		"price":    "{{" + req.PriceSource + "}}",
 		"sent_at":  signal.SentAt,
 		"ticker":   signal.Ticker,
-		"leverage": signal.Leverage,
-		"amount":   signal.Amount,
 		"token":    token,
 	}
 	if req.APIID != "" {

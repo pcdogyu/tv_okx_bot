@@ -61,14 +61,15 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	signal.Normalize()
-	signal.Risk = trading.Risk{Type: trading.RiskNone}
+	tokenSignal := signal
 	cfg := s.ConfigStore.Get()
+	cfg.OrderSettings().ApplyToSignal(&signal)
 	now := s.now()
 	if err := signal.Validate(now, time.Duration(cfg.Trading.SignalTTLSeconds)*time.Second, cfg); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_signal", err.Error())
 		return
 	}
-	if !s.Token.Validate(signal.CanonicalTokenPayload(), signal.Token) {
+	if !s.validSignalToken(tokenSignal, signal) {
 		writeError(w, http.StatusUnauthorized, "invalid_token", "token validation failed")
 		return
 	}
@@ -90,6 +91,25 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		"status":    "accepted",
 		"signal_id": record.SignalID,
 	})
+}
+
+func (s *Server) validSignalToken(raw, applied trading.Signal) bool {
+	payloads := []string{
+		applied.CanonicalWebhookTokenPayload(),
+		applied.CanonicalTokenPayload(),
+		raw.CanonicalTokenPayload(),
+	}
+	seen := map[string]bool{}
+	for _, payload := range payloads {
+		if seen[payload] {
+			continue
+		}
+		seen[payload] = true
+		if s.Token.Validate(payload, applied.Token) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) execute(signalID string, signal trading.Signal, cfg config.Config) {
@@ -467,12 +487,20 @@ type serverPatch struct {
 }
 
 type tradingPatch struct {
-	Env               *string `json:"env"`
-	AllowLiveTrading  *bool   `json:"allow_live_trading"`
-	BaseURL           *string `json:"base_url"`
-	DefaultMarginMode *string `json:"default_margin_mode"`
-	PositionMode      *string `json:"position_mode"`
-	SignalTTLSeconds  *int    `json:"signal_ttl_seconds"`
+	Env                       *string  `json:"env"`
+	AllowLiveTrading          *bool    `json:"allow_live_trading"`
+	BaseURL                   *string  `json:"base_url"`
+	DefaultMarginMode         *string  `json:"default_margin_mode"`
+	PositionMode              *string  `json:"position_mode"`
+	SignalTTLSeconds          *int     `json:"signal_ttl_seconds"`
+	OrderAmountUSDT           *float64 `json:"order_amount_usdt"`
+	Leverage                  *int     `json:"leverage"`
+	RiskType                  *string  `json:"risk_type"`
+	TakeProfitPct             *float64 `json:"take_profit_pct"`
+	StopLossPct               *float64 `json:"stop_loss_pct"`
+	TrailingPct               *float64 `json:"trailing_pct"`
+	LongLimitPriceMultiplier  *float64 `json:"long_limit_price_multiplier"`
+	ShortLimitPriceMultiplier *float64 `json:"short_limit_price_multiplier"`
 }
 
 func applyConfigPatch(c *config.Config, patch configPatch) {
@@ -502,6 +530,30 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.Trading.SignalTTLSeconds != nil {
 		c.Trading.SignalTTLSeconds = *patch.Trading.SignalTTLSeconds
+	}
+	if patch.Trading.OrderAmountUSDT != nil {
+		c.Trading.OrderAmountUSDT = *patch.Trading.OrderAmountUSDT
+	}
+	if patch.Trading.Leverage != nil {
+		c.Trading.Leverage = *patch.Trading.Leverage
+	}
+	if patch.Trading.RiskType != nil {
+		c.Trading.RiskType = *patch.Trading.RiskType
+	}
+	if patch.Trading.TakeProfitPct != nil {
+		c.Trading.TakeProfitPct = *patch.Trading.TakeProfitPct
+	}
+	if patch.Trading.StopLossPct != nil {
+		c.Trading.StopLossPct = *patch.Trading.StopLossPct
+	}
+	if patch.Trading.TrailingPct != nil {
+		c.Trading.TrailingPct = *patch.Trading.TrailingPct
+	}
+	if patch.Trading.LongLimitPriceMultiplier != nil {
+		c.Trading.LongLimitPriceMultiplier = *patch.Trading.LongLimitPriceMultiplier
+	}
+	if patch.Trading.ShortLimitPriceMultiplier != nil {
+		c.Trading.ShortLimitPriceMultiplier = *patch.Trading.ShortLimitPriceMultiplier
 	}
 }
 

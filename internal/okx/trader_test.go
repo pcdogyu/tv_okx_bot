@@ -76,7 +76,7 @@ func TestTraderExecuteSignalPlacesLeverageAndOrderWithTPSL(t *testing.T) {
 	if result.OrdID != "123" {
 		t.Fatalf("ord id = %q", result.OrdID)
 	}
-	if orderReq.InstID != "BTC-USDT-SWAP" || orderReq.Side != "buy" || orderReq.OrdType != "market" || orderReq.Sz != "0.2" {
+	if orderReq.InstID != "BTC-USDT-SWAP" || orderReq.Side != "buy" || orderReq.OrdType != "limit" || orderReq.Px != "49850" || orderReq.Sz != "0.2" {
 		t.Fatalf("bad order request: %#v", orderReq)
 	}
 	if len(orderReq.AttachAlgoOrds) != 1 {
@@ -135,7 +135,7 @@ func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *
 	if !instrumentSeen {
 		t.Fatal("expected public instrument lookup")
 	}
-	if orderReq.InstID != "ETH-USDT-SWAP" || orderReq.Side != "sell" || orderReq.Sz != "0.4" {
+	if orderReq.InstID != "ETH-USDT-SWAP" || orderReq.Side != "sell" || orderReq.OrdType != "limit" || orderReq.Px != "2507.5" || orderReq.Sz != "0.39" {
 		t.Fatalf("bad dynamic order request: %#v", orderReq)
 	}
 }

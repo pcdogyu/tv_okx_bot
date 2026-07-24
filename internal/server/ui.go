@@ -309,7 +309,7 @@ const tvbotHTML = `<!doctype html>
         <button type="button" data-tab="dashboard" aria-selected="true">总览</button>
         <button type="button" data-tab="config">配置</button>
         <button type="button" data-tab="apiKeys">API Key</button>
-        <button type="button" data-tab="symbols">币对</button>
+        <button type="button" data-tab="orderSettings">下单设置</button>
         <button type="button" data-tab="template">告警模板</button>
         <button type="button" data-tab="orders">订单</button>
         <button type="button" data-tab="upgrade">升级</button>
@@ -321,7 +321,7 @@ const tvbotHTML = `<!doctype html>
     <div class="status">
       <div class="metric"><div class="label">交易环境</div><div class="value" id="metric-env">-</div></div>
       <div class="metric"><div class="label">OKX API</div><div class="value" id="metric-api-keys">-</div></div>
-      <div class="metric"><div class="label">币对映射</div><div class="value" id="metric-symbols">-</div></div>
+      <div class="metric"><div class="label">下单金额</div><div class="value" id="metric-amount">-</div></div>
       <div class="metric"><div class="label">最近订单</div><div class="value" id="metric-orders">-</div></div>
     </div>
 
@@ -404,18 +404,24 @@ const tvbotHTML = `<!doctype html>
       </div>
     </section>
 
-    <section id="symbols">
+    <section id="orderSettings">
       <div class="section-head">
-        <h2>币对</h2>
-        <button class="btn primary" type="button" id="save-symbols">保存币对</button>
+        <h2>下单设置</h2>
+        <button class="btn primary" type="button" id="save-order-settings">保存下单设置</button>
       </div>
-      <table>
-        <thead>
-          <tr><th>Coinpair</th><th>OKX InstID</th><th>CtVal</th><th>LotSz</th><th>MinSz</th><th>操作</th></tr>
-        </thead>
-        <tbody id="symbol-rows"></tbody>
+      <div class="grid">
+        <label>USDT 下单金额<input id="order-amount" type="number" min="0" step="0.01"></label>
+        <label>杠杆<input id="order-leverage" type="number" min="1" step="1"></label>
+        <label>风控模式<select id="order-risk-type"><option value="tp_sl">固定止盈止损</option><option value="trailing">移动止损</option><option value="none">不设置</option></select></label>
+        <label>固定止盈 %<input id="order-tp" type="number" min="0" step="0.01"></label>
+        <label>固定止损 %<input id="order-sl" type="number" min="0" step="0.01"></label>
+        <label>移动止损 %<input id="order-trailing" type="number" min="0" step="0.01"></label>
+        <label>多单限价倍率<input id="order-long-multiplier" type="number" min="0" step="0.000001"></label>
+        <label>空单限价倍率<input id="order-short-multiplier" type="number" min="0" step="0.000001"></label>
+      </div>
+      <table style="margin-top:14px">
+        <tbody id="order-settings-preview"></tbody>
       </table>
-      <div class="actions"><button class="btn" type="button" id="add-symbol">新增币对</button></div>
     </section>
 
     <section id="template">
@@ -427,8 +433,6 @@ const tvbotHTML = `<!doctype html>
         <div class="grid two">
           <label>交易 API<select id="tpl-api-id"></select></label>
           <label>价格源<select id="tpl-price-source"><option value="close">close</option><option value="high">high</option><option value="low">low</option></select></label>
-          <label>杠杆<input id="tpl-leverage" type="number" min="1" step="1" value="5"></label>
-          <label>USDT 名义金额<input id="tpl-amount" type="number" min="0" step="0.01" value="100"></label>
         </div>
         <div>
           <textarea id="template-output" readonly></textarea>
@@ -464,7 +468,7 @@ const tvbotHTML = `<!doctype html>
   <div class="toast" id="toast"></div>
 
   <script>
-    const state = { config: null, apiKeys: null, selectedAPIID: "", symbols: {}, orders: [], upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", orders: [], upgrade: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -491,6 +495,13 @@ const tvbotHTML = `<!doctype html>
       return String(v);
     }
 
+    function riskText(v) {
+      if (v === "tp_sl") return "固定止盈止损";
+      if (v === "trailing") return "移动止损";
+      if (v === "none") return "不设置";
+      return asText(v);
+    }
+
     function pill(text, tone) {
       return '<span class="pill ' + (tone || "") + '">' + escapeHTML(asText(text)) + '</span>';
     }
@@ -500,20 +511,14 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadAll() {
-      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadSymbols(), loadOrders(), loadUpgrade()]);
+      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadUpgrade()]);
       renderDashboard();
     }
 
     async function loadConfig() {
       state.config = await api("/tvbot/config");
       renderConfig();
-      updateMetrics();
-    }
-
-    async function loadSymbols() {
-      const data = await api("/tvbot/symbols");
-      state.symbols = data.symbols || {};
-      renderSymbols();
+      renderOrderSettings();
       updateMetrics();
     }
 
@@ -540,7 +545,7 @@ const tvbotHTML = `<!doctype html>
     function updateMetrics() {
       $("metric-env").textContent = state.config && state.config.trading ? state.config.trading.env : "-";
       $("metric-api-keys").textContent = state.apiKeys && state.apiKeys.configured ? (state.apiKeys.active_id || "已配置") : "未配置";
-      $("metric-symbols").textContent = Object.keys(state.symbols || {}).length;
+      $("metric-amount").textContent = state.config && state.config.trading ? asText(state.config.trading.order_amount_usdt) + " USDT" : "-";
       $("metric-orders").textContent = state.orders ? state.orders.length : "-";
     }
 
@@ -554,7 +559,12 @@ const tvbotHTML = `<!doctype html>
         ["实盘开关", t.allow_live_trading ? "enabled" : "disabled"],
         ["保证金模式", t.default_margin_mode],
         ["持仓模式", t.position_mode],
-        ["信号有效秒数", t.signal_ttl_seconds]
+        ["信号有效秒数", t.signal_ttl_seconds],
+        ["USDT 下单金额", t.order_amount_usdt],
+        ["杠杆", t.leverage],
+        ["风控模式", riskText(t.risk_type)],
+        ["多单限价", "当前价格 x " + asText(t.long_limit_price_multiplier)],
+        ["空单限价", "当前价格 x " + asText(t.short_limit_price_multiplier)]
       ];
       $("dashboard-config").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(asText(row[1])) + "</td></tr>").join("");
     }
@@ -570,6 +580,29 @@ const tvbotHTML = `<!doctype html>
       $("cfg-position").value = trading.position_mode || "net";
       $("cfg-ttl").value = trading.signal_ttl_seconds || 120;
       $("cfg-live").checked = !!trading.allow_live_trading;
+    }
+
+    function renderOrderSettings() {
+      const trading = state.config && state.config.trading ? state.config.trading : {};
+      $("order-amount").value = trading.order_amount_usdt || 100;
+      $("order-leverage").value = trading.leverage || 5;
+      $("order-risk-type").value = trading.risk_type || "tp_sl";
+      $("order-tp").value = trading.take_profit_pct || 2;
+      $("order-sl").value = trading.stop_loss_pct || 1;
+      $("order-trailing").value = trading.trailing_pct || 1;
+      $("order-long-multiplier").value = trading.long_limit_price_multiplier || 0.997;
+      $("order-short-multiplier").value = trading.short_limit_price_multiplier || 1.003;
+      renderOrderSettingsPreview();
+    }
+
+    function renderOrderSettingsPreview() {
+      const rows = [
+        ["多单限价单价格", "TradingView 当前价格 x " + asText($("order-long-multiplier").value)],
+        ["空单限价单价格", "TradingView 当前价格 x " + asText($("order-short-multiplier").value)],
+        ["固定止盈止损", asText($("order-tp").value) + "% / " + asText($("order-sl").value) + "%"],
+        ["移动止损", asText($("order-trailing").value) + "%"]
+      ];
+      $("order-settings-preview").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(row[1]) + "</td></tr>").join("");
     }
 
     function renderAPIKeys() {
@@ -631,40 +664,6 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
-    function symbolRow(key, sym) {
-      const coin = sym.coinpair || key || "";
-      return '<tr data-symbol-row>' +
-        '<td><input data-field="coinpair" value="' + escapeHTML(coin) + '"></td>' +
-        '<td><input data-field="inst_id" value="' + escapeHTML(sym.inst_id || "") + '"></td>' +
-        '<td><input data-field="ct_val" type="number" step="0.00000001" value="' + escapeHTML(sym.ct_val || "") + '"></td>' +
-        '<td><input data-field="lot_sz" type="number" step="0.00000001" value="' + escapeHTML(sym.lot_sz || "") + '"></td>' +
-        '<td><input data-field="min_sz" type="number" step="0.00000001" value="' + escapeHTML(sym.min_sz || "") + '"></td>' +
-        '<td><button class="btn danger" type="button" data-remove-symbol>删除</button></td>' +
-        '</tr>';
-    }
-
-    function renderSymbols() {
-      const rows = Object.keys(state.symbols || {}).sort().map((key) => symbolRow(key, state.symbols[key]));
-      $("symbol-rows").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">-</td></tr>';
-    }
-
-    function collectSymbols() {
-      const symbols = {};
-      document.querySelectorAll("[data-symbol-row]").forEach((row) => {
-        const get = (field) => row.querySelector('[data-field="' + field + '"]').value.trim();
-        const coinpair = get("coinpair").toUpperCase();
-        if (!coinpair) return;
-        symbols[coinpair] = {
-          coinpair: coinpair,
-          inst_id: get("inst_id").toUpperCase(),
-          ct_val: Number(get("ct_val")),
-          lot_sz: Number(get("lot_sz")),
-          min_sz: Number(get("min_sz"))
-        };
-      });
-      return symbols;
-    }
-
     function renderOrders() {
       const rows = (state.orders || []).map((order) => {
         const okx = order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : order.error || "-";
@@ -705,6 +704,26 @@ const tvbotHTML = `<!doctype html>
       renderDashboard();
       updateMetrics();
       toast("配置已保存");
+    }
+
+    async function saveOrderSettings() {
+      const patch = {
+        trading: {
+          order_amount_usdt: Number($("order-amount").value),
+          leverage: Number($("order-leverage").value),
+          risk_type: $("order-risk-type").value,
+          take_profit_pct: Number($("order-tp").value),
+          stop_loss_pct: Number($("order-sl").value),
+          trailing_pct: Number($("order-trailing").value),
+          long_limit_price_multiplier: Number($("order-long-multiplier").value),
+          short_limit_price_multiplier: Number($("order-short-multiplier").value)
+        }
+      };
+      state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+      renderOrderSettings();
+      renderDashboard();
+      updateMetrics();
+      toast("下单设置已保存");
     }
 
     async function saveAPIKeys() {
@@ -751,19 +770,10 @@ const tvbotHTML = `<!doctype html>
       toast("API Key 已删除");
     }
 
-    async function saveSymbols() {
-      state.symbols = (await api("/tvbot/symbols", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbols: collectSymbols() }) })).symbols || {};
-      renderSymbols();
-      updateMetrics();
-      toast("币对已保存");
-    }
-
     async function makeTemplate() {
       const req = {
         api_id: $("tpl-api-id").value,
-        price_source: $("tpl-price-source").value,
-        leverage: Number($("tpl-leverage").value),
-        amount: Number($("tpl-amount").value)
+        price_source: $("tpl-price-source").value
       };
       const resp = await api("/tvbot/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
       $("template-output").value = resp.json || "";
@@ -812,6 +822,11 @@ const tvbotHTML = `<!doctype html>
     $("refresh-all").addEventListener("click", () => loadAll().then(() => toast("已刷新")).catch((err) => toast(err.message)));
     $("check-okx").addEventListener("click", () => checkOKX());
     $("save-config").addEventListener("click", () => saveConfig().catch((err) => toast(err.message)));
+    $("save-order-settings").addEventListener("click", () => saveOrderSettings().catch((err) => toast(err.message)));
+    ["order-amount", "order-leverage", "order-risk-type", "order-tp", "order-sl", "order-trailing", "order-long-multiplier", "order-short-multiplier"].forEach((id) => {
+      $(id).addEventListener("input", () => renderOrderSettingsPreview());
+      $(id).addEventListener("change", () => renderOrderSettingsPreview());
+    });
     $("save-api-keys").addEventListener("click", () => saveAPIKeys().catch((err) => toast(err.message)));
     $("test-api-keys").addEventListener("click", () => testAPIKeys().catch((err) => {
       $("okx-output").textContent = err.message;
@@ -832,13 +847,6 @@ const tvbotHTML = `<!doctype html>
     $("key-selected").addEventListener("change", () => {
       state.selectedAPIID = $("key-selected").value;
       fillAPIForm(state.selectedAPIID);
-    });
-    $("save-symbols").addEventListener("click", () => saveSymbols().catch((err) => toast(err.message)));
-    $("add-symbol").addEventListener("click", () => {
-      $("symbol-rows").insertAdjacentHTML("beforeend", symbolRow("", { coinpair: "", inst_id: "", ct_val: "", lot_sz: "", min_sz: "" }));
-    });
-    $("symbol-rows").addEventListener("click", (event) => {
-      if (event.target.matches("[data-remove-symbol]")) event.target.closest("tr").remove();
     });
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
     $("copy-template").addEventListener("click", async () => {

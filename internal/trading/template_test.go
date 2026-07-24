@@ -31,6 +31,12 @@ func TestBuildTemplateProducesValidJSONAndToken(t *testing.T) {
 	if _, ok := payload["risk"]; ok {
 		t.Fatalf("risk field should not be present: %#v", payload)
 	}
+	if _, ok := payload["amount"]; ok {
+		t.Fatalf("amount field should not be present: %#v", payload)
+	}
+	if _, ok := payload["leverage"]; ok {
+		t.Fatalf("leverage field should not be present: %#v", payload)
+	}
 	if !tokenSvc.Validate(req.CanonicalTokenPayload(), resp.Token) {
 		t.Fatal("generated token did not validate against canonical template payload")
 	}

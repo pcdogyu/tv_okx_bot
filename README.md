@@ -26,7 +26,7 @@ $env:OKX_SECRET_KEY = "..."
 $env:OKX_PASSPHRASE = "..."
 ```
 
-OKX API credentials can also be configured from the `/tvbot/` browser dashboard. Multiple OKX APIs are supported; each account has an `api_id`, one account can be marked as the active trading API, and TradingView templates can include `api_id` to select a specific API for that order. Credentials are saved outside Git, masked in API responses, and take effect without restarting the service.
+OKX API credentials can also be configured from the `/tvbot/` browser dashboard. Multiple OKX APIs are supported; each account has an `api_id`, one account can be marked as the active trading API, and TradingView templates can include `api_id` to select a specific API for that order. Order amount, leverage, fixed TP/SL or trailing stop, and long/short limit price multipliers are configured on the server. Credentials are saved outside Git, masked in API responses, and take effect without restarting the service.
 
 Demo trading is the default. Live trading requires both config `"env": "live"` and:
 
@@ -39,7 +39,7 @@ $env:ALLOW_LIVE_TRADING = "true"
 
 ```powershell
 go test ./...
-go run ./cmd/tv-okx-bot template --leverage 5 --amount 100 --price-source close
+go run ./cmd/tv-okx-bot template --price-source close
 go run ./cmd/tv-okx-bot serve --config config.example.json
 go run ./cmd/tv-okx-bot check-okx --config config.example.json
 ```
@@ -48,8 +48,9 @@ go run ./cmd/tv-okx-bot check-okx --config config.example.json
 
 - `GET /` returns `302` to `https://www.mext.go.jp/`.
 - `POST /tvorder` accepts TradingView alerts.
-- `/tvbot/` is the browser dashboard. `/tvbot/config`, `/tvbot/api-keys`, `/tvbot/api-keys/test`, `/tvbot/symbols`, `/tvbot/templates`, `/tvbot/orders`, and `/tvbot/check-okx` remain JSON APIs. Admin access accepts browser Basic Auth. Default credentials are `admin` / `Admin123`. `X-Admin-Token` is still supported when `ADMIN_TOKEN` is set.
-- `TradingView` alert JSON can include optional `api_id`; when omitted the active OKX API is used.
+- `/tvbot/` is the browser dashboard. `/tvbot/config`, `/tvbot/api-keys`, `/tvbot/api-keys/test`, `/tvbot/templates`, `/tvbot/orders`, and `/tvbot/check-okx` remain JSON APIs. Admin access accepts browser Basic Auth. Default credentials are `admin` / `Admin123`. `X-Admin-Token` is still supported when `ADMIN_TOKEN` is set.
+- `TradingView` alert JSON can include optional `api_id`; when omitted the active OKX API is used. New templates do not include order amount or leverage because those values are read from `/tvbot` order settings.
+- Orders are submitted as OKX limit orders. By default long orders use `TradingView price * 0.997`, and short orders use `TradingView price * 1.003`.
 - `POST /upgrade` runs `git pull --ff-only`, `go test ./...`, `go build`, replaces the service binary, and restarts the Ubuntu systemd service.
 - `GET /upgrade` returns the latest upgrade status.
 - Every other path returns local JSON `404`.

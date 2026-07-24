@@ -136,6 +136,7 @@ type PlaceOrderRequest struct {
 	Side           string              `json:"side"`
 	PosSide        string              `json:"posSide,omitempty"`
 	OrdType        string              `json:"ordType"`
+	Px             string              `json:"px,omitempty"`
 	Sz             string              `json:"sz"`
 	AttachAlgoOrds []map[string]string `json:"attachAlgoOrds,omitempty"`
 }

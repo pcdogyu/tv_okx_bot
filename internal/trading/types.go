@@ -90,6 +90,14 @@ type Signal struct {
 	Token    string        `json:"token"`
 }
 
+type OrderSettings struct {
+	Amount                    FlexibleFloat
+	Leverage                  int
+	Risk                      Risk
+	LongLimitPriceMultiplier  float64
+	ShortLimitPriceMultiplier float64
+}
+
 type TemplateRequest struct {
 	PriceSource string        `json:"price_source"`
 	APIID       string        `json:"api_id,omitempty"`
@@ -107,6 +115,8 @@ type OrderResult struct {
 	APIID    string `json:"api_id,omitempty"`
 	InstID   string `json:"inst_id"`
 	ClOrdID  string `json:"cl_ord_id"`
+	OrdType  string `json:"ord_type,omitempty"`
+	Px       string `json:"px,omitempty"`
 	OrdID    string `json:"ord_id,omitempty"`
 	OKXCode  string `json:"okx_code,omitempty"`
 	OKXMsg   string `json:"okx_msg,omitempty"`
@@ -124,6 +134,7 @@ type RuntimeConfig interface {
 	OKXBaseURL() string
 	MarginMode() string
 	PositionMode() string
+	OrderSettings() OrderSettings
 }
 
 type SymbolInfo struct {
@@ -180,6 +191,57 @@ func (r Risk) Validate() error {
 	default:
 		return fmt.Errorf("unsupported risk.type %q", r.Type)
 	}
+}
+
+func (o OrderSettings) Normalize() OrderSettings {
+	if !o.Amount.Set || o.Amount.Value <= 0 {
+		o.Amount = NewFlexibleFloat(100)
+	}
+	if o.Leverage <= 0 {
+		o.Leverage = 5
+	}
+	o.Risk.Normalize()
+	if o.Risk.Type == RiskTPSL {
+		if o.Risk.TPPct == nil || !o.Risk.TPPct.Set || o.Risk.TPPct.Value <= 0 {
+			v := NewFlexibleFloat(2)
+			o.Risk.TPPct = &v
+		}
+		if o.Risk.SLPct == nil || !o.Risk.SLPct.Set || o.Risk.SLPct.Value <= 0 {
+			v := NewFlexibleFloat(1)
+			o.Risk.SLPct = &v
+		}
+	}
+	if o.Risk.Type == RiskTrailing && (o.Risk.TrailingPct == nil || !o.Risk.TrailingPct.Set || o.Risk.TrailingPct.Value <= 0) {
+		v := NewFlexibleFloat(1)
+		o.Risk.TrailingPct = &v
+	}
+	if o.LongLimitPriceMultiplier <= 0 {
+		o.LongLimitPriceMultiplier = 0.997
+	}
+	if o.ShortLimitPriceMultiplier <= 0 {
+		o.ShortLimitPriceMultiplier = 1.003
+	}
+	return o
+}
+
+func (o OrderSettings) ApplyToSignal(signal *Signal) {
+	o = o.Normalize()
+	if signal.Leverage <= 0 {
+		signal.Leverage = o.Leverage
+	}
+	if !signal.Amount.Set || signal.Amount.Value <= 0 {
+		signal.Amount = o.Amount
+	}
+	signal.Risk = o.Risk
+	signal.Risk.Normalize()
+}
+
+func (o OrderSettings) LimitPrice(action Side, currentPrice float64) float64 {
+	o = o.Normalize()
+	if action == ActionShort {
+		return currentPrice * o.ShortLimitPriceMultiplier
+	}
+	return currentPrice * o.LongLimitPriceMultiplier
 }
 
 func (s Signal) Validate(now time.Time, ttl time.Duration, cfg RuntimeConfig) error {
@@ -291,10 +353,22 @@ func CanonicalTokenPayload(leverage int, amount FlexibleFloat, apiID string) str
 	}, "\n")
 }
 
+func CanonicalWebhookTokenPayload(apiID string) string {
+	apiID = strings.TrimSpace(apiID)
+	if apiID == "" {
+		return "v4"
+	}
+	return strings.Join([]string{"v4", apiID}, "\n")
+}
+
 func (s Signal) CanonicalTokenPayload() string {
 	return CanonicalTokenPayload(s.Leverage, s.Amount, s.APIID)
 }
 
+func (s Signal) CanonicalWebhookTokenPayload() string {
+	return CanonicalWebhookTokenPayload(s.APIID)
+}
+
 func (t TemplateRequest) CanonicalTokenPayload() string {
-	return CanonicalTokenPayload(t.Leverage, t.Amount, t.APIID)
+	return CanonicalWebhookTokenPayload(t.APIID)
 }
