@@ -1,13 +1,23 @@
 package security
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+)
 
 func TestTokenServiceGenerateAndValidate(t *testing.T) {
 	svc := NewTokenService("unit-test-secret")
 	payload := "long\nBTC\n5\n100\ntp_sl|2|1"
 	token := svc.Generate(payload)
-	if len(token) != 64 {
-		t.Fatalf("token length = %d, want 64", len(token))
+	if len(token) != 88 {
+		t.Fatalf("token length = %d, want 88", len(token))
+	}
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded) != 64 {
+		t.Fatalf("decoded token length = %d, want 64 hex chars", len(decoded))
 	}
 	if !svc.Validate(payload, token) {
 		t.Fatal("expected token to validate")

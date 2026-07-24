@@ -123,9 +123,38 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestTVOrderAllowsUnconfiguredCoinpair(t *testing.T) {
+	srv := newTestServer(t)
+	cfg := srv.ConfigStore.Get()
+	cfg.Symbols = map[string]config.SymbolConfig{}
+	srv.ConfigStore = config.NewStore("", cfg)
+	signal := validSignal(t, srv)
+	signal.Action = trading.ActionShort
+	signal.Coinpair = "DOGEUSDT.P"
+	signal.Ticker = "OKX:DOGEUSDT.P"
+	signal.Token = srv.Token.Generate(signal.CanonicalTokenPayload())
+	body, err := json.Marshal(signal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		if got.Coinpair != "DOGEUSDT.P" || got.Action != trading.ActionShort {
+			t.Fatalf("bad executed signal: %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor was not called")
+	}
+}
+
 func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	srv := newTestServer(t)
-	reqBody := []byte(`{"action":"short","coinpair":"ETH","price_source":"high","leverage":3,"amount":50,"risk":{"type":"trailing","trailing_pct":1.5}}`)
+	reqBody := []byte(`{"price_source":"high","leverage":3,"amount":50}`)
 	req := httptest.NewRequest(http.MethodPost, "/tvbot/templates", bytes.NewReader(reqBody))
 	req.Header.Set("X-Admin-Token", "admin")
 	rr := httptest.NewRecorder()
@@ -137,8 +166,11 @@ func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Token) != 64 || !bytes.Contains([]byte(resp.JSON), []byte(`"price": "{{high}}"`)) {
+	if len(resp.Token) != 88 || !bytes.Contains([]byte(resp.JSON), []byte(`"price": "{{high}}"`)) {
 		t.Fatalf("bad template response: %#v", resp)
+	}
+	if bytes.Contains([]byte(resp.JSON), []byte(`"risk"`)) {
+		t.Fatalf("template should not include risk: %s", resp.JSON)
 	}
 }
 

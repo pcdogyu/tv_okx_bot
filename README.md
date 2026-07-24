@@ -1,6 +1,6 @@
 # TradingView OKX Bot
 
-Go service that receives TradingView webhook JSON at `/tvorder`, validates a 64-character HMAC token, and places OKX USDT perpetual swap orders.
+Go service that receives TradingView webhook JSON at `/tvorder`, validates a Base64-wrapped HMAC token, and places OKX USDT perpetual swap orders. TradingView supplies `action` and `coinpair`; the token is not bound to either field.
 
 ## Environment
 
@@ -37,7 +37,7 @@ $env:ALLOW_LIVE_TRADING = "true"
 
 ```powershell
 go test ./...
-go run ./cmd/tv-okx-bot template --action long --coinpair BTC --leverage 5 --amount 100 --tp-pct 2 --sl-pct 1
+go run ./cmd/tv-okx-bot template --leverage 5 --amount 100 --price-source close
 go run ./cmd/tv-okx-bot serve --config config.example.json
 go run ./cmd/tv-okx-bot check-okx --config config.example.json
 ```

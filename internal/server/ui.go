@@ -291,7 +291,7 @@ const tvbotHTML = `<!doctype html>
   <main>
     <div class="status">
       <div class="metric"><div class="label">交易环境</div><div class="value" id="metric-env">-</div></div>
-      <div class="metric"><div class="label">允许币对</div><div class="value" id="metric-symbols">-</div></div>
+      <div class="metric"><div class="label">币对映射</div><div class="value" id="metric-symbols">-</div></div>
       <div class="metric"><div class="label">最近订单</div><div class="value" id="metric-orders">-</div></div>
       <div class="metric"><div class="label">升级状态</div><div class="value" id="metric-upgrade">-</div></div>
     </div>
@@ -356,15 +356,9 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="split">
         <div class="grid two">
-          <label>方向<select id="tpl-action"><option value="long">long</option><option value="short">short</option></select></label>
-          <label>币对<select id="tpl-coinpair"></select></label>
           <label>价格源<select id="tpl-price-source"><option value="close">close</option><option value="high">high</option><option value="low">low</option></select></label>
           <label>杠杆<input id="tpl-leverage" type="number" min="1" step="1" value="5"></label>
           <label>USDT 名义金额<input id="tpl-amount" type="number" min="0" step="0.01" value="100"></label>
-          <label>风控<select id="tpl-risk"><option value="none">none</option><option value="tp_sl">tp_sl</option><option value="trailing">trailing</option></select></label>
-          <label>止盈 %<input id="tpl-tp" type="number" min="0" step="0.01" value="2"></label>
-          <label>止损 %<input id="tpl-sl" type="number" min="0" step="0.01" value="1"></label>
-          <label>移动止损 %<input id="tpl-trailing" type="number" min="0" step="0.01" value="1"></label>
         </div>
         <div>
           <textarea id="template-output" readonly></textarea>
@@ -450,7 +444,6 @@ const tvbotHTML = `<!doctype html>
       const data = await api("/tvbot/symbols");
       state.symbols = data.symbols || {};
       renderSymbols();
-      renderCoinpairOptions();
       updateMetrics();
     }
 
@@ -519,11 +512,6 @@ const tvbotHTML = `<!doctype html>
       $("symbol-rows").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">-</td></tr>';
     }
 
-    function renderCoinpairOptions() {
-      const keys = Object.keys(state.symbols || {}).sort();
-      $("tpl-coinpair").innerHTML = keys.map((key) => '<option value="' + escapeHTML(key) + '">' + escapeHTML(key) + '</option>').join("");
-    }
-
     function collectSymbols() {
       const symbols = {};
       document.querySelectorAll("[data-symbol-row]").forEach((row) => {
@@ -585,27 +573,15 @@ const tvbotHTML = `<!doctype html>
     async function saveSymbols() {
       state.symbols = (await api("/tvbot/symbols", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbols: collectSymbols() }) })).symbols || {};
       renderSymbols();
-      renderCoinpairOptions();
       updateMetrics();
       toast("币对已保存");
     }
 
     async function makeTemplate() {
-      const riskType = $("tpl-risk").value;
-      const risk = { type: riskType };
-      if (riskType === "tp_sl") {
-        risk.tp_pct = Number($("tpl-tp").value);
-        risk.sl_pct = Number($("tpl-sl").value);
-      } else if (riskType === "trailing") {
-        risk.trailing_pct = Number($("tpl-trailing").value);
-      }
       const req = {
-        action: $("tpl-action").value,
-        coinpair: $("tpl-coinpair").value,
         price_source: $("tpl-price-source").value,
         leverage: Number($("tpl-leverage").value),
-        amount: Number($("tpl-amount").value),
-        risk: risk
+        amount: Number($("tpl-amount").value)
       };
       const resp = await api("/tvbot/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
       $("template-output").value = resp.json || "";

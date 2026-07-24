@@ -179,9 +179,6 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unsupported position mode %q", c.Trading.PositionMode)
 	}
-	if len(c.Symbols) == 0 {
-		return errors.New("at least one symbol is required")
-	}
 	for key, sym := range c.Symbols {
 		if sym.Coinpair == "" || sym.InstID == "" {
 			return fmt.Errorf("symbol %q requires coinpair and inst_id", key)

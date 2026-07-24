@@ -59,6 +59,7 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	signal.Normalize()
+	signal.Risk = trading.Risk{Type: trading.RiskNone}
 	cfg := s.ConfigStore.Get()
 	now := s.now()
 	if err := signal.Validate(now, time.Duration(cfg.Trading.SignalTTLSeconds)*time.Second, cfg); err != nil {

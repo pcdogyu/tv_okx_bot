@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"strings"
 )
@@ -23,12 +24,13 @@ func (s TokenService) Generate(payload string) string {
 	mac.Write([]byte(Salt))
 	mac.Write([]byte("\n"))
 	mac.Write([]byte(payload))
-	return hex.EncodeToString(mac.Sum(nil))
+	hexToken := hex.EncodeToString(mac.Sum(nil))
+	return base64.StdEncoding.EncodeToString([]byte(hexToken))
 }
 
 func (s TokenService) Validate(payload, token string) bool {
-	token = strings.ToLower(strings.TrimSpace(token))
-	if len(token) != 64 {
+	token = strings.TrimSpace(token)
+	if token == "" {
 		return false
 	}
 	expected := s.Generate(payload)

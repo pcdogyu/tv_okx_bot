@@ -25,15 +25,15 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if !cfg.LiveTradingAllowedByEnvironment() {
 		return trading.OrderResult{}, fmt.Errorf("live trading requires config env=live, OKX_ENV=live and ALLOW_LIVE_TRADING=true")
 	}
-	sym, ok := cfg.SymbolMeta(signal.Coinpair)
-	if !ok {
-		return trading.OrderResult{}, fmt.Errorf("coinpair %s is not configured", signal.Coinpair)
+	client := t.client(cfg)
+	sym, err := t.resolveSymbol(ctx, client, signal, cfg)
+	if err != nil {
+		return trading.OrderResult{}, err
 	}
 	sz, err := trading.SizeFromUSDTNotional(signal.Amount.Value, signal.Price.Value, sym.CtVal, sym.LotSz, sym.MinSz)
 	if err != nil {
 		return trading.OrderResult{}, err
 	}
-	client := t.client(cfg)
 	posSide := ""
 	if cfg.PositionMode() == config.PositionLongShort {
 		posSide = string(signal.Action)
@@ -73,6 +73,31 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		t.Logger.Info("okx order submitted", "inst_id", sym.InstID, "action", signal.Action, "cl_ord_id", clOrdID, "okx_code", env.Code)
 	}
 	return result, nil
+}
+
+func (t Trader) resolveSymbol(ctx context.Context, client Client, signal trading.Signal, cfg trading.RuntimeConfig) (trading.SymbolInfo, error) {
+	if sym, ok := cfg.SymbolMeta(signal.Coinpair); ok {
+		return sym, nil
+	}
+	instID, coinpair, err := DeriveSwapInstrumentID(signal.Coinpair, signal.Ticker)
+	if err != nil {
+		return trading.SymbolInfo{}, err
+	}
+	inst, err := client.SwapInstrument(ctx, instID)
+	if err != nil {
+		return trading.SymbolInfo{}, err
+	}
+	meta, err := inst.SymbolInfo()
+	if err != nil {
+		return trading.SymbolInfo{}, err
+	}
+	return trading.SymbolInfo{
+		Coinpair: coinpair,
+		InstID:   meta.InstID,
+		CtVal:    meta.CtVal,
+		LotSz:    meta.LotSz,
+		MinSz:    meta.MinSz,
+	}, nil
 }
 
 func (t Trader) Check(ctx context.Context, cfg trading.RuntimeConfig) (map[string]any, error) {
@@ -154,4 +179,48 @@ func clientOrderID(signal trading.Signal) string {
 	sum := sha256.Sum256([]byte(signal.CanonicalTokenPayload() + "|" + signal.SentAt + "|" + signal.Ticker))
 	short := hex.EncodeToString(sum[:])[:12]
 	return strings.ToUpper(fmt.Sprintf("TV%d%s", time.Now().UTC().UnixMilli(), short))
+}
+
+func DeriveSwapInstrumentID(coinpair, ticker string) (string, string, error) {
+	raw := strings.TrimSpace(coinpair)
+	if raw == "" {
+		raw = strings.TrimSpace(ticker)
+	}
+	if raw == "" {
+		return "", "", fmt.Errorf("coinpair or ticker is required")
+	}
+	raw = strings.ToUpper(raw)
+	if i := strings.LastIndex(raw, ":"); i >= 0 {
+		raw = raw[i+1:]
+	}
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSuffix(raw, ".P")
+	raw = strings.TrimSuffix(raw, ".PERP")
+	raw = strings.TrimSuffix(raw, "PERP")
+	raw = strings.ReplaceAll(raw, "_", "-")
+	raw = strings.ReplaceAll(raw, "/", "-")
+	raw = strings.ReplaceAll(raw, " ", "")
+	if strings.HasSuffix(raw, "-SWAP") {
+		return raw, baseCoin(raw), nil
+	}
+	if strings.Contains(raw, "-") {
+		parts := strings.Split(raw, "-")
+		if len(parts) >= 2 {
+			instID := parts[0] + "-" + parts[1] + "-SWAP"
+			return instID, parts[0], nil
+		}
+	}
+	if strings.HasSuffix(raw, "USDT") && len(raw) > len("USDT") {
+		base := strings.TrimSuffix(raw, "USDT")
+		return base + "-USDT-SWAP", base, nil
+	}
+	return raw + "-USDT-SWAP", raw, nil
+}
+
+func baseCoin(instID string) string {
+	parts := strings.Split(instID, "-")
+	if len(parts) == 0 {
+		return instID
+	}
+	return parts[0]
 }

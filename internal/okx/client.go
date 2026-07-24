@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -146,6 +147,13 @@ type OrderAck struct {
 	SMsg    string `json:"sMsg"`
 }
 
+type Instrument struct {
+	InstID string `json:"instId"`
+	CtVal  string `json:"ctVal"`
+	LotSz  string `json:"lotSz"`
+	MinSz  string `json:"minSz"`
+}
+
 func (c Client) SetLeverage(ctx context.Context, req SetLeverageRequest) error {
 	_, err := c.Do(ctx, http.MethodPost, "/api/v5/account/set-leverage", nil, req, true)
 	return err
@@ -179,4 +187,50 @@ func (c Client) Instruments(ctx context.Context) (Envelope, error) {
 	q := url.Values{}
 	q.Set("instType", "SWAP")
 	return c.Do(ctx, http.MethodGet, "/api/v5/public/instruments", q, nil, false)
+}
+
+func (c Client) SwapInstrument(ctx context.Context, instID string) (Instrument, error) {
+	q := url.Values{}
+	q.Set("instType", "SWAP")
+	q.Set("instId", strings.ToUpper(strings.TrimSpace(instID)))
+	env, err := c.Do(ctx, http.MethodGet, "/api/v5/public/instruments", q, nil, false)
+	if err != nil {
+		return Instrument{}, err
+	}
+	var data []Instrument
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return Instrument{}, err
+	}
+	for _, inst := range data {
+		if strings.EqualFold(inst.InstID, instID) {
+			return inst, nil
+		}
+	}
+	if len(data) > 0 {
+		return data[0], nil
+	}
+	return Instrument{}, fmt.Errorf("okx instrument %s not found", instID)
+}
+
+func (i Instrument) SymbolInfo() (tradingSymbolInfo, error) {
+	ctVal, err := strconv.ParseFloat(i.CtVal, 64)
+	if err != nil {
+		return tradingSymbolInfo{}, fmt.Errorf("invalid ctVal %q: %w", i.CtVal, err)
+	}
+	lotSz, err := strconv.ParseFloat(i.LotSz, 64)
+	if err != nil {
+		return tradingSymbolInfo{}, fmt.Errorf("invalid lotSz %q: %w", i.LotSz, err)
+	}
+	minSz, err := strconv.ParseFloat(i.MinSz, 64)
+	if err != nil {
+		return tradingSymbolInfo{}, fmt.Errorf("invalid minSz %q: %w", i.MinSz, err)
+	}
+	return tradingSymbolInfo{InstID: i.InstID, CtVal: ctVal, LotSz: lotSz, MinSz: minSz}, nil
+}
+
+type tradingSymbolInfo struct {
+	InstID string
+	CtVal  float64
+	LotSz  float64
+	MinSz  float64
 }

@@ -116,14 +116,9 @@ func runServe(args []string) error {
 
 func runTemplate(args []string) error {
 	fs := flag.NewFlagSet("template", flag.ContinueOnError)
-	action := fs.String("action", "", "long or short")
-	coinpair := fs.String("coinpair", "", "BTC or ETH")
 	priceSource := fs.String("price-source", "close", "close, high or low")
 	leverage := fs.Int("leverage", 0, "order leverage")
 	amount := fs.Float64("amount", 0, "USDT notional amount")
-	tpPct := fs.Float64("tp-pct", 0, "take profit percent")
-	slPct := fs.Float64("sl-pct", 0, "stop loss percent")
-	trailingPct := fs.Float64("trailing-pct", 0, "trailing stop percent")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -132,20 +127,9 @@ func runTemplate(args []string) error {
 		return err
 	}
 	req := trading.TemplateRequest{
-		Action:      trading.Side(*action),
-		Coinpair:    *coinpair,
 		PriceSource: *priceSource,
 		Leverage:    *leverage,
 		Amount:      trading.NewFlexibleFloat(*amount),
-		Risk:        trading.Risk{Type: trading.RiskNone},
-	}
-	if *trailingPct > 0 {
-		v := trading.NewFlexibleFloat(*trailingPct)
-		req.Risk = trading.Risk{Type: trading.RiskTrailing, TrailingPct: &v}
-	} else if *tpPct > 0 || *slPct > 0 {
-		tp := trading.NewFlexibleFloat(*tpPct)
-		sl := trading.NewFlexibleFloat(*slPct)
-		req.Risk = trading.Risk{Type: trading.RiskTPSL, TPPct: &tp, SLPct: &sl}
 	}
 	resp, err := trading.BuildTemplate(req, security.NewTokenService(secrets.TVTokenSecret))
 	if err != nil {
@@ -208,6 +192,6 @@ func resolveDataPath(configPath, dataFile string) string {
 func usage() error {
 	return fmt.Errorf(`usage:
   tv-okx-bot serve --config config.json [--addr :8080]
-  tv-okx-bot template --action long --coinpair BTC --leverage 5 --amount 100 [--tp-pct 2 --sl-pct 1]
+  tv-okx-bot template --leverage 5 --amount 100 [--price-source close]
   tv-okx-bot check-okx --config config.json`)
 }

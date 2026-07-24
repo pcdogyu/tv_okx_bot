@@ -8,15 +8,10 @@ import (
 )
 
 func TestBuildTemplateProducesValidJSONAndToken(t *testing.T) {
-	tp := NewFlexibleFloat(2)
-	sl := NewFlexibleFloat(1)
 	req := TemplateRequest{
-		Action:      ActionLong,
-		Coinpair:    "btc",
 		PriceSource: "close",
 		Leverage:    5,
 		Amount:      NewFlexibleFloat(100),
-		Risk:        Risk{Type: RiskTPSL, TPPct: &tp, SLPct: &sl},
 	}
 	tokenSvc := security.NewTokenService("unit-test-secret")
 	resp, err := BuildTemplate(req, tokenSvc)
@@ -30,8 +25,21 @@ func TestBuildTemplateProducesValidJSONAndToken(t *testing.T) {
 	if payload["price"] != "{{close}}" || payload["sent_at"] != "{{timenow}}" || payload["ticker"] != "{{ticker}}" {
 		t.Fatalf("unexpected placeholders: %#v", payload)
 	}
-	req.Coinpair = "BTC"
+	if payload["action"] != "{{strategy.order.action}}" || payload["coinpair"] != "{{ticker}}" {
+		t.Fatalf("unexpected dynamic placeholders: %#v", payload)
+	}
+	if _, ok := payload["risk"]; ok {
+		t.Fatalf("risk field should not be present: %#v", payload)
+	}
 	if !tokenSvc.Validate(req.CanonicalTokenPayload(), resp.Token) {
 		t.Fatal("generated token did not validate against canonical template payload")
+	}
+}
+
+func TestCanonicalTokenPayloadDoesNotBindActionOrCoinpair(t *testing.T) {
+	longBTC := Signal{Action: ActionLong, Coinpair: "BTC", Leverage: 5, Amount: NewFlexibleFloat(100)}
+	shortETH := Signal{Action: ActionShort, Coinpair: "ETH", Leverage: 5, Amount: NewFlexibleFloat(100)}
+	if longBTC.CanonicalTokenPayload() != shortETH.CanonicalTokenPayload() {
+		t.Fatalf("token payload should not depend on action or coinpair")
 	}
 }

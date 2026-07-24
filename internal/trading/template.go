@@ -11,10 +11,7 @@ type TokenGenerator interface {
 }
 
 func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateResponse, error) {
-	req.Action = Side(strings.ToLower(strings.TrimSpace(string(req.Action))))
-	req.Coinpair = strings.ToUpper(strings.TrimSpace(req.Coinpair))
 	req.PriceSource = strings.ToLower(strings.TrimSpace(req.PriceSource))
-	req.Risk.Normalize()
 	if req.PriceSource == "" {
 		req.PriceSource = "close"
 	}
@@ -22,28 +19,19 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		return TemplateResponse{}, fmt.Errorf("price_source must be close, high or low")
 	}
 	signal := Signal{
-		Action:   req.Action,
-		Coinpair: req.Coinpair,
+		Action:   "{{strategy.order.action}}",
+		Coinpair: "{{ticker}}",
 		Price:    NewFlexibleFloat(0),
 		SentAt:   "{{timenow}}",
 		Ticker:   "{{ticker}}",
 		Leverage: req.Leverage,
 		Amount:   req.Amount,
-		Risk:     req.Risk,
-	}
-	switch signal.Action {
-	case ActionLong, ActionShort:
-	default:
-		return TemplateResponse{}, fmt.Errorf("action must be long or short")
 	}
 	if signal.Leverage <= 0 {
 		return TemplateResponse{}, fmt.Errorf("leverage must be positive")
 	}
 	if !signal.Amount.Set || signal.Amount.Value <= 0 {
 		return TemplateResponse{}, fmt.Errorf("amount must be positive")
-	}
-	if err := signal.Risk.Validate(); err != nil {
-		return TemplateResponse{}, err
 	}
 	token := generator.Generate(req.CanonicalTokenPayload())
 	payload := map[string]any{
@@ -54,7 +42,6 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		"ticker":   signal.Ticker,
 		"leverage": signal.Leverage,
 		"amount":   signal.Amount,
-		"risk":     signal.Risk,
 		"token":    token,
 	}
 	b, err := json.MarshalIndent(payload, "", "  ")

@@ -85,17 +85,14 @@ type Signal struct {
 	Ticker   string        `json:"ticker"`
 	Leverage int           `json:"leverage"`
 	Amount   FlexibleFloat `json:"amount"`
-	Risk     Risk          `json:"risk"`
+	Risk     Risk          `json:"risk,omitempty"`
 	Token    string        `json:"token"`
 }
 
 type TemplateRequest struct {
-	Action      Side          `json:"action"`
-	Coinpair    string        `json:"coinpair"`
 	PriceSource string        `json:"price_source"`
 	Leverage    int           `json:"leverage"`
 	Amount      FlexibleFloat `json:"amount"`
-	Risk        Risk          `json:"risk"`
 }
 
 type TemplateResponse struct {
@@ -142,10 +139,20 @@ func (r *Risk) Normalize() {
 }
 
 func (s *Signal) Normalize() {
-	s.Action = Side(strings.ToLower(strings.TrimSpace(string(s.Action))))
+	switch strings.ToLower(strings.TrimSpace(string(s.Action))) {
+	case "buy", "long":
+		s.Action = ActionLong
+	case "sell", "short":
+		s.Action = ActionShort
+	default:
+		s.Action = Side(strings.ToLower(strings.TrimSpace(string(s.Action))))
+	}
 	s.Coinpair = strings.ToUpper(strings.TrimSpace(s.Coinpair))
 	s.Ticker = strings.TrimSpace(s.Ticker)
-	s.Token = strings.ToLower(strings.TrimSpace(s.Token))
+	if s.Coinpair == "" {
+		s.Coinpair = strings.ToUpper(s.Ticker)
+	}
+	s.Token = strings.TrimSpace(s.Token)
 	s.Risk.Normalize()
 }
 
@@ -178,8 +185,8 @@ func (s Signal) Validate(now time.Time, ttl time.Duration, cfg RuntimeConfig) er
 	default:
 		return fmt.Errorf("action must be %q or %q", ActionLong, ActionShort)
 	}
-	if _, ok := cfg.SymbolMeta(s.Coinpair); !ok {
-		return fmt.Errorf("coinpair %q is not allowed", s.Coinpair)
+	if s.Coinpair == "" && strings.TrimSpace(s.Ticker) == "" {
+		return errors.New("coinpair or ticker is required")
 	}
 	if !s.Price.Set || s.Price.Value <= 0 {
 		return errors.New("price must be positive")
@@ -263,20 +270,18 @@ func NormalizeOptionalFloat(v *FlexibleFloat) string {
 	return NormalizeFloat(v.Value)
 }
 
-func CanonicalTokenPayload(action Side, coinpair string, leverage int, amount FlexibleFloat, risk Risk) string {
+func CanonicalTokenPayload(leverage int, amount FlexibleFloat) string {
 	return strings.Join([]string{
-		strings.ToLower(strings.TrimSpace(string(action))),
-		strings.ToUpper(strings.TrimSpace(coinpair)),
+		"v2",
 		strconv.Itoa(leverage),
 		NormalizeFloat(amount.Value),
-		CanonicalRisk(risk),
 	}, "\n")
 }
 
 func (s Signal) CanonicalTokenPayload() string {
-	return CanonicalTokenPayload(s.Action, s.Coinpair, s.Leverage, s.Amount, s.Risk)
+	return CanonicalTokenPayload(s.Leverage, s.Amount)
 }
 
 func (t TemplateRequest) CanonicalTokenPayload() string {
-	return CanonicalTokenPayload(t.Action, t.Coinpair, t.Leverage, t.Amount, t.Risk)
+	return CanonicalTokenPayload(t.Leverage, t.Amount)
 }
