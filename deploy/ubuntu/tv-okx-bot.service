@@ -12,8 +12,7 @@ EnvironmentFile=/etc/tv-okx-bot/tv-okx-bot.env
 Environment=HOME=/var/lib/tv-okx-bot
 Environment=GOCACHE=/var/lib/tv-okx-bot/.cache/go-build
 Environment=GOMODCACHE=/var/lib/tv-okx-bot/go/pkg/mod
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ExecStartPre=+/usr/sbin/setcap cap_net_bind_service=+ep /opt/tv_okx_bot/tv-okx-bot
 ExecStart=/opt/tv_okx_bot/tv-okx-bot serve --config /etc/tv-okx-bot/config.json --addr 0.0.0.0:80
 Restart=always
 RestartSec=5

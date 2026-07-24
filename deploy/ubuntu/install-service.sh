@@ -18,6 +18,11 @@ if ! command -v go >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v setcap >/dev/null 2>&1; then
+  echo "setcap is required. Install libcap2-bin first." >&2
+  exit 1
+fi
+
 if ! getent group "${APP_GROUP}" >/dev/null 2>&1; then
   groupadd --system "${APP_GROUP}"
 fi
