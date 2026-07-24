@@ -12,14 +12,12 @@ EnvironmentFile=/etc/tv-okx-bot/tv-okx-bot.env
 Environment=HOME=/var/lib/tv-okx-bot
 Environment=GOCACHE=/var/lib/tv-okx-bot/.cache/go-build
 Environment=GOMODCACHE=/var/lib/tv-okx-bot/go/pkg/mod
-ExecStartPre=+/usr/sbin/setcap cap_net_bind_service=+ep /opt/tv_okx_bot/tv-okx-bot
-ExecStart=/opt/tv_okx_bot/tv-okx-bot serve --config /etc/tv-okx-bot/config.json --addr 0.0.0.0:80
+ExecStart=/opt/tv_okx_bot/tv-okx-bot serve --config /etc/tv-okx-bot/config.json --addr 127.0.0.1:18080
 Restart=always
 RestartSec=5
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-StateDirectory=tv-okx-bot
 ReadWritePaths=/opt/tv_okx_bot /etc/tv-okx-bot /var/lib/tv-okx-bot
 
 [Install]

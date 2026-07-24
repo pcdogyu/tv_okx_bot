@@ -68,4 +68,10 @@ sudo systemctl restart tv-okx-bot.service
 sudo systemctl status tv-okx-bot.service
 ```
 
-The service listens on `0.0.0.0:80` by default. The systemd unit runs `setcap cap_net_bind_service=+ep` before start so the non-root `tvokx` user can bind port 80. The `/upgrade` endpoint writes status to `/var/lib/tv-okx-bot/upgrade-status.json`, then schedules `/usr/bin/sudo /bin/systemctl restart tv-okx-bot.service`; the installer adds a narrow sudoers rule for that restart command.
+The Go service listens on `127.0.0.1:18080` by default. Nginx listens on public `80/443` and proxies to the Go service. To install Nginx and a Let's Encrypt certificate for `tvbot.lmitis.com`, run:
+
+```bash
+sudo bash deploy/ubuntu/setup-https.sh
+```
+
+The `/upgrade` endpoint writes status to `/var/lib/tv-okx-bot/upgrade-status.json`, then schedules `/usr/bin/sudo /bin/systemctl restart tv-okx-bot.service`; the installer adds a narrow sudoers rule for that restart command.
