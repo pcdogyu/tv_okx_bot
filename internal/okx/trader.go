@@ -128,7 +128,7 @@ func (t Trader) setLeverageWithFallback(ctx context.Context, client Client, req 
 
 func isMaxLeverageError(err error) bool {
 	var apiErr APIError
-	if errors.As(err, &apiErr) && apiErr.Code == "59102" {
+	if errors.As(err, &apiErr) && apiErr.HasCode("59102") {
 		return true
 	}
 	text := strings.ToLower(err.Error())

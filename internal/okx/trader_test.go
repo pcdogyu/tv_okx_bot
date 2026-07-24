@@ -199,7 +199,7 @@ func TestTraderExecuteSignalFallsBackWhenLeverageExceedsMaximum(t *testing.T) {
 			}
 			tried = append(tried, req.Lever)
 			if req.Lever != "7" {
-				_, _ = w.Write([]byte(`{"code":"59102","msg":"Leverage exceeds the maximum limit. Please lower the leverage.","data":[]}`))
+				_, _ = w.Write([]byte(`{"code":"1","msg":"All operations failed","data":[{"sCode":"59102","sMsg":"Leverage exceeds the maximum limit. Please lower the leverage."}]}`))
 				return
 			}
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))

@@ -3,6 +3,7 @@ package okx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -63,6 +64,34 @@ func TestClientSetLeverageSignsPrivateDemoRequest(t *testing.T) {
 	}
 	if !saw {
 		t.Fatal("server did not receive request")
+	}
+}
+
+func TestClientAPIErrorKeepsDetailCodes(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"1","msg":"All operations failed","data":[{"sCode":"59102","sMsg":"Leverage exceeds the maximum limit. Please lower the leverage."}]}`))
+	}))
+	defer ts.Close()
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	err := client.SetLeverage(context.Background(), SetLeverageRequest{
+		InstID:  "MSFT-USDT-SWAP",
+		Lever:   "10",
+		MgnMode: "isolated",
+	})
+	var apiErr APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T %v", err, err)
+	}
+	if !apiErr.HasCode("59102") {
+		t.Fatalf("expected detail code 59102 in %#v", apiErr)
+	}
+	if got := apiErr.Error(); got != "okx code 1: All operations failed: 59102: Leverage exceeds the maximum limit. Please lower the leverage." {
+		t.Fatalf("bad error text: %q", got)
 	}
 }
 

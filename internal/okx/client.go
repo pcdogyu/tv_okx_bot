@@ -53,10 +53,59 @@ func (e Envelope) OK() bool {
 type APIError struct {
 	Code string
 	Msg  string
+	Data json.RawMessage
 }
 
 func (e APIError) Error() string {
-	return fmt.Sprintf("okx code %s: %s", e.Code, e.Msg)
+	msg := fmt.Sprintf("okx code %s: %s", e.Code, e.Msg)
+	if detail := apiErrorDetail(e.Data); detail != "" {
+		msg += ": " + detail
+	}
+	return msg
+}
+
+func (e APIError) HasCode(code string) bool {
+	if e.Code == code {
+		return true
+	}
+	var details []struct {
+		SCode string `json:"sCode"`
+	}
+	if len(e.Data) == 0 || json.Unmarshal(e.Data, &details) != nil {
+		return false
+	}
+	for _, detail := range details {
+		if detail.SCode == code {
+			return true
+		}
+	}
+	return false
+}
+
+func apiErrorDetail(data json.RawMessage) string {
+	var details []struct {
+		SCode string `json:"sCode"`
+		SMsg  string `json:"sMsg"`
+	}
+	if len(data) == 0 || json.Unmarshal(data, &details) != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(details))
+	for _, detail := range details {
+		if detail.SCode == "" && detail.SMsg == "" {
+			continue
+		}
+		if detail.SCode == "" {
+			parts = append(parts, detail.SMsg)
+			continue
+		}
+		if detail.SMsg == "" {
+			parts = append(parts, detail.SCode)
+			continue
+		}
+		parts = append(parts, detail.SCode+": "+detail.SMsg)
+	}
+	return strings.Join(parts, "; ")
 }
 
 type AccountBalanceData struct {
@@ -140,7 +189,7 @@ func (c Client) Do(ctx context.Context, method, path string, query url.Values, b
 		return Envelope{}, fmt.Errorf("decode okx response: %w", err)
 	}
 	if !env.OK() {
-		return env, APIError{Code: env.Code, Msg: env.Msg}
+		return env, APIError{Code: env.Code, Msg: env.Msg, Data: env.Data}
 	}
 	return env, nil
 }
