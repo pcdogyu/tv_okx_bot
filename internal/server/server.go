@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -444,7 +445,33 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSymbols(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"symbols": s.ConfigStore.Get().Symbols})
+		cfg := s.ConfigStore.Get()
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		type instrumentResult struct {
+			env string
+			set okxInstrumentSet
+		}
+		results := make(chan instrumentResult, 2)
+		go func() {
+			results <- instrumentResult{env: config.EnvLive, set: s.fetchOKXInstrumentSet(ctx, cfg, false)}
+		}()
+		go func() {
+			results <- instrumentResult{env: config.EnvDemo, set: s.fetchOKXInstrumentSet(ctx, cfg, true)}
+		}()
+		catalog := okxSymbolsCatalog{}
+		for i := 0; i < 2; i++ {
+			result := <-results
+			if result.env == config.EnvDemo {
+				catalog.Demo = result.set
+				continue
+			}
+			catalog.Live = result.set
+		}
+		writeJSON(w, http.StatusOK, symbolsResponse{
+			Symbols: cfg.Symbols,
+			OKX:     catalog,
+		})
 	case http.MethodPut:
 		symbols, err := decodeSymbols(r)
 		if err != nil {
@@ -463,6 +490,52 @@ func (s *Server) handleSymbols(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and PUT are allowed")
 	}
+}
+
+type symbolsResponse struct {
+	Symbols map[string]config.SymbolConfig `json:"symbols"`
+	OKX     okxSymbolsCatalog              `json:"okx"`
+}
+
+type okxSymbolsCatalog struct {
+	Live okxInstrumentSet `json:"live"`
+	Demo okxInstrumentSet `json:"demo"`
+}
+
+type okxInstrumentSet struct {
+	Env         string           `json:"env"`
+	Demo        bool             `json:"demo"`
+	Count       int              `json:"count"`
+	Instruments []okx.Instrument `json:"instruments"`
+	Error       string           `json:"error,omitempty"`
+}
+
+func (s *Server) fetchOKXInstrumentSet(ctx context.Context, cfg config.Config, demo bool) okxInstrumentSet {
+	env := config.EnvLive
+	if demo {
+		env = config.EnvDemo
+	}
+	set := okxInstrumentSet{
+		Env:         env,
+		Demo:        demo,
+		Instruments: []okx.Instrument{},
+	}
+	client := okx.Client{
+		BaseURL:    cfg.OKXBaseURL(),
+		Demo:       demo,
+		HTTPClient: s.OKXHTTPClient,
+	}
+	instruments, _, err := client.SwapInstruments(ctx)
+	if err != nil {
+		set.Error = err.Error()
+		return set
+	}
+	sort.Slice(instruments, func(i, j int) bool {
+		return strings.Compare(instruments[i].InstID, instruments[j].InstID) < 0
+	})
+	set.Instruments = instruments
+	set.Count = len(instruments)
+	return set
 }
 
 func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {

@@ -331,11 +331,21 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: wrap;
     }
     .analysis-controls label { min-width: 260px; }
+    .symbol-controls {
+      display: flex;
+      gap: 10px;
+      align-items: end;
+      flex-wrap: wrap;
+    }
+    .symbol-controls label { min-width: 220px; }
     .analysis-metrics {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 10px;
       margin: 12px 0;
+    }
+    .symbol-metrics {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
     }
     .analysis-card {
       border: 1px solid var(--line);
@@ -365,6 +375,12 @@ const tvbotHTML = `<!doctype html>
       width: 100%;
       height: 260px;
       display: block;
+    }
+    .symbol-table-wrap {
+      overflow-x: auto;
+    }
+    .symbol-table {
+      min-width: 980px;
     }
     pre {
       margin: 0;
@@ -403,7 +419,7 @@ const tvbotHTML = `<!doctype html>
     @media (max-width: 880px) {
       .bar { align-items: flex-start; flex-direction: column; }
       nav { justify-content: flex-start; }
-      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics { grid-template-columns: 1fr; }
+      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .symbol-metrics { grid-template-columns: 1fr; }
       main { padding: 12px; }
       section { padding: 12px; }
     }
@@ -416,7 +432,8 @@ const tvbotHTML = `<!doctype html>
       <nav aria-label="sections">
         <button type="button" data-tab="dashboard" aria-selected="true">总览</button>
         <button type="button" data-tab="analysis">订单分析</button>
-        <button type="button" data-tab="config">配置</button>
+        <button type="button" data-tab="symbols">币对配置</button>
+        <button type="button" data-tab="config">订单配置</button>
         <button type="button" data-tab="apiKeys">API Key</button>
         <button type="button" data-tab="orderSettings">下单设置</button>
         <button type="button" data-tab="template">告警模板</button>
@@ -539,10 +556,36 @@ const tvbotHTML = `<!doctype html>
       </div>
     </section>
 
+    <section id="symbols">
+      <div class="section-head">
+        <h2>币对配置</h2>
+        <div class="symbol-controls">
+          <label>环境<select id="symbol-env"><option value="all">全部</option><option value="live">live</option><option value="demo">模拟</option></select></label>
+          <label>搜索<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="BTC-USDT-SWAP"></label>
+          <button class="btn primary" type="button" id="refresh-symbols">刷新币对</button>
+        </div>
+      </div>
+      <div class="analysis-metrics symbol-metrics">
+        <div class="analysis-card"><div class="label">live 币对</div><div class="value" id="symbol-live-count">-</div></div>
+        <div class="analysis-card"><div class="label">模拟币对</div><div class="value" id="symbol-demo-count">-</div></div>
+        <div class="analysis-card"><div class="label">本地已配置</div><div class="value" id="symbol-configured-count">-</div></div>
+        <div class="analysis-card"><div class="label">当前显示</div><div class="value" id="symbol-visible-count">-</div></div>
+      </div>
+      <div class="muted" id="symbol-errors" style="margin:0 0 10px"></div>
+      <div class="symbol-table-wrap">
+        <table class="symbol-table">
+          <thead>
+            <tr><th>交易环境</th><th>币对</th><th>本地配置</th><th>OKX 状态</th><th>基础 / 计价</th><th>结算币</th><th>合约面值</th><th>最小下单</th><th>数量步长</th><th>杠杆</th></tr>
+          </thead>
+          <tbody id="symbol-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="config">
       <div class="section-head">
-        <h2>配置</h2>
-        <button class="btn primary" type="button" id="save-config">保存配置</button>
+        <h2>订单配置</h2>
+        <button class="btn primary" type="button" id="save-config">保存订单配置</button>
       </div>
       <div class="grid">
         <label>监听地址<input id="cfg-addr" autocomplete="off"></label>
@@ -623,7 +666,7 @@ const tvbotHTML = `<!doctype html>
 
   <script>
     const activeTabStorageKey = "tvbot.active_tab";
-    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, analysis: null, analysisError: "", upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, analysis: null, analysisError: "", symbols: null, symbolsError: "", upgrade: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -758,6 +801,9 @@ const tvbotHTML = `<!doctype html>
       if (target === "analysis" && !state.analysis) {
         loadAnalysis(false).catch((err) => toast(err.message));
       }
+      if (target === "symbols" && !state.symbols) {
+        loadSymbols(true).catch((err) => toast(err.message));
+      }
     }
 
     function initialTab() {
@@ -819,6 +865,22 @@ const tvbotHTML = `<!doctype html>
       renderAnalysis();
     }
 
+    async function loadSymbols(showLoading) {
+      if (showLoading) {
+        $("symbol-rows").innerHTML = '<tr><td colspan="10" class="muted">载入中...</td></tr>';
+      }
+      try {
+        state.symbols = await api("/tvbot/symbols");
+        state.symbolsError = "";
+      } catch (err) {
+        state.symbols = null;
+        state.symbolsError = err.message;
+        renderSymbols();
+        throw err;
+      }
+      renderSymbols();
+    }
+
     function updateMetrics() {
       $("metric-env").textContent = state.config && state.config.trading ? state.config.trading.env : "-";
       $("metric-api-keys").textContent = state.apiKeys && state.apiKeys.configured ? (state.apiKeys.active_id || "已配置") : "未配置";
@@ -859,6 +921,102 @@ const tvbotHTML = `<!doctype html>
       $("cfg-position").value = trading.position_mode || "net";
       $("cfg-ttl").value = trading.signal_ttl_seconds || 120;
       $("cfg-live").checked = !!trading.allow_live_trading;
+    }
+
+    function renderSymbols() {
+      const data = state.symbols || {};
+      const catalog = data.okx || {};
+      const live = catalog.live || {};
+      const demo = catalog.demo || {};
+      const configured = data.symbols || {};
+      const configuredLookup = configuredSymbolMap();
+      const rows = filteredSymbolRows();
+      $("symbol-live-count").textContent = asText(live.count || (Array.isArray(live.instruments) ? live.instruments.length : 0));
+      $("symbol-demo-count").textContent = asText(demo.count || (Array.isArray(demo.instruments) ? demo.instruments.length : 0));
+      $("symbol-configured-count").textContent = asText(Object.keys(configured).length);
+      $("symbol-visible-count").textContent = asText(rows.length);
+      const errors = [];
+      if (state.symbolsError) errors.push(state.symbolsError);
+      if (live.error) errors.push("live: " + live.error);
+      if (demo.error) errors.push("模拟: " + demo.error);
+      $("symbol-errors").textContent = errors.join(" / ");
+      $("symbol-rows").innerHTML = rows.map((row) => {
+        const inst = row.instrument || {};
+        const base = inst.baseCcy || baseFromInstID(inst.instId);
+        const quote = inst.quoteCcy || quoteFromInstID(inst.instId);
+        const isConfigured = configuredLookup[String(inst.instId || "").toUpperCase()] || configuredLookup[String(base || "").toUpperCase()];
+        return "<tr>" +
+          "<td>" + pill(row.label, row.env === "live" ? "ok" : "warn") + "</td>" +
+          "<td>" + escapeHTML(asText(inst.instId)) + "</td>" +
+          "<td>" + pill(isConfigured ? "已配置" : "未配置", isConfigured ? "ok" : "") + "</td>" +
+          "<td>" + escapeHTML(asText(inst.state)) + "</td>" +
+          "<td>" + escapeHTML(asText(base) + " / " + asText(quote)) + "</td>" +
+          "<td>" + escapeHTML(asText(inst.settleCcy)) + "</td>" +
+          "<td>" + escapeHTML(valueWithUnit(inst.ctVal, inst.ctValCcy)) + "</td>" +
+          "<td>" + escapeHTML(asText(inst.minSz)) + "</td>" +
+          "<td>" + escapeHTML(asText(inst.lotSz)) + "</td>" +
+          "<td>" + escapeHTML(asText(inst.lever)) + "</td>" +
+          "</tr>";
+      }).join("") || '<tr><td colspan="10" class="muted">' + escapeHTML(state.symbolsError || "暂无币对数据") + '</td></tr>';
+    }
+
+    function filteredSymbolRows() {
+      const data = state.symbols || {};
+      const catalog = data.okx || {};
+      const envFilter = $("symbol-env") ? $("symbol-env").value : "all";
+      const keyword = $("symbol-search") ? $("symbol-search").value.trim().toLowerCase() : "";
+      const groups = [
+        { env: "live", label: "live", set: catalog.live || {} },
+        { env: "demo", label: "模拟", set: catalog.demo || {} }
+      ];
+      const rows = [];
+      groups.forEach((group) => {
+        if (envFilter !== "all" && envFilter !== group.env) return;
+        const instruments = Array.isArray(group.set.instruments) ? group.set.instruments : [];
+        instruments.forEach((instrument) => {
+          if (keyword) {
+            const haystack = [
+              instrument.instId,
+              instrument.baseCcy,
+              instrument.quoteCcy,
+              instrument.settleCcy,
+              instrument.instFamily,
+              instrument.uly
+            ].join(" ").toLowerCase();
+            if (!haystack.includes(keyword)) return;
+          }
+          rows.push({ env: group.env, label: group.label, instrument: instrument });
+        });
+      });
+      return rows;
+    }
+
+    function configuredSymbolMap() {
+      const configured = state.symbols && state.symbols.symbols ? state.symbols.symbols : {};
+      const out = {};
+      Object.keys(configured).forEach((key) => {
+        const item = configured[key] || {};
+        out[String(key).toUpperCase()] = true;
+        if (item.coinpair) out[String(item.coinpair).toUpperCase()] = true;
+        if (item.inst_id) out[String(item.inst_id).toUpperCase()] = true;
+      });
+      return out;
+    }
+
+    function baseFromInstID(instID) {
+      const parts = String(instID || "").split("-");
+      return parts[0] || "";
+    }
+
+    function quoteFromInstID(instID) {
+      const parts = String(instID || "").split("-");
+      return parts[1] || "";
+    }
+
+    function valueWithUnit(value, unit) {
+      const text = asText(value);
+      if (text === "-") return text;
+      return unit ? text + " " + unit : text;
     }
 
     function renderOrderSettings() {
@@ -1104,7 +1262,7 @@ const tvbotHTML = `<!doctype html>
       renderConfig();
       renderDashboard();
       updateMetrics();
-      toast("配置已保存");
+      toast("订单配置已保存");
     }
 
     async function saveOrderSettings() {
@@ -1244,6 +1402,9 @@ const tvbotHTML = `<!doctype html>
     $("refresh-all").addEventListener("click", () => loadAll().then(() => toast("已刷新")).catch((err) => toast(err.message)));
     $("check-okx").addEventListener("click", () => checkOKX());
     $("save-config").addEventListener("click", () => saveConfig().catch((err) => toast(err.message)));
+    $("refresh-symbols").addEventListener("click", () => loadSymbols(true).then(() => toast("币对已刷新")).catch((err) => toast(err.message)));
+    $("symbol-search").addEventListener("input", () => renderSymbols());
+    $("symbol-env").addEventListener("change", () => renderSymbols());
     $("save-order-settings").addEventListener("click", () => saveOrderSettings().catch((err) => toast(err.message)));
     ["order-amount", "order-leverage", "order-risk-type", "order-tp", "order-sl", "order-trailing", "order-long-multiplier", "order-short-multiplier"].forEach((id) => {
       $(id).addEventListener("input", () => renderOrderSettingsPreview());

@@ -120,6 +120,38 @@ func TestClientMarketCandlesUsesUSDTUSDQuery(t *testing.T) {
 	}
 }
 
+func TestClientSwapInstrumentsParsesPublicDemoResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/public/instruments" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("instType") != "SWAP" {
+			t.Fatalf("bad query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("x-simulated-trading") != "1" {
+			t.Fatal("missing demo trading header")
+		}
+		if r.Header.Get("OK-ACCESS-KEY") != "" {
+			t.Fatal("public instruments request should not be signed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"}]}`))
+	}))
+	defer ts.Close()
+	client := Client{BaseURL: ts.URL, Demo: true, HTTPClient: ts.Client()}
+	instruments, env, err := client.SwapInstruments(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Code != "0" || len(instruments) != 1 {
+		t.Fatalf("bad instruments response env=%#v instruments=%#v", env, instruments)
+	}
+	got := instruments[0]
+	if got.InstID != "BTC-USDT-SWAP" || got.BaseCcy != "BTC" || got.QuoteCcy != "USDT" || got.Lever != "100" || got.State != "live" {
+		t.Fatalf("bad parsed instrument: %#v", got)
+	}
+}
+
 func TestClientAccountBalanceSnapshotGetsAllAssets(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
 	secret := "secret"

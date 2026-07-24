@@ -227,10 +227,26 @@ type OrderAck struct {
 }
 
 type Instrument struct {
-	InstID string `json:"instId"`
-	CtVal  string `json:"ctVal"`
-	LotSz  string `json:"lotSz"`
-	MinSz  string `json:"minSz"`
+	InstType   string `json:"instType,omitempty"`
+	InstID     string `json:"instId"`
+	Uly        string `json:"uly,omitempty"`
+	InstFamily string `json:"instFamily,omitempty"`
+	Category   string `json:"category,omitempty"`
+	BaseCcy    string `json:"baseCcy,omitempty"`
+	QuoteCcy   string `json:"quoteCcy,omitempty"`
+	SettleCcy  string `json:"settleCcy,omitempty"`
+	CtVal      string `json:"ctVal"`
+	CtMult     string `json:"ctMult,omitempty"`
+	CtValCcy   string `json:"ctValCcy,omitempty"`
+	CtType     string `json:"ctType,omitempty"`
+	ListTime   string `json:"listTime,omitempty"`
+	ExpTime    string `json:"expTime,omitempty"`
+	Lever      string `json:"lever,omitempty"`
+	TickSz     string `json:"tickSz,omitempty"`
+	LotSz      string `json:"lotSz"`
+	MinSz      string `json:"minSz"`
+	Alias      string `json:"alias,omitempty"`
+	State      string `json:"state,omitempty"`
 }
 
 type MarketCandle struct {
@@ -305,6 +321,18 @@ func (c Client) Instruments(ctx context.Context) (Envelope, error) {
 	q := url.Values{}
 	q.Set("instType", "SWAP")
 	return c.Do(ctx, http.MethodGet, "/api/v5/public/instruments", q, nil, false)
+}
+
+func (c Client) SwapInstruments(ctx context.Context) ([]Instrument, Envelope, error) {
+	env, err := c.Instruments(ctx)
+	if err != nil {
+		return nil, env, err
+	}
+	var data []Instrument
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return nil, env, err
+	}
+	return data, env, nil
 }
 
 func (c Client) MarketCandles(ctx context.Context, instID, bar string, limit int) ([]MarketCandle, Envelope, error) {

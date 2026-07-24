@@ -99,6 +99,11 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("订单分析")) {
 		t.Fatalf("tvbot ui should include order analysis tab")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("币对配置")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("订单配置")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) {
+		t.Fatalf("tvbot ui should include symbol and order config tabs")
+	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("资产估值")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-total-eq")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) {
@@ -120,6 +125,69 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("data-retry-id")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/retry")) {
 		t.Fatalf("tvbot ui should include retry controls")
+	}
+}
+
+func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
+	var sawLive, sawDemo bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/public/instruments" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("instType") != "SWAP" {
+			t.Fatalf("bad instruments query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("OK-ACCESS-KEY") != "" {
+			t.Fatal("public instruments request should not be signed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("x-simulated-trading") == "1" {
+			sawDemo = true
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
+				{"instType":"SWAP","instId":"DOGE-USDT-SWAP","baseCcy":"DOGE","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"1000","ctValCcy":"DOGE","lotSz":"1","minSz":"1","lever":"50","state":"live"}
+			]}`))
+			return
+		}
+		sawLive = true
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+			{"instType":"SWAP","instId":"ETH-USDT-SWAP","baseCcy":"ETH","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.1","ctValCcy":"ETH","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
+			{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"}
+		]}`))
+	}))
+	defer ts.Close()
+
+	srv := newTestServer(t)
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = ts.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = ts.Client()
+
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/symbols", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("symbols status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !sawLive || !sawDemo {
+		t.Fatalf("expected live and demo instruments requests live=%v demo=%v", sawLive, sawDemo)
+	}
+	var resp symbolsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Symbols["BTC"].InstID != "BTC-USDT-SWAP" {
+		t.Fatalf("response lost configured symbols: %#v", resp.Symbols)
+	}
+	if resp.OKX.Live.Count != 2 || resp.OKX.Demo.Count != 2 {
+		t.Fatalf("bad OKX counts: %#v", resp.OKX)
+	}
+	if resp.OKX.Live.Instruments[0].InstID != "BTC-USDT-SWAP" || resp.OKX.Demo.Instruments[1].InstID != "DOGE-USDT-SWAP" {
+		t.Fatalf("instruments should be sorted and parsed: %#v", resp.OKX)
+	}
+	if resp.OKX.Live.Error != "" || resp.OKX.Demo.Error != "" {
+		t.Fatalf("unexpected OKX errors: %#v", resp.OKX)
 	}
 }
 
