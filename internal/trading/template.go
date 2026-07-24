@@ -10,6 +10,21 @@ type TokenGenerator interface {
 	Generate(payload string) string
 }
 
+type alertTemplatePayload struct {
+	Token     string `json:"token"`
+	SentAt    string `json:"sent_at"`
+	APIID     string `json:"api_id,omitempty"`
+	Action    string `json:"action"`
+	Ticker    string `json:"ticker"`
+	Coinpair  string `json:"coinpair"`
+	Price     string `json:"price"`
+	Exchange  string `json:"exchange"`
+	Interval  string `json:"interval"`
+	Condition string `json:"condition"`
+	Text      string `json:"text"`
+	Source    string `json:"source"`
+}
+
 func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateResponse, error) {
 	req.PriceSource = strings.ToLower(strings.TrimSpace(req.PriceSource))
 	req.APIID = strings.TrimSpace(req.APIID)
@@ -30,16 +45,19 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		Amount:   req.Amount,
 	}
 	token := generator.Generate(req.CanonicalTokenPayload())
-	payload := map[string]any{
-		"action":   signal.Action,
-		"coinpair": signal.Coinpair,
-		"price":    "{{" + req.PriceSource + "}}",
-		"sent_at":  signal.SentAt,
-		"ticker":   signal.Ticker,
-		"token":    token,
-	}
-	if req.APIID != "" {
-		payload["api_id"] = req.APIID
+	payload := alertTemplatePayload{
+		Token:     token,
+		SentAt:    signal.SentAt,
+		APIID:     req.APIID,
+		Action:    string(signal.Action),
+		Ticker:    signal.Ticker,
+		Coinpair:  signal.Coinpair,
+		Price:     "{{" + req.PriceSource + "}}",
+		Exchange:  "{{exchange}}",
+		Interval:  "{{interval}}",
+		Condition: "{{strategy.order.comment}}",
+		Text:      "{{strategy.order.alert_message}}",
+		Source:    "tradingview",
 	}
 	b, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

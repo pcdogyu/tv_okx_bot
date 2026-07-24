@@ -78,16 +78,21 @@ type Risk struct {
 }
 
 type Signal struct {
-	Action   Side          `json:"action"`
-	APIID    string        `json:"api_id,omitempty"`
-	Coinpair string        `json:"coinpair"`
-	Price    FlexibleFloat `json:"price"`
-	SentAt   string        `json:"sent_at"`
-	Ticker   string        `json:"ticker"`
-	Leverage int           `json:"leverage"`
-	Amount   FlexibleFloat `json:"amount"`
-	Risk     Risk          `json:"risk,omitempty"`
-	Token    string        `json:"token"`
+	Action    Side          `json:"action"`
+	APIID     string        `json:"api_id,omitempty"`
+	Coinpair  string        `json:"coinpair"`
+	Price     FlexibleFloat `json:"price"`
+	SentAt    string        `json:"sent_at"`
+	Time      string        `json:"time,omitempty"`
+	Ticker    string        `json:"ticker"`
+	Exchange  string        `json:"exchange,omitempty"`
+	Interval  string        `json:"interval,omitempty"`
+	Condition string        `json:"condition,omitempty"`
+	Text      string        `json:"text,omitempty"`
+	Leverage  int           `json:"leverage"`
+	Amount    FlexibleFloat `json:"amount"`
+	Risk      Risk          `json:"risk,omitempty"`
+	Token     string        `json:"token"`
 }
 
 type OrderSettings struct {
@@ -164,6 +169,15 @@ func (s *Signal) Normalize() {
 	s.APIID = strings.TrimSpace(s.APIID)
 	s.Coinpair = strings.ToUpper(strings.TrimSpace(s.Coinpair))
 	s.Ticker = strings.TrimSpace(s.Ticker)
+	s.SentAt = strings.TrimSpace(s.SentAt)
+	s.Exchange = strings.TrimSpace(s.Exchange)
+	s.Interval = strings.TrimSpace(s.Interval)
+	s.Condition = strings.TrimSpace(s.Condition)
+	s.Text = strings.TrimSpace(s.Text)
+	s.Time = strings.TrimSpace(s.Time)
+	if s.SentAt == "" && s.Time != "" {
+		s.SentAt = s.Time
+	}
 	if s.Coinpair == "" {
 		s.Coinpair = strings.ToUpper(s.Ticker)
 	}

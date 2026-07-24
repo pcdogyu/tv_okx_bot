@@ -28,6 +28,12 @@ func TestBuildTemplateProducesValidJSONAndToken(t *testing.T) {
 	if payload["action"] != "{{strategy.order.action}}" || payload["coinpair"] != "{{ticker}}" {
 		t.Fatalf("unexpected dynamic placeholders: %#v", payload)
 	}
+	if payload["exchange"] != "{{exchange}}" || payload["interval"] != "{{interval}}" {
+		t.Fatalf("unexpected TradingView market placeholders: %#v", payload)
+	}
+	if payload["condition"] != "{{strategy.order.comment}}" || payload["text"] != "{{strategy.order.alert_message}}" || payload["source"] != "tradingview" {
+		t.Fatalf("unexpected TradingView order fields: %#v", payload)
+	}
 	if _, ok := payload["risk"]; ok {
 		t.Fatalf("risk field should not be present: %#v", payload)
 	}
