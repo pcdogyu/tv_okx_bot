@@ -374,6 +374,14 @@ const tvbotHTML = `<!doctype html>
       font-weight: 700;
       overflow-wrap: anywhere;
     }
+    .signed-profit {
+      color: var(--green);
+      font-weight: 700;
+    }
+    .signed-loss {
+      color: var(--red);
+      font-weight: 700;
+    }
     .chart-wrap {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1322,10 +1330,23 @@ const tvbotHTML = `<!doctype html>
       }, 0);
     }
 
+    function signedToneClass(v) {
+      const value = Number(v);
+      if (!Number.isFinite(value) || value === 0) return "";
+      return value > 0 ? "signed-profit" : "signed-loss";
+    }
+
+    function signedCell(v, formatted) {
+      const tone = signedToneClass(v);
+      return '<td' + (tone ? ' class="' + tone + '"' : "") + ">" + escapeHTML(formatted) + "</td>";
+    }
+
     function renderPositions() {
       const rows = state.positions && Array.isArray(state.positions.positions) ? state.positions.positions : [];
+      const totalUpl = positionSum(rows, "upl");
       $("positions-count").textContent = state.positions ? asText(state.positions.count || rows.length) : "-";
-      $("positions-upl").textContent = state.positions ? formatNumber(positionSum(rows, "upl")) + " USDT" : "-";
+      $("positions-upl").textContent = state.positions ? formatNumber(totalUpl) + " USDT" : "-";
+      $("positions-upl").className = ["value", state.positions ? signedToneClass(totalUpl) : ""].filter(Boolean).join(" ");
       $("positions-notional").textContent = state.positions ? formatUSD(positionSum(rows, "notionalUsd")) : "-";
       $("positions-updated").textContent = state.positions && state.positions.refreshed_at ? shanghaiTime(state.positions.refreshed_at) : "-";
       if (!state.positions) {
@@ -1340,8 +1361,8 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(formatAssetAmount(row.availPos)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.avgPx)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.markPx)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.upl)) + "</td>" +
-          "<td>" + escapeHTML(positionPercent(row.uplRatio)) + "</td>" +
+          signedCell(row.upl, formatNumber(row.upl)) +
+          signedCell(row.uplRatio, positionPercent(row.uplRatio)) +
           "<td>" + escapeHTML(asText(row.lever)) + "</td>" +
           "<td>" + escapeHTML(asText(row.mgnMode)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +

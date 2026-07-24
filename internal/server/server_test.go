@@ -102,7 +102,10 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("持仓")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-api-id")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("position-rows")) {
+		!bytes.Contains(ui.Body.Bytes(), []byte("position-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("signed-profit")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("signed-loss")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("signedCell")) {
 		t.Fatalf("tvbot ui should include current positions tab")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("币对配置")) ||
