@@ -26,7 +26,10 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if !cfg.LiveTradingAllowedByEnvironment() {
 		return trading.OrderResult{}, fmt.Errorf("live trading requires config env=live, OKX_ENV=live and ALLOW_LIVE_TRADING=true")
 	}
-	client := t.client(cfg)
+	client, apiID, err := t.client(cfg, signal.APIID)
+	if err != nil {
+		return trading.OrderResult{}, err
+	}
 	sym, err := t.resolveSymbol(ctx, client, signal, cfg)
 	if err != nil {
 		return trading.OrderResult{}, err
@@ -61,6 +64,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	ack, env, err := client.PlaceOrder(ctx, req)
 	result := trading.OrderResult{
 		SignalID: "",
+		APIID:    apiID,
 		InstID:   sym.InstID,
 		ClOrdID:  clOrdID,
 		OrdID:    ack.OrdID,
@@ -71,7 +75,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		return result, err
 	}
 	if t.Logger != nil {
-		t.Logger.Info("okx order submitted", "inst_id", sym.InstID, "action", signal.Action, "cl_ord_id", clOrdID, "okx_code", env.Code)
+		t.Logger.Info("okx order submitted", "api_id", apiID, "inst_id", sym.InstID, "action", signal.Action, "cl_ord_id", clOrdID, "okx_code", env.Code)
 	}
 	return result, nil
 }
@@ -102,10 +106,36 @@ func (t Trader) resolveSymbol(ctx context.Context, client Client, signal trading
 }
 
 func (t Trader) Check(ctx context.Context, cfg trading.RuntimeConfig) (map[string]any, error) {
-	if err := t.credentials().Validate(); err != nil {
+	return t.CheckAccount(ctx, cfg, "")
+}
+
+func (t Trader) CheckAccount(ctx context.Context, cfg trading.RuntimeConfig, apiID string) (map[string]any, error) {
+	client, resolvedID, err := t.client(cfg, apiID)
+	if err != nil {
 		return nil, err
 	}
-	client := t.client(cfg)
+	return t.checkClient(ctx, cfg, client, resolvedID)
+}
+
+func (t Trader) CheckCredentials(ctx context.Context, cfg trading.RuntimeConfig, apiID string, creds Credentials) (map[string]any, error) {
+	creds = trimCredentials(creds)
+	if err := creds.Validate(); err != nil {
+		return nil, err
+	}
+	resolvedID := strings.TrimSpace(apiID)
+	if resolvedID == "" {
+		resolvedID = "input"
+	}
+	client := Client{
+		BaseURL:     cfg.OKXBaseURL(),
+		Credentials: creds,
+		Demo:        cfg.DemoTradingHeaderEnabled(),
+		HTTPClient:  t.HTTPClient,
+	}
+	return t.checkClient(ctx, cfg, client, resolvedID)
+}
+
+func (t Trader) checkClient(ctx context.Context, cfg trading.RuntimeConfig, client Client, apiID string) (map[string]any, error) {
 	balance, err := client.AccountBalance(ctx)
 	if err != nil {
 		return nil, err
@@ -116,6 +146,7 @@ func (t Trader) Check(ctx context.Context, cfg trading.RuntimeConfig) (map[strin
 	}
 	return map[string]any{
 		"ok":           true,
+		"api_id":       apiID,
 		"demo":         cfg.DemoTradingHeaderEnabled(),
 		"base_url":     cfg.OKXBaseURL(),
 		"balance_code": balance.Code,
@@ -124,20 +155,28 @@ func (t Trader) Check(ctx context.Context, cfg trading.RuntimeConfig) (map[strin
 	}, nil
 }
 
-func (t Trader) client(cfg trading.RuntimeConfig) Client {
+func (t Trader) client(cfg trading.RuntimeConfig, apiID string) (Client, string, error) {
+	creds, resolvedID, err := t.credentials(apiID)
+	if err != nil {
+		return Client{}, resolvedID, err
+	}
 	return Client{
 		BaseURL:     cfg.OKXBaseURL(),
-		Credentials: t.credentials(),
+		Credentials: creds,
 		Demo:        cfg.DemoTradingHeaderEnabled(),
 		HTTPClient:  t.HTTPClient,
-	}
+	}, resolvedID, nil
 }
 
-func (t Trader) credentials() Credentials {
+func (t Trader) credentials(apiID string) (Credentials, string, error) {
 	if t.CredentialProvider != nil {
-		return t.CredentialProvider.OKXCredentials()
+		return t.CredentialProvider.OKXCredentials(apiID)
 	}
-	return t.Credentials
+	creds := trimCredentials(t.Credentials)
+	if err := creds.Validate(); err != nil {
+		return Credentials{}, strings.TrimSpace(apiID), err
+	}
+	return creds, strings.TrimSpace(apiID), nil
 }
 
 func okxSide(action trading.Side) string {

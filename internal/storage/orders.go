@@ -27,6 +27,7 @@ type OrderRecord struct {
 	DedupeKey  string              `json:"dedupe_key"`
 	Status     OrderStatus         `json:"status"`
 	Action     trading.Side        `json:"action"`
+	APIID      string              `json:"api_id,omitempty"`
 	Coinpair   string              `json:"coinpair"`
 	Ticker     string              `json:"ticker"`
 	Price      string              `json:"price"`
@@ -81,6 +82,7 @@ func (s *OrderStore) RecordAccepted(signal trading.Signal, dedupeKey string, now
 		DedupeKey:  dedupeKey,
 		Status:     StatusAccepted,
 		Action:     signal.Action,
+		APIID:      signal.APIID,
 		Coinpair:   signal.Coinpair,
 		Ticker:     signal.Ticker,
 		Price:      trading.NormalizeFloat(signal.Price.Value),
@@ -194,6 +196,7 @@ func (s *OrderStore) saveLocked() error {
 
 func DedupeKey(signal trading.Signal) string {
 	payload := string(signal.Action) + "|" +
+		signal.APIID + "|" +
 		signal.Coinpair + "|" +
 		trading.NormalizeFloat(signal.Price.Value) + "|" +
 		signal.SentAt + "|" +

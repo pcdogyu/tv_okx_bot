@@ -3,6 +3,7 @@ package okx
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,12 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
+
+type credentialProviderFunc func(string) (Credentials, string, error)
+
+func (f credentialProviderFunc) OKXCredentials(apiID string) (Credentials, string, error) {
+	return f(apiID)
+}
 
 func TestTraderExecuteSignalPlacesLeverageAndOrderWithTPSL(t *testing.T) {
 	var leverageSeen bool
@@ -130,6 +137,52 @@ func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *
 	}
 	if orderReq.InstID != "ETH-USDT-SWAP" || orderReq.Side != "sell" || orderReq.Sz != "0.4" {
 		t.Fatalf("bad dynamic order request: %#v", orderReq)
+	}
+}
+
+func TestTraderExecuteSignalUsesSelectedAPIIDCredentials(t *testing.T) {
+	var seenAPIKey string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/set-leverage":
+			seenAPIKey = r.Header.Get("OK-ACCESS-KEY")
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"x","ordId":"123","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	signal := trading.Signal{
+		Action:   trading.ActionLong,
+		APIID:    "backup",
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		SentAt:   "2026-07-24T03:00:00Z",
+		Ticker:   "BTCUSDT",
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(100),
+	}
+	trader := Trader{
+		CredentialProvider: credentialProviderFunc(func(apiID string) (Credentials, string, error) {
+			if apiID != "backup" {
+				return Credentials{}, apiID, fmt.Errorf("unexpected api id %q", apiID)
+			}
+			return Credentials{APIKey: "backup-key", SecretKey: "backup-secret", Passphrase: "backup-pass"}, apiID, nil
+		}),
+		HTTPClient: ts.Client(),
+	}
+	result, err := trader.ExecuteSignal(context.Background(), signal, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.APIID != "backup" || seenAPIKey != "backup-key" {
+		t.Fatalf("api result=%q header=%q", result.APIID, seenAPIKey)
 	}
 }
 

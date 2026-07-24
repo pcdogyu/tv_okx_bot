@@ -79,6 +79,7 @@ type Risk struct {
 
 type Signal struct {
 	Action   Side          `json:"action"`
+	APIID    string        `json:"api_id,omitempty"`
 	Coinpair string        `json:"coinpair"`
 	Price    FlexibleFloat `json:"price"`
 	SentAt   string        `json:"sent_at"`
@@ -91,6 +92,7 @@ type Signal struct {
 
 type TemplateRequest struct {
 	PriceSource string        `json:"price_source"`
+	APIID       string        `json:"api_id,omitempty"`
 	Leverage    int           `json:"leverage"`
 	Amount      FlexibleFloat `json:"amount"`
 }
@@ -102,6 +104,7 @@ type TemplateResponse struct {
 
 type OrderResult struct {
 	SignalID string `json:"signal_id"`
+	APIID    string `json:"api_id,omitempty"`
 	InstID   string `json:"inst_id"`
 	ClOrdID  string `json:"cl_ord_id"`
 	OrdID    string `json:"ord_id,omitempty"`
@@ -147,6 +150,7 @@ func (s *Signal) Normalize() {
 	default:
 		s.Action = Side(strings.ToLower(strings.TrimSpace(string(s.Action))))
 	}
+	s.APIID = strings.TrimSpace(s.APIID)
 	s.Coinpair = strings.ToUpper(strings.TrimSpace(s.Coinpair))
 	s.Ticker = strings.TrimSpace(s.Ticker)
 	if s.Coinpair == "" {
@@ -270,7 +274,16 @@ func NormalizeOptionalFloat(v *FlexibleFloat) string {
 	return NormalizeFloat(v.Value)
 }
 
-func CanonicalTokenPayload(leverage int, amount FlexibleFloat) string {
+func CanonicalTokenPayload(leverage int, amount FlexibleFloat, apiID string) string {
+	apiID = strings.TrimSpace(apiID)
+	if apiID != "" {
+		return strings.Join([]string{
+			"v3",
+			apiID,
+			strconv.Itoa(leverage),
+			NormalizeFloat(amount.Value),
+		}, "\n")
+	}
 	return strings.Join([]string{
 		"v2",
 		strconv.Itoa(leverage),
@@ -279,9 +292,9 @@ func CanonicalTokenPayload(leverage int, amount FlexibleFloat) string {
 }
 
 func (s Signal) CanonicalTokenPayload() string {
-	return CanonicalTokenPayload(s.Leverage, s.Amount)
+	return CanonicalTokenPayload(s.Leverage, s.Amount, s.APIID)
 }
 
 func (t TemplateRequest) CanonicalTokenPayload() string {
-	return CanonicalTokenPayload(t.Leverage, t.Amount)
+	return CanonicalTokenPayload(t.Leverage, t.Amount, t.APIID)
 }

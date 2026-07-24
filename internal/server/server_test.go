@@ -153,9 +153,33 @@ func TestTVOrderAllowsUnconfiguredCoinpair(t *testing.T) {
 	}
 }
 
+func TestTVOrderPassesSelectedAPIID(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.APIID = "backup"
+	signal.Token = srv.Token.Generate(signal.CanonicalTokenPayload())
+	body, err := json.Marshal(signal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		if got.APIID != "backup" {
+			t.Fatalf("api id = %q", got.APIID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor was not called")
+	}
+}
+
 func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	srv := newTestServer(t)
-	reqBody := []byte(`{"price_source":"high","leverage":3,"amount":50}`)
+	reqBody := []byte(`{"price_source":"high","api_id":"backup","leverage":3,"amount":50}`)
 	req := httptest.NewRequest(http.MethodPost, "/tvbot/templates", bytes.NewReader(reqBody))
 	req.Header.Set("X-Admin-Token", "admin")
 	rr := httptest.NewRecorder()
@@ -167,7 +191,7 @@ func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Token) != 88 || !bytes.Contains([]byte(resp.JSON), []byte(`"price": "{{high}}"`)) {
+	if len(resp.Token) != 88 || !bytes.Contains([]byte(resp.JSON), []byte(`"price": "{{high}}"`)) || !bytes.Contains([]byte(resp.JSON), []byte(`"api_id": "backup"`)) {
 		t.Fatalf("bad template response: %#v", resp)
 	}
 	if bytes.Contains([]byte(resp.JSON), []byte(`"risk"`)) {
@@ -197,6 +221,66 @@ func TestTVBotAPIKeysSaveAndMask(t *testing.T) {
 	srv.ServeHTTP(get, getReq)
 	if get.Code != http.StatusOK || bytes.Contains(get.Body.Bytes(), []byte("super-secret-value")) || bytes.Contains(get.Body.Bytes(), []byte("phrase-value")) {
 		t.Fatalf("get status=%d body=%s", get.Code, get.Body.String())
+	}
+}
+
+func TestTVBotAPIKeysTestUsesSelectedStoredAccount(t *testing.T) {
+	var seenAPIKey string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/balance":
+			seenAPIKey = r.Header.Get("OK-ACCESS-KEY")
+			if r.Header.Get("x-simulated-trading") != "1" {
+				t.Fatal("missing demo header")
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/public/instruments":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	srv := newTestServer(t)
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = ts.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID: "main",
+		Credentials: okx.Credentials{
+			APIKey:     "main-key",
+			SecretKey:  "main-secret",
+			Passphrase: "main-pass",
+		},
+		Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID: "backup",
+		Credentials: okx.Credentials{
+			APIKey:     "backup-key",
+			SecretKey:  "backup-secret",
+			Passphrase: "backup-pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/api-keys/test", bytes.NewReader([]byte(`{"id":"backup"}`)))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if seenAPIKey != "backup-key" {
+		t.Fatalf("used api key %q", seenAPIKey)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"api_id":"backup"`)) {
+		t.Fatalf("response missing api id: %s", rr.Body.String())
 	}
 }
 

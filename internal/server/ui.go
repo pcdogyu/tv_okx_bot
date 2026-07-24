@@ -239,6 +239,34 @@ const tvbotHTML = `<!doctype html>
       grid-template-columns: 0.95fr 1.05fr;
       gap: 14px;
     }
+    .api-key-layout {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 14px;
+      align-items: start;
+    }
+    .api-key-form {
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+    .api-key-inputs {
+      align-items: start;
+    }
+    .api-key-inputs label {
+      align-content: start;
+    }
+    .api-key-inputs input {
+      min-height: 29px;
+      height: 29px;
+      padding-top: 5px;
+      padding-bottom: 5px;
+    }
+    .table-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
     pre {
       margin: 0;
       white-space: pre-wrap;
@@ -267,7 +295,7 @@ const tvbotHTML = `<!doctype html>
     @media (max-width: 880px) {
       .bar { align-items: flex-start; flex-direction: column; }
       nav { justify-content: flex-start; }
-      .status, .grid, .grid.two, .split { grid-template-columns: 1fr; }
+      .status, .grid, .grid.two, .split, .api-key-layout { grid-template-columns: 1fr; }
       main { padding: 12px; }
       section { padding: 12px; }
     }
@@ -322,18 +350,38 @@ const tvbotHTML = `<!doctype html>
     <section id="apiKeys">
       <div class="section-head">
         <h2>API Key</h2>
-        <button class="btn primary" type="button" id="save-api-keys">保存 API Key</button>
+        <div class="actions" style="margin-top:0">
+          <button class="btn primary" type="button" id="save-api-keys">保存 API Key</button>
+          <button class="btn success" type="button" id="test-api-keys">测试 API</button>
+        </div>
       </div>
-      <div class="split">
-        <div class="grid">
-          <label>OKX API Key<input id="key-api" autocomplete="off" spellcheck="false"></label>
-          <label>OKX Secret Key<input id="key-secret" type="password" autocomplete="new-password" spellcheck="false"></label>
-          <label>OKX Passphrase<input id="key-passphrase" type="password" autocomplete="new-password" spellcheck="false"></label>
+      <div class="api-key-layout">
+        <div class="api-key-form">
+          <div class="grid two">
+            <label>交易 API<select id="key-selected"></select></label>
+            <label>账户名称<input id="key-name" autocomplete="off" spellcheck="false"></label>
+            <label>API ID<input id="key-id" autocomplete="off" spellcheck="false" placeholder="default"></label>
+            <label class="check"><input id="key-active" type="checkbox">设为交易 API</label>
+          </div>
+          <div class="grid api-key-inputs">
+            <label>OKX API Key<input id="key-api" autocomplete="off" spellcheck="false"></label>
+            <label>OKX Secret Key<input id="key-secret" type="password" autocomplete="new-password" spellcheck="false"></label>
+            <label>OKX Passphrase<input id="key-passphrase" type="password" autocomplete="new-password" spellcheck="false"></label>
+          </div>
+          <div class="actions">
+            <button class="btn" type="button" id="add-api-key">新增 API</button>
+            <button class="btn danger" type="button" id="delete-api-key">删除当前 API</button>
+          </div>
         </div>
         <div>
           <h3>当前状态</h3>
           <table style="margin-top:10px">
             <tbody id="api-key-status"></tbody>
+          </table>
+          <h3 style="margin-top:14px">API 列表</h3>
+          <table style="margin-top:10px">
+            <thead><tr><th>API ID</th><th>名称</th><th>状态</th><th>API Key</th></tr></thead>
+            <tbody id="api-key-accounts"></tbody>
           </table>
         </div>
       </div>
@@ -377,6 +425,7 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="split">
         <div class="grid two">
+          <label>交易 API<select id="tpl-api-id"></select></label>
           <label>价格源<select id="tpl-price-source"><option value="close">close</option><option value="high">high</option><option value="low">low</option></select></label>
           <label>杠杆<input id="tpl-leverage" type="number" min="1" step="1" value="5"></label>
           <label>USDT 名义金额<input id="tpl-amount" type="number" min="0" step="0.01" value="100"></label>
@@ -395,7 +444,7 @@ const tvbotHTML = `<!doctype html>
       </div>
       <table>
         <thead>
-          <tr><th>时间</th><th>状态</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th>OKX</th></tr>
+          <tr><th>时间</th><th>状态</th><th>API</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th>OKX</th></tr>
         </thead>
         <tbody id="order-rows"></tbody>
       </table>
@@ -415,7 +464,7 @@ const tvbotHTML = `<!doctype html>
   <div class="toast" id="toast"></div>
 
   <script>
-    const state = { config: null, apiKeys: null, symbols: {}, orders: [], upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", symbols: {}, orders: [], upgrade: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -471,6 +520,7 @@ const tvbotHTML = `<!doctype html>
     async function loadAPIKeys() {
       state.apiKeys = await api("/tvbot/api-keys");
       renderAPIKeys();
+      renderTemplateAPIs();
       updateMetrics();
     }
 
@@ -489,7 +539,7 @@ const tvbotHTML = `<!doctype html>
 
     function updateMetrics() {
       $("metric-env").textContent = state.config && state.config.trading ? state.config.trading.env : "-";
-      $("metric-api-keys").textContent = state.apiKeys && state.apiKeys.configured ? "已配置" : "未配置";
+      $("metric-api-keys").textContent = state.apiKeys && state.apiKeys.configured ? (state.apiKeys.active_id || "已配置") : "未配置";
       $("metric-symbols").textContent = Object.keys(state.symbols || {}).length;
       $("metric-orders").textContent = state.orders ? state.orders.length : "-";
     }
@@ -524,8 +574,20 @@ const tvbotHTML = `<!doctype html>
 
     function renderAPIKeys() {
       const status = state.apiKeys || {};
+      const accounts = apiAccounts();
+      const select = $("key-selected");
+      const previous = state.selectedAPIID || select.value || status.active_id || "";
+      select.innerHTML = accounts.map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>').join("");
+      if (!accounts.length) {
+        select.innerHTML = '<option value="default">default - 新 API</option>';
+      }
+      const selected = accounts.some((account) => account.id === previous) ? previous : (status.active_id || (accounts[0] && accounts[0].id) || "default");
+      select.value = selected;
+      state.selectedAPIID = selected;
+      fillAPIForm(selected);
       const rows = [
         ["配置状态", status.configured ? "已配置" : "未配置"],
+        ["交易 API", status.active_id || "-"],
         ["API Key", status.api_key_masked || "-"],
         ["Secret Key", status.secret_key_set ? "已保存" : "未保存"],
         ["Passphrase", status.passphrase_set ? "已保存" : "未保存"],
@@ -533,6 +595,40 @@ const tvbotHTML = `<!doctype html>
         ["更新时间", status.updated_at || "-"]
       ];
       $("api-key-status").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(row[1]) + "</td></tr>").join("");
+      $("api-key-accounts").innerHTML = accounts.map((account) => {
+        return "<tr>" +
+          "<td>" + escapeHTML(account.id) + "</td>" +
+          "<td>" + escapeHTML(account.name || "-") + "</td>" +
+          "<td>" + pill(account.active ? "交易 API" : (account.configured ? "已配置" : "未配置"), account.active ? "ok" : (account.configured ? "warn" : "bad")) + "</td>" +
+          "<td>" + escapeHTML(account.api_key_masked || "-") + "</td>" +
+          "</tr>";
+      }).join("") || '<tr><td colspan="4" class="muted">-</td></tr>';
+    }
+
+    function apiAccounts() {
+      return state.apiKeys && Array.isArray(state.apiKeys.credentials) ? state.apiKeys.credentials : [];
+    }
+
+    function selectedAPIAccount(id) {
+      return apiAccounts().find((account) => account.id === id) || null;
+    }
+
+    function fillAPIForm(id) {
+      const account = selectedAPIAccount(id);
+      $("key-id").value = account ? account.id : (id || "default");
+      $("key-name").value = account ? (account.name || "") : "";
+      $("key-active").checked = account ? !!account.active : true;
+      $("key-api").value = "";
+      $("key-secret").value = "";
+      $("key-passphrase").value = "";
+    }
+
+    function renderTemplateAPIs() {
+      const options = apiAccounts().map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
+      $("tpl-api-id").innerHTML = '<option value="">默认交易 API</option>' + options.join("");
+      if (state.apiKeys && state.apiKeys.active_id) {
+        $("tpl-api-id").value = state.apiKeys.active_id;
+      }
     }
 
     function symbolRow(key, sym) {
@@ -576,6 +672,7 @@ const tvbotHTML = `<!doctype html>
         return "<tr>" +
           "<td>" + escapeHTML(asText(order.accepted_at)) + "</td>" +
           "<td>" + pill(order.status, tone) + "</td>" +
+          "<td>" + escapeHTML(asText(order.api_id || (order.result && order.result.api_id))) + "</td>" +
           "<td>" + escapeHTML(asText(order.action)) + "</td>" +
           "<td>" + escapeHTML(asText(order.coinpair)) + "</td>" +
           "<td>" + escapeHTML(asText(order.price)) + "</td>" +
@@ -583,7 +680,7 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(okx) + "</td>" +
           "</tr>";
       });
-      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="7" class="muted">-</td></tr>';
+      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="8" class="muted">-</td></tr>';
     }
 
     function renderUpgrade() {
@@ -612,17 +709,46 @@ const tvbotHTML = `<!doctype html>
 
     async function saveAPIKeys() {
       const body = {
+        id: $("key-id").value.trim(),
+        name: $("key-name").value.trim(),
         api_key: $("key-api").value.trim(),
         secret_key: $("key-secret").value.trim(),
-        passphrase: $("key-passphrase").value.trim()
+        passphrase: $("key-passphrase").value.trim(),
+        active: $("key-active").checked
       };
       state.apiKeys = await api("/tvbot/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      state.selectedAPIID = body.id || state.apiKeys.active_id || "default";
       $("key-api").value = "";
       $("key-secret").value = "";
       $("key-passphrase").value = "";
       renderAPIKeys();
+      renderTemplateAPIs();
       updateMetrics();
       toast("API Key 已保存");
+    }
+
+    async function testAPIKeys() {
+      const body = {
+        id: $("key-id").value.trim(),
+        api_key: $("key-api").value.trim(),
+        secret_key: $("key-secret").value.trim(),
+        passphrase: $("key-passphrase").value.trim()
+      };
+      $("okx-output").textContent = "checking...";
+      const result = await api("/tvbot/api-keys/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      $("okx-output").textContent = JSON.stringify(result, null, 2);
+      toast("API 可用");
+    }
+
+    async function deleteAPIKey() {
+      const id = $("key-id").value.trim() || $("key-selected").value;
+      if (!id) return;
+      state.apiKeys = await api("/tvbot/api-keys?id=" + encodeURIComponent(id), { method: "DELETE" });
+      state.selectedAPIID = state.apiKeys.active_id || "";
+      renderAPIKeys();
+      renderTemplateAPIs();
+      updateMetrics();
+      toast("API Key 已删除");
     }
 
     async function saveSymbols() {
@@ -634,6 +760,7 @@ const tvbotHTML = `<!doctype html>
 
     async function makeTemplate() {
       const req = {
+        api_id: $("tpl-api-id").value,
         price_source: $("tpl-price-source").value,
         leverage: Number($("tpl-leverage").value),
         amount: Number($("tpl-amount").value)
@@ -646,7 +773,8 @@ const tvbotHTML = `<!doctype html>
     async function checkOKX() {
       $("okx-output").textContent = "checking...";
       try {
-        const result = await api("/tvbot/check-okx", { method: "POST" });
+        const body = state.apiKeys && state.apiKeys.active_id ? { api_id: state.apiKeys.active_id } : {};
+        const result = await api("/tvbot/check-okx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         $("okx-output").textContent = JSON.stringify(result, null, 2);
       } catch (err) {
         $("okx-output").textContent = err.message;
@@ -685,6 +813,26 @@ const tvbotHTML = `<!doctype html>
     $("check-okx").addEventListener("click", () => checkOKX());
     $("save-config").addEventListener("click", () => saveConfig().catch((err) => toast(err.message)));
     $("save-api-keys").addEventListener("click", () => saveAPIKeys().catch((err) => toast(err.message)));
+    $("test-api-keys").addEventListener("click", () => testAPIKeys().catch((err) => {
+      $("okx-output").textContent = err.message;
+      toast(err.message);
+    }));
+    $("delete-api-key").addEventListener("click", () => deleteAPIKey().catch((err) => toast(err.message)));
+    $("add-api-key").addEventListener("click", () => {
+      state.selectedAPIID = "";
+      $("key-selected").value = "";
+      $("key-id").value = "";
+      $("key-name").value = "";
+      $("key-active").checked = !state.apiKeys || !state.apiKeys.configured;
+      $("key-api").value = "";
+      $("key-secret").value = "";
+      $("key-passphrase").value = "";
+      $("key-id").focus();
+    });
+    $("key-selected").addEventListener("change", () => {
+      state.selectedAPIID = $("key-selected").value;
+      fillAPIForm(state.selectedAPIID);
+    });
     $("save-symbols").addEventListener("click", () => saveSymbols().catch((err) => toast(err.message)));
     $("add-symbol").addEventListener("click", () => {
       $("symbol-rows").insertAdjacentHTML("beforeend", symbolRow("", { coinpair: "", inst_id: "", ct_val: "", lot_sz: "", min_sz: "" }));

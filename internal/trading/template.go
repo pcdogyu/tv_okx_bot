@@ -12,6 +12,7 @@ type TokenGenerator interface {
 
 func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateResponse, error) {
 	req.PriceSource = strings.ToLower(strings.TrimSpace(req.PriceSource))
+	req.APIID = strings.TrimSpace(req.APIID)
 	if req.PriceSource == "" {
 		req.PriceSource = "close"
 	}
@@ -20,6 +21,7 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 	}
 	signal := Signal{
 		Action:   "{{strategy.order.action}}",
+		APIID:    req.APIID,
 		Coinpair: "{{ticker}}",
 		Price:    NewFlexibleFloat(0),
 		SentAt:   "{{timenow}}",
@@ -43,6 +45,9 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		"leverage": signal.Leverage,
 		"amount":   signal.Amount,
 		"token":    token,
+	}
+	if req.APIID != "" {
+		payload["api_id"] = req.APIID
 	}
 	b, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

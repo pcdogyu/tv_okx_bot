@@ -135,6 +135,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handleOrders(w, r)
 	case "/api-keys":
 		s.handleAPIKeys(w, r)
+	case "/api-keys/test":
+		s.handleAPIKeyTest(w, r)
 	case "/check-okx":
 		s.handleCheckOKX(w, r)
 	default:
@@ -152,27 +154,94 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.OKXCredentials.Status())
 	case http.MethodPut:
 		var req struct {
+			ID         string `json:"id"`
+			Name       string `json:"name"`
 			APIKey     string `json:"api_key"`
 			SecretKey  string `json:"secret_key"`
 			Passphrase string `json:"passphrase"`
+			Active     *bool  `json:"active"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 			return
 		}
-		status, err := s.OKXCredentials.Update(okx.Credentials{
-			APIKey:     req.APIKey,
-			SecretKey:  req.SecretKey,
-			Passphrase: req.Passphrase,
+		active := false
+		if req.Active != nil {
+			active = *req.Active
+		}
+		status, err := s.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+			ID:              req.ID,
+			Name:            req.Name,
+			Active:          active,
+			PreserveMissing: true,
+			Credentials: okx.Credentials{
+				APIKey:     req.APIKey,
+				SecretKey:  req.SecretKey,
+				Passphrase: req.Passphrase,
+			},
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, status)
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		status, err := s.OKXCredentials.DeleteAccount(id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and PUT are allowed")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET, PUT and DELETE are allowed")
 	}
+}
+
+func (s *Server) handleAPIKeyTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
+		return
+	}
+	var req struct {
+		ID         string `json:"id"`
+		APIKey     string `json:"api_key"`
+		SecretKey  string `json:"secret_key"`
+		Passphrase string `json:"passphrase"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	creds := okx.Credentials{
+		APIKey:     strings.TrimSpace(req.APIKey),
+		SecretKey:  strings.TrimSpace(req.SecretKey),
+		Passphrase: strings.TrimSpace(req.Passphrase),
+	}
+	cfg := s.ConfigStore.Get()
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	if credentialFieldsProvided(creds) {
+		if s.OKXCredentials != nil {
+			if stored, resolvedID, err := s.OKXCredentials.OKXCredentials(req.ID); err == nil {
+				req.ID = resolvedID
+				mergeMissingCredentials(&creds, stored)
+			}
+		}
+		result, err := checkOKXCredentials(ctx, cfg, req.ID, creds)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "okx_check_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	result, err := s.checkStoredOKX(ctx, cfg, req.ID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "okx_check_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +356,26 @@ func (s *Server) handleCheckOKX(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
 		return
 	}
+	var req struct {
+		APIID string `json:"api_id"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+	}
+	if strings.TrimSpace(req.APIID) != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		result, err := s.checkStoredOKX(ctx, s.ConfigStore.Get(), req.APIID)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "okx_check_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	if s.Executor == nil {
 		writeError(w, http.StatusServiceUnavailable, "not_configured", "executor is not configured")
 		return
@@ -299,6 +388,43 @@ func (s *Server) handleCheckOKX(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) checkStoredOKX(ctx context.Context, cfg trading.RuntimeConfig, apiID string) (map[string]any, error) {
+	if s.OKXCredentials == nil {
+		return nil, errors.New("OKX credential store is not configured")
+	}
+	creds, resolvedID, err := s.OKXCredentials.OKXCredentials(apiID)
+	if err != nil {
+		return nil, err
+	}
+	return checkOKXCredentials(ctx, cfg, resolvedID, creds)
+}
+
+func checkOKXCredentials(ctx context.Context, cfg trading.RuntimeConfig, apiID string, creds okx.Credentials) (map[string]any, error) {
+	trader := okx.Trader{
+		Credentials: creds,
+		HTTPClient:  &http.Client{Timeout: 15 * time.Second},
+	}
+	return trader.CheckCredentials(ctx, cfg, apiID, creds)
+}
+
+func credentialFieldsProvided(creds okx.Credentials) bool {
+	return strings.TrimSpace(creds.APIKey) != "" ||
+		strings.TrimSpace(creds.SecretKey) != "" ||
+		strings.TrimSpace(creds.Passphrase) != ""
+}
+
+func mergeMissingCredentials(creds *okx.Credentials, stored okx.Credentials) {
+	if strings.TrimSpace(creds.APIKey) == "" {
+		creds.APIKey = stored.APIKey
+	}
+	if strings.TrimSpace(creds.SecretKey) == "" {
+		creds.SecretKey = stored.SecretKey
+	}
+	if strings.TrimSpace(creds.Passphrase) == "" {
+		creds.Passphrase = stored.Passphrase
+	}
 }
 
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
