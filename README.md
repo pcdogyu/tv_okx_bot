@@ -66,4 +66,4 @@ sudo systemctl restart tv-okx-bot.service
 sudo systemctl status tv-okx-bot.service
 ```
 
-The service listens on `0.0.0.0:18080` by default. The `/upgrade` endpoint writes status to `/opt/tv_okx_bot/data/upgrade-status.json`, then schedules `/usr/bin/sudo /bin/systemctl restart tv-okx-bot.service`; the installer adds a narrow sudoers rule for that restart command.
+The service listens on `0.0.0.0:18080` by default. The `/upgrade` endpoint writes status to `/var/lib/tv-okx-bot/upgrade-status.json`, then schedules `/usr/bin/sudo /bin/systemctl restart tv-okx-bot.service`; the installer adds a narrow sudoers rule for that restart command.

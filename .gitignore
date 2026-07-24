@@ -1,4 +1,6 @@
 tv-okx-bot.exe
+tv-okx-bot
+tv-okx-bot.new
 *.test
 coverage.out
 config.json
@@ -6,3 +8,6 @@ data/
 dist/
 tmp/
 pem/
+.cache/
+.config/
+/go/

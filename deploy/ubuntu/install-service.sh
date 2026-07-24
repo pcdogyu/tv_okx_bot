@@ -5,6 +5,7 @@ APP_USER="${APP_USER:-tvokx}"
 APP_GROUP="${APP_GROUP:-tvokx}"
 APP_DIR="${APP_DIR:-/opt/tv_okx_bot}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/tv-okx-bot}"
+STATE_DIR="${STATE_DIR:-/var/lib/tv-okx-bot}"
 SERVICE_NAME="${SERVICE_NAME:-tv-okx-bot.service}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -25,7 +26,7 @@ if ! id "${APP_USER}" >/dev/null 2>&1; then
   useradd --system --gid "${APP_GROUP}" --create-home --home-dir "${APP_DIR}" --shell /usr/sbin/nologin "${APP_USER}"
 fi
 
-mkdir -p "${APP_DIR}" "${CONFIG_DIR}"
+mkdir -p "${APP_DIR}" "${CONFIG_DIR}" "${STATE_DIR}"
 rsync -a --delete \
   --exclude 'data' \
   --exclude 'tmp' \
@@ -41,7 +42,7 @@ if [[ ! -f "${CONFIG_DIR}/tv-okx-bot.env" ]]; then
   chmod 600 "${CONFIG_DIR}/tv-okx-bot.env"
 fi
 
-chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}" "${CONFIG_DIR}"
+chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}" "${CONFIG_DIR}" "${STATE_DIR}"
 
 sudo --preserve-env=PATH -u "${APP_USER}" bash -lc "cd '${APP_DIR}' && go test ./... && go build -o '${APP_DIR}/tv-okx-bot' ./cmd/tv-okx-bot"
 
