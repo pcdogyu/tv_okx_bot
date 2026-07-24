@@ -96,6 +96,12 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("订单分析")) {
 		t.Fatalf("tvbot ui should include order analysis tab")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("activateTab")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("localStorage")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("location.hash")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("tvbot.active_tab")) {
+		t.Fatalf("tvbot ui should remember active tab across refresh")
+	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("Code by Yuhao@jiansutech.com - 2026-07-24T03:00:00Z - testhash - testbranch")) {
 		t.Fatalf("tvbot ui should include build footer")
 	}

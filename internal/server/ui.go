@@ -589,6 +589,7 @@ const tvbotHTML = `<!doctype html>
   <div class="toast" id="toast"></div>
 
   <script>
+    const activeTabStorageKey = "tvbot.active_tab";
     const state = { config: null, apiKeys: null, selectedAPIID: "", orders: [], analysis: null, analysisError: "", upgrade: null };
     const $ = (id) => document.getElementById(id);
 
@@ -666,6 +667,46 @@ const tvbotHTML = `<!doctype html>
 
     function escapeHTML(v) {
       return String(v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+
+    function tabButton(tabID) {
+      return Array.from(document.querySelectorAll("nav button")).find((button) => button.dataset.tab === tabID) || null;
+    }
+
+    function activateTab(tabID, persist) {
+      let target = tabID || "dashboard";
+      let button = tabButton(target);
+      let section = $(target);
+      if (!button || !section) {
+        target = "dashboard";
+        button = tabButton(target);
+        section = $(target);
+      }
+      document.querySelectorAll("nav button").forEach((b) => b.setAttribute("aria-selected", "false"));
+      document.querySelectorAll("main section").forEach((s) => s.classList.remove("active"));
+      if (button && section) {
+        button.setAttribute("aria-selected", "true");
+        section.classList.add("active");
+      }
+      if (persist) {
+        try { localStorage.setItem(activeTabStorageKey, target); } catch (_) {}
+        if (window.history && location.hash !== "#" + target) {
+          history.replaceState(null, "", "#" + target);
+        }
+      }
+      if (target === "analysis" && !state.analysis) {
+        loadAnalysis(false).catch((err) => toast(err.message));
+      }
+    }
+
+    function initialTab() {
+      const fromHash = location.hash ? location.hash.slice(1) : "";
+      if (fromHash && tabButton(fromHash) && $(fromHash)) return fromHash;
+      try {
+        const stored = localStorage.getItem(activeTabStorageKey);
+        if (stored && tabButton(stored) && $(stored)) return stored;
+      } catch (_) {}
+      return "dashboard";
     }
 
     async function loadAll() {
@@ -1069,13 +1110,7 @@ const tvbotHTML = `<!doctype html>
 
     document.querySelectorAll("nav button").forEach((button) => {
       button.addEventListener("click", () => {
-        document.querySelectorAll("nav button").forEach((b) => b.setAttribute("aria-selected", "false"));
-        document.querySelectorAll("main section").forEach((s) => s.classList.remove("active"));
-        button.setAttribute("aria-selected", "true");
-        $(button.dataset.tab).classList.add("active");
-        if (button.dataset.tab === "analysis" && !state.analysis) {
-          loadAnalysis(false).catch((err) => toast(err.message));
-        }
+        activateTab(button.dataset.tab, true);
       });
     });
 
@@ -1119,6 +1154,7 @@ const tvbotHTML = `<!doctype html>
     $("refresh-upgrade").addEventListener("click", () => loadUpgrade().then(() => toast("升级状态已刷新")).catch((err) => toast(err.message)));
     $("start-upgrade").addEventListener("click", () => startUpgrade().catch((err) => toast(err.message)));
 
+    activateTab(initialTab(), false);
     loadAll().catch((err) => toast(err.message));
   </script>
 </body>
