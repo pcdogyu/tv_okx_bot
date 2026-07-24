@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -153,7 +152,7 @@ func (t Trader) CheckCredentials(ctx context.Context, cfg trading.RuntimeConfig,
 }
 
 func (t Trader) checkClient(ctx context.Context, cfg trading.RuntimeConfig, client Client, apiID string) (map[string]any, error) {
-	balance, err := client.AccountBalance(ctx)
+	balanceData, balance, err := client.AccountBalanceSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +160,7 @@ func (t Trader) checkClient(ctx context.Context, cfg trading.RuntimeConfig, clie
 	if err != nil {
 		return nil, err
 	}
-	usdtBalance, usdtBalanceFound := parseUSDTBalance(balance.Data)
+	usdtBalance, usdtBalanceFound := usdtBalanceFromAccount(balanceData)
 	return map[string]any{
 		"ok":                 true,
 		"api_id":             apiID,
@@ -175,38 +174,19 @@ func (t Trader) checkClient(ctx context.Context, cfg trading.RuntimeConfig, clie
 	}, nil
 }
 
-func parseUSDTBalance(data json.RawMessage) (USDTBalance, bool) {
-	type balanceDetail struct {
-		Ccy              string `json:"ccy"`
-		Equity           string `json:"eq"`
-		AvailableEquity  string `json:"availEq"`
-		AvailableBalance string `json:"availBal"`
-		CashBalance      string `json:"cashBal"`
-		FrozenBalance    string `json:"frozenBal"`
-		UpdateTime       string `json:"uTime"`
-	}
-	type balanceAccount struct {
-		TotalEquity string          `json:"totalEq"`
-		Details     []balanceDetail `json:"details"`
-	}
-	var accounts []balanceAccount
-	if len(data) == 0 || json.Unmarshal(data, &accounts) != nil {
-		return USDTBalance{}, false
-	}
-	for _, account := range accounts {
-		for _, detail := range account.Details {
-			if strings.EqualFold(detail.Ccy, "USDT") {
-				return USDTBalance{
-					Ccy:              "USDT",
-					TotalEquity:      account.TotalEquity,
-					Equity:           detail.Equity,
-					AvailableEquity:  detail.AvailableEquity,
-					AvailableBalance: detail.AvailableBalance,
-					CashBalance:      detail.CashBalance,
-					FrozenBalance:    detail.FrozenBalance,
-					UpdateTime:       detail.UpdateTime,
-				}, true
-			}
+func usdtBalanceFromAccount(account AccountBalanceData) (USDTBalance, bool) {
+	for _, detail := range account.Details {
+		if strings.EqualFold(detail.Ccy, "USDT") {
+			return USDTBalance{
+				Ccy:              "USDT",
+				TotalEquity:      account.TotalEq,
+				Equity:           detail.Eq,
+				AvailableEquity:  detail.AvailEq,
+				AvailableBalance: detail.AvailBal,
+				CashBalance:      detail.CashBal,
+				FrozenBalance:    detail.FrozenBal,
+				UpdateTime:       detail.UTime,
+			}, true
 		}
 	}
 	return USDTBalance{}, false
