@@ -47,8 +47,14 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		return trading.OrderResult{}, err
 	}
 	orderSettings := cfg.OrderSettings().Normalize()
-	limitPx := orderSettings.LimitPrice(signal.Action, signal.Price.Value)
-	sz, err := trading.SizeFromUSDTNotional(signal.Amount.Value, limitPx, sym.CtVal, sym.LotSz, sym.MinSz)
+	orderType := string(orderSettings.OrderType)
+	sizingPx := signal.Price.Value
+	orderPx := ""
+	if orderSettings.OrderType == trading.OrderTypeLimit {
+		sizingPx = orderSettings.LimitPrice(signal.Action, signal.Price.Value)
+		orderPx = trading.NormalizeFloat(sizingPx)
+	}
+	sz, err := trading.SizeFromUSDTNotional(signal.Amount.Value, sizingPx, sym.CtVal, sym.LotSz, sym.MinSz)
 	if err != nil {
 		return trading.OrderResult{}, err
 	}
@@ -73,8 +79,8 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		ClOrdID:        clOrdID,
 		Side:           okxSide(signal.Action),
 		PosSide:        posSide,
-		OrdType:        "limit",
-		Px:             trading.NormalizeFloat(limitPx),
+		OrdType:        orderType,
+		Px:             orderPx,
 		Sz:             sz,
 		AttachAlgoOrds: attachAlgoOrders(signal, clOrdID),
 	}

@@ -104,6 +104,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) {
 		t.Fatalf("tvbot ui should include symbol and order config tabs")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("订单类型")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`id="order-type"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("市价单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("限价单")) {
+		t.Fatalf("tvbot ui should include market/limit order type setting")
+	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("资产估值")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-total-eq")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) {
@@ -125,6 +131,32 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("data-retry-id")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/retry")) {
 		t.Fatalf("tvbot ui should include retry controls")
+	}
+}
+
+func TestTVBotConfigSavesOrderType(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{"trading":{"order_type":"limit"}}`)))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(rr.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Trading.OrderType != string(trading.OrderTypeLimit) || cfg.OrderSettings().OrderType != trading.OrderTypeLimit {
+		t.Fatalf("order type not saved: %#v", cfg.Trading)
+	}
+
+	badReq := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{"trading":{"order_type":"post_only"}}`)))
+	badReq.SetBasicAuth("admin", "Admin123")
+	bad := httptest.NewRecorder()
+	srv.ServeHTTP(bad, badReq)
+	if bad.Code != http.StatusBadRequest || !bytes.Contains(bad.Body.Bytes(), []byte("unsupported order_type")) {
+		t.Fatalf("bad order type status=%d body=%s", bad.Code, bad.Body.String())
 	}
 }
 

@@ -27,6 +27,13 @@ const (
 	RiskTrailing RiskType = "trailing"
 )
 
+type OrderType string
+
+const (
+	OrderTypeMarket OrderType = "market"
+	OrderTypeLimit  OrderType = "limit"
+)
+
 type FlexibleFloat struct {
 	Value float64
 	Set   bool
@@ -98,6 +105,7 @@ type Signal struct {
 type OrderSettings struct {
 	Amount                    FlexibleFloat
 	Leverage                  int
+	OrderType                 OrderType
 	Risk                      Risk
 	LongLimitPriceMultiplier  float64
 	ShortLimitPriceMultiplier float64
@@ -209,6 +217,10 @@ func (r Risk) Validate() error {
 }
 
 func (o OrderSettings) Normalize() OrderSettings {
+	o.OrderType = OrderType(strings.ToLower(strings.TrimSpace(string(o.OrderType))))
+	if o.OrderType == "" {
+		o.OrderType = OrderTypeMarket
+	}
 	if !o.Amount.Set || o.Amount.Value <= 0 {
 		o.Amount = NewFlexibleFloat(100)
 	}

@@ -608,6 +608,7 @@ const tvbotHTML = `<!doctype html>
       <div class="grid">
         <label>USDT 下单金额<input id="order-amount" type="number" min="0" step="0.01"></label>
         <label>杠杆<input id="order-leverage" type="number" min="1" step="1"></label>
+        <label>订单类型<select id="order-type"><option value="market">市价单</option><option value="limit">限价单</option></select></label>
         <label>风控模式<select id="order-risk-type"><option value="tp_sl">固定止盈止损</option><option value="trailing">移动止损</option><option value="none">不设置</option></select></label>
         <label>固定止盈 %<input id="order-tp" type="number" min="0" step="0.01"></label>
         <label>固定止损 %<input id="order-sl" type="number" min="0" step="0.01"></label>
@@ -726,6 +727,12 @@ const tvbotHTML = `<!doctype html>
       if (v === "tp_sl") return "固定止盈止损";
       if (v === "trailing") return "移动止损";
       if (v === "none") return "不设置";
+      return asText(v);
+    }
+
+    function orderTypeText(v) {
+      if (v === "limit") return "限价单";
+      if (v === "market") return "市价单";
       return asText(v);
     }
 
@@ -902,6 +909,7 @@ const tvbotHTML = `<!doctype html>
         ["信号有效秒数", t.signal_ttl_seconds],
         ["USDT 下单金额", t.order_amount_usdt],
         ["杠杆", t.leverage],
+        ["订单类型", orderTypeText(t.order_type || "market")],
         ["风控模式", riskText(t.risk_type)],
         ["多单限价", "当前价格 x " + asText(t.long_limit_price_multiplier)],
         ["空单限价", "当前价格 x " + asText(t.short_limit_price_multiplier)]
@@ -1023,6 +1031,7 @@ const tvbotHTML = `<!doctype html>
       const trading = state.config && state.config.trading ? state.config.trading : {};
       $("order-amount").value = trading.order_amount_usdt || 100;
       $("order-leverage").value = trading.leverage || 5;
+      $("order-type").value = trading.order_type || "market";
       $("order-risk-type").value = trading.risk_type || "tp_sl";
       $("order-tp").value = trading.take_profit_pct || 2;
       $("order-sl").value = trading.stop_loss_pct || 1;
@@ -1033,9 +1042,11 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderOrderSettingsPreview() {
+      const orderType = $("order-type").value || "market";
       const rows = [
-        ["多单限价单价格", "TradingView 当前价格 x " + asText($("order-long-multiplier").value)],
-        ["空单限价单价格", "TradingView 当前价格 x " + asText($("order-short-multiplier").value)],
+        ["订单类型", orderTypeText(orderType)],
+        [orderType === "limit" ? "多单限价单价格" : "市价单估算价格", orderType === "limit" ? "TradingView 当前价格 x " + asText($("order-long-multiplier").value) : "TradingView 当前价格"],
+        [orderType === "limit" ? "空单限价单价格" : "OKX 下单价格", orderType === "limit" ? "TradingView 当前价格 x " + asText($("order-short-multiplier").value) : "市价"],
         ["固定止盈止损", asText($("order-tp").value) + "% / " + asText($("order-sl").value) + "%"],
         ["移动止损", asText($("order-trailing").value) + "%"]
       ];
@@ -1270,6 +1281,7 @@ const tvbotHTML = `<!doctype html>
         trading: {
           order_amount_usdt: Number($("order-amount").value),
           leverage: Number($("order-leverage").value),
+          order_type: $("order-type").value,
           risk_type: $("order-risk-type").value,
           take_profit_pct: Number($("order-tp").value),
           stop_loss_pct: Number($("order-sl").value),
@@ -1406,7 +1418,7 @@ const tvbotHTML = `<!doctype html>
     $("symbol-search").addEventListener("input", () => renderSymbols());
     $("symbol-env").addEventListener("change", () => renderSymbols());
     $("save-order-settings").addEventListener("click", () => saveOrderSettings().catch((err) => toast(err.message)));
-    ["order-amount", "order-leverage", "order-risk-type", "order-tp", "order-sl", "order-trailing", "order-long-multiplier", "order-short-multiplier"].forEach((id) => {
+    ["order-amount", "order-leverage", "order-type", "order-risk-type", "order-tp", "order-sl", "order-trailing", "order-long-multiplier", "order-short-multiplier"].forEach((id) => {
       $(id).addEventListener("input", () => renderOrderSettingsPreview());
       $(id).addEventListener("change", () => renderOrderSettingsPreview());
     });

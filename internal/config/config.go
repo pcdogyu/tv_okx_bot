@@ -43,6 +43,7 @@ type TradingConfig struct {
 	SignalTTLSeconds          int     `json:"signal_ttl_seconds"`
 	OrderAmountUSDT           float64 `json:"order_amount_usdt"`
 	Leverage                  int     `json:"leverage"`
+	OrderType                 string  `json:"order_type"`
 	RiskType                  string  `json:"risk_type"`
 	TakeProfitPct             float64 `json:"take_profit_pct"`
 	StopLossPct               float64 `json:"stop_loss_pct"`
@@ -73,6 +74,7 @@ func Default() Config {
 			SignalTTLSeconds:          120,
 			OrderAmountUSDT:           100,
 			Leverage:                  5,
+			OrderType:                 string(trading.OrderTypeMarket),
 			RiskType:                  string(trading.RiskTPSL),
 			TakeProfitPct:             2,
 			StopLossPct:               1,
@@ -174,6 +176,10 @@ func (c *Config) Normalize() {
 	if c.Trading.Leverage <= 0 {
 		c.Trading.Leverage = 5
 	}
+	c.Trading.OrderType = strings.ToLower(strings.TrimSpace(c.Trading.OrderType))
+	if c.Trading.OrderType == "" {
+		c.Trading.OrderType = string(trading.OrderTypeMarket)
+	}
 	c.Trading.RiskType = strings.ToLower(strings.TrimSpace(c.Trading.RiskType))
 	if c.Trading.RiskType == "" {
 		c.Trading.RiskType = string(trading.RiskTPSL)
@@ -235,6 +241,11 @@ func (c Config) Validate() error {
 	}
 	if c.Trading.Leverage <= 0 {
 		return errors.New("leverage must be positive")
+	}
+	switch trading.OrderType(c.Trading.OrderType) {
+	case trading.OrderTypeMarket, trading.OrderTypeLimit:
+	default:
+		return fmt.Errorf("unsupported order_type %q", c.Trading.OrderType)
 	}
 	if trading.RiskType(c.Trading.RiskType) == trading.RiskTPSL && (c.Trading.TakeProfitPct <= 0 || c.Trading.StopLossPct <= 0) {
 		return errors.New("take_profit_pct and stop_loss_pct must be positive for tp_sl")
@@ -306,6 +317,7 @@ func (c Config) OrderSettings() trading.OrderSettings {
 	return trading.OrderSettings{
 		Amount:                    trading.NewFlexibleFloat(c.Trading.OrderAmountUSDT),
 		Leverage:                  c.Trading.Leverage,
+		OrderType:                 trading.OrderType(c.Trading.OrderType),
 		Risk:                      risk,
 		LongLimitPriceMultiplier:  c.Trading.LongLimitPriceMultiplier,
 		ShortLimitPriceMultiplier: c.Trading.ShortLimitPriceMultiplier,

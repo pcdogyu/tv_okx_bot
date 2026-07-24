@@ -26,7 +26,7 @@ $env:OKX_SECRET_KEY = "..."
 $env:OKX_PASSPHRASE = "..."
 ```
 
-OKX API credentials can also be configured from the `/tvbot/` browser dashboard. Multiple OKX APIs are supported; each account has an `api_id`, one account can be marked as the active trading API, and TradingView templates can include `api_id` to select a specific API for that order. Order amount, leverage, fixed TP/SL or trailing stop, and long/short limit price multipliers are configured on the server. Credentials are saved outside Git, masked in API responses, and take effect without restarting the service.
+OKX API credentials can also be configured from the `/tvbot/` browser dashboard. Multiple OKX APIs are supported; each account has an `api_id`, one account can be marked as the active trading API, and TradingView templates can include `api_id` to select a specific API for that order. Order amount, leverage, order type (market by default or limit), fixed TP/SL or trailing stop, and long/short limit price multipliers are configured on the server. Credentials are saved outside Git, masked in API responses, and take effect without restarting the service.
 
 Demo trading is the default. Live trading requires both config `"env": "live"` and:
 

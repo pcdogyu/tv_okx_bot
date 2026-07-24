@@ -18,7 +18,7 @@ func (f credentialProviderFunc) OKXCredentials(apiID string) (Credentials, strin
 	return f(apiID)
 }
 
-func TestTraderExecuteSignalPlacesLeverageAndOrderWithTPSL(t *testing.T) {
+func TestTraderExecuteSignalPlacesDefaultMarketOrderWithTPSL(t *testing.T) {
 	var leverageSeen bool
 	var orderReq PlaceOrderRequest
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,8 +76,11 @@ func TestTraderExecuteSignalPlacesLeverageAndOrderWithTPSL(t *testing.T) {
 	if result.OrdID != "123" {
 		t.Fatalf("ord id = %q", result.OrdID)
 	}
-	if orderReq.InstID != "BTC-USDT-SWAP" || orderReq.Side != "buy" || orderReq.OrdType != "limit" || orderReq.Px != "49850" || orderReq.Sz != "0.2" {
+	if orderReq.InstID != "BTC-USDT-SWAP" || orderReq.Side != "buy" || orderReq.OrdType != "market" || orderReq.Px != "" || orderReq.Sz != "0.2" {
 		t.Fatalf("bad order request: %#v", orderReq)
+	}
+	if result.OrdType != "market" || result.Px != "" {
+		t.Fatalf("bad order result: %#v", result)
 	}
 	if len(orderReq.AttachAlgoOrds) != 1 {
 		t.Fatalf("attach algo length = %d", len(orderReq.AttachAlgoOrds))
@@ -116,6 +119,7 @@ func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *
 	cfg := config.Default()
 	cfg.Symbols = map[string]config.SymbolConfig{}
 	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.OrderType = string(trading.OrderTypeLimit)
 	signal := trading.Signal{
 		Action:   trading.ActionShort,
 		Coinpair: "OKX:ETHUSDT.P",

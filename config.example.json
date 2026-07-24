@@ -1,6 +1,6 @@
 {
   "server": {
-    "addr": ":8080"
+    "addr": "127.0.0.1:18080"
   },
   "data_file": "data/orders.json",
   "database_file": "data/tvbot.db",
@@ -13,6 +13,7 @@
     "signal_ttl_seconds": 120,
     "order_amount_usdt": 100,
     "leverage": 5,
+    "order_type": "market",
     "risk_type": "tp_sl",
     "take_profit_pct": 2,
     "stop_loss_pct": 1,

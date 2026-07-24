@@ -795,6 +795,7 @@ type tradingPatch struct {
 	SignalTTLSeconds          *int     `json:"signal_ttl_seconds"`
 	OrderAmountUSDT           *float64 `json:"order_amount_usdt"`
 	Leverage                  *int     `json:"leverage"`
+	OrderType                 *string  `json:"order_type"`
 	RiskType                  *string  `json:"risk_type"`
 	TakeProfitPct             *float64 `json:"take_profit_pct"`
 	StopLossPct               *float64 `json:"stop_loss_pct"`
@@ -839,6 +840,9 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.Trading.Leverage != nil {
 		c.Trading.Leverage = *patch.Trading.Leverage
+	}
+	if patch.Trading.OrderType != nil {
+		c.Trading.OrderType = *patch.Trading.OrderType
 	}
 	if patch.Trading.RiskType != nil {
 		c.Trading.RiskType = *patch.Trading.RiskType
