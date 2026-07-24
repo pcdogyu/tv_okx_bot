@@ -186,6 +186,65 @@ func TestTraderExecuteSignalUsesSelectedAPIIDCredentials(t *testing.T) {
 	}
 }
 
+func TestTraderExecuteSignalFallsBackWhenLeverageExceedsMaximum(t *testing.T) {
+	var tried []string
+	var orderReq PlaceOrderRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/set-leverage":
+			var req SetLeverageRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			tried = append(tried, req.Lever)
+			if req.Lever != "7" {
+				_, _ = w.Write([]byte(`{"code":"59102","msg":"Leverage exceeds the maximum limit. Please lower the leverage.","data":[]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			if err := json.NewDecoder(r.Body).Decode(&orderReq); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"x","ordId":"123","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	signal := trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		SentAt:   "2026-07-24T03:00:00Z",
+		Ticker:   "BTCUSDT",
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}
+	trader := Trader{
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	result, err := trader.ExecuteSignal(context.Background(), signal, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTried := []string{"10", "9", "8", "7"}
+	if fmt.Sprint(tried) != fmt.Sprint(wantTried) {
+		t.Fatalf("leverage attempts = %#v, want %#v", tried, wantTried)
+	}
+	if result.Leverage != 7 {
+		t.Fatalf("result leverage = %d", result.Leverage)
+	}
+	if orderReq.InstID != "BTC-USDT-SWAP" || orderReq.Side != "sell" {
+		t.Fatalf("bad order request after leverage fallback: %#v", orderReq)
+	}
+}
+
 func TestDeriveSwapInstrumentID(t *testing.T) {
 	tests := map[string]string{
 		"BTC":             "BTC-USDT-SWAP",

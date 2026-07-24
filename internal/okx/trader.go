@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -55,14 +56,16 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if cfg.PositionMode() == config.PositionLongShort {
 		posSide = string(signal.Action)
 	}
-	if err := client.SetLeverage(ctx, SetLeverageRequest{
+	usedLeverage, err := t.setLeverageWithFallback(ctx, client, SetLeverageRequest{
 		InstID:  sym.InstID,
 		Lever:   strconv.Itoa(signal.Leverage),
 		MgnMode: cfg.MarginMode(),
 		PosSide: posSide,
-	}); err != nil {
+	})
+	if err != nil {
 		return trading.OrderResult{}, err
 	}
+	signal.Leverage = usedLeverage
 	clOrdID := clientOrderID(signal)
 	req := PlaceOrderRequest{
 		InstID:         sym.InstID,
@@ -86,6 +89,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		OrdID:    ack.OrdID,
 		OKXCode:  env.Code,
 		OKXMsg:   env.Msg,
+		Leverage: usedLeverage,
 	}
 	if err != nil {
 		return result, err
@@ -94,6 +98,42 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		t.Logger.Info("okx order submitted", "api_id", apiID, "inst_id", sym.InstID, "action", signal.Action, "cl_ord_id", clOrdID, "okx_code", env.Code)
 	}
 	return result, nil
+}
+
+func (t Trader) setLeverageWithFallback(ctx context.Context, client Client, req SetLeverageRequest) (int, error) {
+	desired, err := strconv.Atoi(strings.TrimSpace(req.Lever))
+	if err != nil || desired <= 0 {
+		if err == nil {
+			err = fmt.Errorf("must be positive")
+		}
+		return 0, fmt.Errorf("invalid leverage %q: %w", req.Lever, err)
+	}
+	var lastErr error
+	for lever := desired; lever >= 1; lever-- {
+		req.Lever = strconv.Itoa(lever)
+		err := client.SetLeverage(ctx, req)
+		if err == nil {
+			return lever, nil
+		}
+		lastErr = err
+		if !isMaxLeverageError(err) {
+			return 0, err
+		}
+		if t.Logger != nil && lever > 1 {
+			t.Logger.Warn("okx leverage exceeds maximum, trying lower leverage", "inst_id", req.InstID, "leverage", lever, "next_leverage", lever-1)
+		}
+	}
+	return 0, fmt.Errorf("set leverage failed from %dx down to 1x: %w", desired, lastErr)
+}
+
+func isMaxLeverageError(err error) bool {
+	var apiErr APIError
+	if errors.As(err, &apiErr) && apiErr.Code == "59102" {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "59102") ||
+		(strings.Contains(text, "leverage") && strings.Contains(text, "maximum"))
 }
 
 func (t Trader) resolveSymbol(ctx context.Context, client Client, signal trading.Signal, cfg trading.RuntimeConfig) (trading.SymbolInfo, error) {

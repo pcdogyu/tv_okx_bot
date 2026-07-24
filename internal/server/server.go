@@ -565,7 +565,6 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 		Coinpair: rec.Coinpair,
 		Ticker:   rec.Ticker,
 		Price:    trading.NewFlexibleFloat(price),
-		Leverage: rec.Leverage,
 		SentAt:   now.UTC().Format(time.RFC3339Nano),
 	}
 	if strings.TrimSpace(rec.Amount) != "" {

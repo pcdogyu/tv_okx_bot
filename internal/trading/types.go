@@ -122,6 +122,7 @@ type OrderResult struct {
 	ClOrdID  string `json:"cl_ord_id"`
 	OrdType  string `json:"ord_type,omitempty"`
 	Px       string `json:"px,omitempty"`
+	Leverage int    `json:"leverage,omitempty"`
 	OrdID    string `json:"ord_id,omitempty"`
 	OKXCode  string `json:"okx_code,omitempty"`
 	OKXMsg   string `json:"okx_msg,omitempty"`

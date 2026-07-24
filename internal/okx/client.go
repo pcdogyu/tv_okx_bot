@@ -50,6 +50,15 @@ func (e Envelope) OK() bool {
 	return e.Code == "0"
 }
 
+type APIError struct {
+	Code string
+	Msg  string
+}
+
+func (e APIError) Error() string {
+	return fmt.Sprintf("okx code %s: %s", e.Code, e.Msg)
+}
+
 type AccountBalanceData struct {
 	TotalEq string                 `json:"totalEq"`
 	AdjEq   string                 `json:"adjEq"`
@@ -131,7 +140,7 @@ func (c Client) Do(ctx context.Context, method, path string, query url.Values, b
 		return Envelope{}, fmt.Errorf("decode okx response: %w", err)
 	}
 	if !env.OK() {
-		return env, fmt.Errorf("okx code %s: %s", env.Code, env.Msg)
+		return env, APIError{Code: env.Code, Msg: env.Msg}
 	}
 	return env, nil
 }

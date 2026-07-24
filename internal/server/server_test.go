@@ -234,6 +234,9 @@ func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 	if err := srv.Orders.MarkFailed(sourceID, fmt.Errorf("okx failed"), srv.now()); err != nil {
 		t.Fatal(err)
 	}
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.Leverage = 8
+	srv.ConfigStore = config.NewStore("", cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+sourceID+"/retry", nil)
 	req.SetBasicAuth("admin", "Admin123")
@@ -257,8 +260,11 @@ func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 		if got.Action != trading.ActionShort || got.APIID != "backup" || got.Coinpair != "BTC" || got.Price.Value != 50000 {
 			t.Fatalf("bad retry signal: %#v", got)
 		}
-		if got.Amount.Value != 100 || got.Leverage != 5 || got.Risk.Type == "" {
+		if got.Amount.Value != 100 || got.Risk.Type == "" {
 			t.Fatalf("retry signal lost order settings: %#v", got)
+		}
+		if got.Leverage != 8 {
+			t.Fatalf("retry should use current configured leverage, got signal: %#v", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("retry order was not executed")
