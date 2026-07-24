@@ -463,6 +463,19 @@ const tvbotHTML = `<!doctype html>
           <button class="btn primary" type="button" id="refresh-analysis">刷新分析</button>
         </div>
       </div>
+      <div class="analysis-metrics">
+        <div class="analysis-card"><div class="label">资产估值</div><div class="value" id="analysis-total-eq">-</div></div>
+        <div class="analysis-card"><div class="label">可用权益</div><div class="value" id="analysis-avail-eq">-</div></div>
+        <div class="analysis-card"><div class="label">调整权益</div><div class="value" id="analysis-adj-eq">-</div></div>
+        <div class="analysis-card"><div class="label">资产数</div><div class="value" id="analysis-asset-count">-</div></div>
+        <div class="analysis-card"><div class="label">资产更新时间</div><div class="value" id="analysis-balance-updated">-</div></div>
+      </div>
+      <table style="margin-bottom:14px">
+        <thead>
+          <tr><th>币种</th><th>权益</th><th>估值 USD</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
+        </thead>
+        <tbody id="analysis-balance-rows"></tbody>
+      </table>
       <div class="chart-wrap">
         <div class="section-head" style="margin-bottom:8px">
           <h3>USDT-USD 最近 3 天价格</h3>
@@ -609,7 +622,7 @@ const tvbotHTML = `<!doctype html>
 
   <script>
     const activeTabStorageKey = "tvbot.active_tab";
-    const state = { config: null, apiKeys: null, selectedAPIID: "", orders: [], retrying: {}, analysis: null, analysisError: "", upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, analysis: null, analysisError: "", upgrade: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -640,6 +653,18 @@ const tvbotHTML = `<!doctype html>
       const n = Number(v);
       if (!Number.isFinite(n)) return "-";
       return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+    }
+
+    function formatUSD(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " USD";
+    }
+
+    function formatAssetAmount(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return n.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 8 });
     }
 
     function formatPct(v) {
@@ -678,6 +703,22 @@ const tvbotHTML = `<!doctype html>
         return acc;
       }, {});
       return parts.year + "-" + parts.month + "-" + parts.day + " " + parts.hour + ":" + parts.minute + ":" + parts.second;
+    }
+
+    function shanghaiTimeFromOKX(v) {
+      if (!v) return "-";
+      const raw = String(v).trim();
+      if (/^\d+$/.test(raw)) {
+        const ms = Number(raw);
+        if (Number.isFinite(ms)) return shanghaiTime(new Date(ms).toISOString());
+      }
+      return shanghaiTime(raw);
+    }
+
+    function balanceAmount(v) {
+      if (v === null || v === undefined || v === "") return "-";
+      const formatted = formatNumber(v);
+      return (formatted === "-" ? asText(v) : formatted) + " USDT";
     }
 
     function pill(text, tone) {
@@ -855,6 +896,19 @@ const tvbotHTML = `<!doctype html>
       select.value = selected;
       state.selectedAPIID = selected;
       fillAPIForm(selected);
+      renderAPIKeyStatus(selected);
+      $("api-key-accounts").innerHTML = accounts.map((account) => {
+        return "<tr>" +
+          "<td>" + escapeHTML(account.id) + "</td>" +
+          "<td>" + escapeHTML(account.name || "-") + "</td>" +
+          "<td>" + pill(account.active ? "交易 API" : (account.configured ? "已配置" : "未配置"), account.active ? "ok" : (account.configured ? "warn" : "bad")) + "</td>" +
+          "<td>" + escapeHTML(account.api_key_masked || "-") + "</td>" +
+          "</tr>";
+      }).join("") || '<tr><td colspan="4" class="muted">-</td></tr>';
+    }
+
+    function renderAPIKeyStatus(selected) {
+      const status = state.apiKeys || {};
       const rows = [
         ["配置状态", status.configured ? "已配置" : "未配置"],
         ["交易 API", status.active_id || "-"],
@@ -864,15 +918,21 @@ const tvbotHTML = `<!doctype html>
         ["来源", status.source || "-"],
         ["更新时间", status.updated_at || "-"]
       ];
+      const test = state.apiKeyTest;
+      const testID = state.apiKeyTestID || (test && test.api_id) || "";
+      if (test && (!selected || !testID || selected === testID || test.api_id === "input")) {
+        const balance = test.usdt_balance || {};
+        rows.push(["测试 API", test.api_id || testID || "-"]);
+        if (test.usdt_balance_found && balance) {
+          rows.push(["USDT 总权益", balanceAmount(balance.eq)]);
+          rows.push(["USDT 可用", balanceAmount(balance.avail_eq || balance.avail_bal)]);
+          rows.push(["USDT 冻结", balanceAmount(balance.frozen_bal)]);
+          rows.push(["余额更新时间", shanghaiTimeFromOKX(balance.u_time)]);
+        } else {
+          rows.push(["USDT 余额", "OKX 未返回 USDT 明细"]);
+        }
+      }
       $("api-key-status").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(row[1]) + "</td></tr>").join("");
-      $("api-key-accounts").innerHTML = accounts.map((account) => {
-        return "<tr>" +
-          "<td>" + escapeHTML(account.id) + "</td>" +
-          "<td>" + escapeHTML(account.name || "-") + "</td>" +
-          "<td>" + pill(account.active ? "交易 API" : (account.configured ? "已配置" : "未配置"), account.active ? "ok" : (account.configured ? "warn" : "bad")) + "</td>" +
-          "<td>" + escapeHTML(account.api_key_masked || "-") + "</td>" +
-          "</tr>";
-      }).join("") || '<tr><td colspan="4" class="muted">-</td></tr>';
     }
 
     function apiAccounts() {
@@ -912,6 +972,7 @@ const tvbotHTML = `<!doctype html>
     function renderAnalysis() {
       if (!state.analysis) {
         $("analysis-updated").textContent = state.analysisError || "-";
+        renderAnalysisBalance(null);
         $("analysis-net-pnl").textContent = "-";
         $("analysis-win-rate").textContent = "-";
         $("analysis-profit-factor").textContent = "-";
@@ -922,6 +983,7 @@ const tvbotHTML = `<!doctype html>
         return;
       }
       const summary = state.analysis.summary || {};
+      renderAnalysisBalance(state.analysis.balance || null);
       $("analysis-updated").textContent = "更新时间 " + shanghaiTime(state.analysis.refreshed_at) + " / API " + asText(state.analysis.api_id);
       $("analysis-net-pnl").textContent = formatNumber(summary.net_pnl) + " USDT";
       $("analysis-win-rate").textContent = formatPct(summary.win_rate);
@@ -943,6 +1005,26 @@ const tvbotHTML = `<!doctype html>
       });
       $("analysis-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">暂无 OKX 成交历史</td></tr>';
       drawUSDTChart(state.analysis.price_points || []);
+    }
+
+    function renderAnalysisBalance(balance) {
+      const details = balance && Array.isArray(balance.details) ? balance.details : [];
+      $("analysis-total-eq").textContent = balance ? formatUSD(balance.total_eq) : "-";
+      $("analysis-avail-eq").textContent = balance ? formatUSD(balance.avail_eq) : "-";
+      $("analysis-adj-eq").textContent = balance ? formatUSD(balance.adj_eq) : "-";
+      $("analysis-asset-count").textContent = balance ? String(details.length) : "-";
+      $("analysis-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : "-";
+      const rows = details.map((row) => {
+        return "<tr>" +
+          "<td>" + escapeHTML(asText(row.ccy)) + "</td>" +
+          "<td>" + escapeHTML(formatAssetAmount(row.eq)) + "</td>" +
+          "<td>" + escapeHTML(formatUSD(row.eq_usd)) + "</td>" +
+          "<td>" + escapeHTML(formatAssetAmount(row.avail_bal || row.avail_eq)) + "</td>" +
+          "<td>" + escapeHTML(formatAssetAmount(row.cash_bal)) + "</td>" +
+          "<td>" + escapeHTML(formatAssetAmount(row.frozen_bal)) + "</td>" +
+          "</tr>";
+      });
+      $("analysis-balance-rows").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">暂无 OKX 资产余额</td></tr>';
     }
 
     function drawUSDTChart(points) {
@@ -1055,6 +1137,8 @@ const tvbotHTML = `<!doctype html>
       };
       state.apiKeys = await api("/tvbot/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       state.selectedAPIID = body.id || state.apiKeys.active_id || "default";
+      state.apiKeyTest = null;
+      state.apiKeyTestID = "";
       $("key-api").value = "";
       $("key-secret").value = "";
       $("key-passphrase").value = "";
@@ -1074,7 +1158,10 @@ const tvbotHTML = `<!doctype html>
       };
       $("okx-output").textContent = "checking...";
       const result = await api("/tvbot/api-keys/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      state.apiKeyTest = result;
+      state.apiKeyTestID = result.api_id || body.id || $("key-selected").value || "";
       $("okx-output").textContent = JSON.stringify(result, null, 2);
+      renderAPIKeyStatus(body.id || state.selectedAPIID || result.api_id || "");
       toast("API 可用");
     }
 
@@ -1083,6 +1170,8 @@ const tvbotHTML = `<!doctype html>
       if (!id) return;
       state.apiKeys = await api("/tvbot/api-keys?id=" + encodeURIComponent(id), { method: "DELETE" });
       state.selectedAPIID = state.apiKeys.active_id || "";
+      state.apiKeyTest = null;
+      state.apiKeyTestID = "";
       renderAPIKeys();
       renderTemplateAPIs();
       renderAnalysisAPIs();
@@ -1167,6 +1256,8 @@ const tvbotHTML = `<!doctype html>
     $("delete-api-key").addEventListener("click", () => deleteAPIKey().catch((err) => toast(err.message)));
     $("add-api-key").addEventListener("click", () => {
       state.selectedAPIID = "";
+      state.apiKeyTest = null;
+      state.apiKeyTestID = "";
       $("key-selected").value = "";
       $("key-id").value = "";
       $("key-name").value = "";
@@ -1174,11 +1265,13 @@ const tvbotHTML = `<!doctype html>
       $("key-api").value = "";
       $("key-secret").value = "";
       $("key-passphrase").value = "";
+      renderAPIKeyStatus("");
       $("key-id").focus();
     });
     $("key-selected").addEventListener("change", () => {
       state.selectedAPIID = $("key-selected").value;
       fillAPIForm(state.selectedAPIID);
+      renderAPIKeyStatus(state.selectedAPIID);
     });
     $("analysis-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
     $("refresh-analysis").addEventListener("click", () => loadAnalysis(true).then(() => toast("分析已刷新")).catch((err) => toast(err.message)));

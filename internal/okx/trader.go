@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,17 @@ type Trader struct {
 	CredentialProvider CredentialProvider
 	HTTPClient         *http.Client
 	Logger             *slog.Logger
+}
+
+type USDTBalance struct {
+	Ccy              string `json:"ccy"`
+	TotalEquity      string `json:"total_eq,omitempty"`
+	Equity           string `json:"eq,omitempty"`
+	AvailableEquity  string `json:"avail_eq,omitempty"`
+	AvailableBalance string `json:"avail_bal,omitempty"`
+	CashBalance      string `json:"cash_bal,omitempty"`
+	FrozenBalance    string `json:"frozen_bal,omitempty"`
+	UpdateTime       string `json:"u_time,omitempty"`
 }
 
 func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg trading.RuntimeConfig) (trading.OrderResult, error) {
@@ -149,15 +161,55 @@ func (t Trader) checkClient(ctx context.Context, cfg trading.RuntimeConfig, clie
 	if err != nil {
 		return nil, err
 	}
+	usdtBalance, usdtBalanceFound := parseUSDTBalance(balance.Data)
 	return map[string]any{
-		"ok":           true,
-		"api_id":       apiID,
-		"demo":         cfg.DemoTradingHeaderEnabled(),
-		"base_url":     cfg.OKXBaseURL(),
-		"balance_code": balance.Code,
-		"balance_msg":  balance.Msg,
-		"instruments":  string(instruments.Data),
+		"ok":                 true,
+		"api_id":             apiID,
+		"demo":               cfg.DemoTradingHeaderEnabled(),
+		"base_url":           cfg.OKXBaseURL(),
+		"balance_code":       balance.Code,
+		"balance_msg":        balance.Msg,
+		"usdt_balance":       usdtBalance,
+		"usdt_balance_found": usdtBalanceFound,
+		"instruments":        string(instruments.Data),
 	}, nil
+}
+
+func parseUSDTBalance(data json.RawMessage) (USDTBalance, bool) {
+	type balanceDetail struct {
+		Ccy              string `json:"ccy"`
+		Equity           string `json:"eq"`
+		AvailableEquity  string `json:"availEq"`
+		AvailableBalance string `json:"availBal"`
+		CashBalance      string `json:"cashBal"`
+		FrozenBalance    string `json:"frozenBal"`
+		UpdateTime       string `json:"uTime"`
+	}
+	type balanceAccount struct {
+		TotalEquity string          `json:"totalEq"`
+		Details     []balanceDetail `json:"details"`
+	}
+	var accounts []balanceAccount
+	if len(data) == 0 || json.Unmarshal(data, &accounts) != nil {
+		return USDTBalance{}, false
+	}
+	for _, account := range accounts {
+		for _, detail := range account.Details {
+			if strings.EqualFold(detail.Ccy, "USDT") {
+				return USDTBalance{
+					Ccy:              "USDT",
+					TotalEquity:      account.TotalEquity,
+					Equity:           detail.Equity,
+					AvailableEquity:  detail.AvailableEquity,
+					AvailableBalance: detail.AvailableBalance,
+					CashBalance:      detail.CashBalance,
+					FrozenBalance:    detail.FrozenBalance,
+					UpdateTime:       detail.UpdateTime,
+				}, true
+			}
+		}
+	}
+	return USDTBalance{}, false
 }
 
 func (t Trader) client(cfg trading.RuntimeConfig, apiID string) (Client, string, error) {

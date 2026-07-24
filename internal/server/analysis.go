@@ -32,6 +32,7 @@ type analysisResponse struct {
 	RefreshedAt time.Time             `json:"refreshed_at"`
 	Cache       analysisCacheStatus   `json:"cache"`
 	Source      analysisSourceStatus  `json:"source"`
+	Balance     analysisBalance       `json:"balance"`
 	PricePoints []analysisPricePoint  `json:"price_points"`
 	Summary     analysisSymbolStats   `json:"summary"`
 	Symbols     []analysisSymbolStats `json:"symbols"`
@@ -45,8 +46,30 @@ type analysisCacheStatus struct {
 }
 
 type analysisSourceStatus struct {
-	Price string `json:"price"`
-	Fills string `json:"fills"`
+	Balance string `json:"balance"`
+	Price   string `json:"price"`
+	Fills   string `json:"fills"`
+}
+
+type analysisBalance struct {
+	TotalEq   string                  `json:"total_eq"`
+	AdjEq     string                  `json:"adj_eq,omitempty"`
+	AvailEq   string                  `json:"avail_eq,omitempty"`
+	Currency  string                  `json:"currency"`
+	UpdatedAt string                  `json:"updated_at,omitempty"`
+	Details   []analysisBalanceDetail `json:"details"`
+}
+
+type analysisBalanceDetail struct {
+	Ccy       string `json:"ccy"`
+	Eq        string `json:"eq"`
+	EqUsd     string `json:"eq_usd"`
+	AvailBal  string `json:"avail_bal,omitempty"`
+	AvailEq   string `json:"avail_eq,omitempty"`
+	CashBal   string `json:"cash_bal,omitempty"`
+	FrozenBal string `json:"frozen_bal,omitempty"`
+	DisEq     string `json:"dis_eq,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 type analysisPricePoint struct {
@@ -129,7 +152,11 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		Demo:        cfg.DemoTradingHeaderEnabled(),
 		HTTPClient:  s.okxHTTPClient(),
 	}
-	source := analysisSourceStatus{Price: "okx", Fills: "okx"}
+	balance, err := fetchAnalysisBalance(ctx, client)
+	if err != nil {
+		return analysisResponse{}, err
+	}
+	source := analysisSourceStatus{Balance: "okx", Price: "okx", Fills: "okx"}
 	if err := s.refreshAnalysisData(ctx, client, apiID, priceDays, pnlDays, now); err != nil {
 		cached, ok, cacheErr := s.Orders.CachedPayload(cacheKey)
 		if cacheErr == nil && ok {
@@ -139,7 +166,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 				resp.Cache.Stale = true
 				resp.Cache.CachedAt = cached.RefreshedAt
 				resp.Cache.CacheKey = cacheKey
-				resp.Source = analysisSourceStatus{Price: "cache", Fills: "cache"}
+				resp.Source = analysisSourceStatus{Balance: "cache", Price: "cache", Fills: "cache"}
 				return resp, nil
 			}
 		}
@@ -149,6 +176,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 	if err != nil {
 		return analysisResponse{}, err
 	}
+	resp.Balance = balance
 	resp.Cache.CacheKey = cacheKey
 	if err := s.Orders.CachePayload(cacheKey, resp, now); err != nil && s.Logger != nil {
 		s.Logger.Warn("failed to write analysis cache", "error", err)
@@ -187,6 +215,69 @@ func (s *Server) refreshAnalysisData(ctx context.Context, client okx.Client, api
 		return err
 	}
 	return s.refreshFills(ctx, client, apiID, pnlDays, now)
+}
+
+func fetchAnalysisBalance(ctx context.Context, client okx.Client) (analysisBalance, error) {
+	balance, _, err := client.AccountBalanceSnapshot(ctx)
+	if err != nil {
+		return analysisBalance{}, err
+	}
+	return analysisBalanceFromOKX(balance), nil
+}
+
+func analysisBalanceFromOKX(balance okx.AccountBalanceData) analysisBalance {
+	out := analysisBalance{
+		TotalEq:   strings.TrimSpace(balance.TotalEq),
+		AdjEq:     strings.TrimSpace(balance.AdjEq),
+		AvailEq:   strings.TrimSpace(balance.AvailEq),
+		Currency:  "USD",
+		UpdatedAt: okxMillisToRFC3339(balance.UTime),
+		Details:   make([]analysisBalanceDetail, 0, len(balance.Details)),
+	}
+	for _, detail := range balance.Details {
+		row := analysisBalanceDetail{
+			Ccy:       strings.TrimSpace(detail.Ccy),
+			Eq:        strings.TrimSpace(detail.Eq),
+			EqUsd:     strings.TrimSpace(detail.EqUsd),
+			AvailBal:  strings.TrimSpace(detail.AvailBal),
+			AvailEq:   strings.TrimSpace(detail.AvailEq),
+			CashBal:   strings.TrimSpace(detail.CashBal),
+			FrozenBal: strings.TrimSpace(detail.FrozenBal),
+			DisEq:     strings.TrimSpace(detail.DisEq),
+			UpdatedAt: okxMillisToRFC3339(detail.UTime),
+		}
+		if row.Ccy == "" {
+			continue
+		}
+		if row.UpdatedAt == "" {
+			row.UpdatedAt = out.UpdatedAt
+		}
+		out.Details = append(out.Details, row)
+	}
+	sortBalanceDetails(out.Details)
+	return out
+}
+
+func sortBalanceDetails(details []analysisBalanceDetail) {
+	for i := 0; i < len(details); i++ {
+		for j := i + 1; j < len(details); j++ {
+			if parseFloat(details[j].EqUsd) > parseFloat(details[i].EqUsd) {
+				details[i], details[j] = details[j], details[i]
+			}
+		}
+	}
+}
+
+func okxMillisToRFC3339(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 }
 
 func (s *Server) refreshFills(ctx context.Context, client okx.Client, apiID string, pnlDays int, now time.Time) error {

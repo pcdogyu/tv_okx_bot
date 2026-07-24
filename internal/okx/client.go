@@ -50,6 +50,26 @@ func (e Envelope) OK() bool {
 	return e.Code == "0"
 }
 
+type AccountBalanceData struct {
+	TotalEq string                 `json:"totalEq"`
+	AdjEq   string                 `json:"adjEq"`
+	AvailEq string                 `json:"availEq"`
+	UTime   string                 `json:"uTime"`
+	Details []AccountBalanceDetail `json:"details"`
+}
+
+type AccountBalanceDetail struct {
+	Ccy       string `json:"ccy"`
+	Eq        string `json:"eq"`
+	EqUsd     string `json:"eqUsd"`
+	AvailBal  string `json:"availBal"`
+	AvailEq   string `json:"availEq"`
+	CashBal   string `json:"cashBal"`
+	FrozenBal string `json:"frozenBal"`
+	DisEq     string `json:"disEq"`
+	UTime     string `json:"uTime"`
+}
+
 func (c Client) Do(ctx context.Context, method, path string, query url.Values, body any, private bool) (Envelope, error) {
 	if c.HTTPClient == nil {
 		c.HTTPClient = http.DefaultClient
@@ -205,9 +225,22 @@ func (c Client) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (OrderAck
 }
 
 func (c Client) AccountBalance(ctx context.Context) (Envelope, error) {
-	q := url.Values{}
-	q.Set("ccy", "USDT")
-	return c.Do(ctx, http.MethodGet, "/api/v5/account/balance", q, nil, true)
+	return c.Do(ctx, http.MethodGet, "/api/v5/account/balance", nil, nil, true)
+}
+
+func (c Client) AccountBalanceSnapshot(ctx context.Context) (AccountBalanceData, Envelope, error) {
+	env, err := c.AccountBalance(ctx)
+	if err != nil {
+		return AccountBalanceData{}, env, err
+	}
+	var data []AccountBalanceData
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return AccountBalanceData{}, env, err
+	}
+	if len(data) == 0 {
+		return AccountBalanceData{}, env, errors.New("okx account balance data is empty")
+	}
+	return data[0], env, nil
 }
 
 func (c Client) Instruments(ctx context.Context) (Envelope, error) {

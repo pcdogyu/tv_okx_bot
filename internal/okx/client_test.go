@@ -91,6 +91,48 @@ func TestClientMarketCandlesUsesUSDTUSDQuery(t *testing.T) {
 	}
 }
 
+func TestClientAccountBalanceSnapshotGetsAllAssets(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
+	secret := "secret"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/account/balance" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if r.URL.RawQuery != "" {
+			t.Fatalf("balance request should not filter ccy: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("x-simulated-trading") != "1" {
+			t.Fatal("missing demo trading header")
+		}
+		timestamp := fixedNow.UTC().Format("2006-01-02T15:04:05.000Z")
+		wantSign := sign(timestamp, http.MethodGet, "/api/v5/account/balance", "", secret)
+		if r.Header.Get("OK-ACCESS-TIMESTAMP") != timestamp || r.Header.Get("OK-ACCESS-SIGN") != wantSign {
+			t.Fatal("invalid OKX signature headers")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"totalEq":"80078.07","uTime":"1784880000000","details":[{"ccy":"BTC","eq":"1","eqUsd":"64973.4"},{"ccy":"USDT","eq":"5000","eqUsd":"4996.65"}]}]}`))
+	}))
+	defer ts.Close()
+	client := Client{
+		BaseURL: ts.URL,
+		Credentials: Credentials{
+			APIKey:     "key",
+			SecretKey:  secret,
+			Passphrase: "pass",
+		},
+		Demo:       true,
+		HTTPClient: ts.Client(),
+		Now:        func() time.Time { return fixedNow },
+	}
+	balance, _, err := client.AccountBalanceSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if balance.TotalEq != "80078.07" || len(balance.Details) != 2 || balance.Details[0].Ccy != "BTC" {
+		t.Fatalf("bad balance snapshot: %#v", balance)
+	}
+}
+
 func TestClientFillsHistorySignsPrivateDemoRequest(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
 	secret := "secret"

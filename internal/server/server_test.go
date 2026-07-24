@@ -96,11 +96,20 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("订单分析")) {
 		t.Fatalf("tvbot ui should include order analysis tab")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("资产估值")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-total-eq")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) {
+		t.Fatalf("tvbot ui should include OKX balance analysis")
+	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("activateTab")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("localStorage")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("location.hash")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("tvbot.active_tab")) {
 		t.Fatalf("tvbot ui should remember active tab across refresh")
+	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("USDT 可用")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("usdt_balance")) {
+		t.Fatalf("tvbot ui should render USDT balance after API tests")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("Code by Yuhao@jiansutech.com - 2026-07-24T03:00:00Z - testhash - testbranch")) {
 		t.Fatalf("tvbot ui should include build footer")
@@ -501,10 +510,22 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 	fillTime2 := time.Date(2026, 7, 23, 4, 0, 0, 0, time.UTC).UnixMilli()
 	candleTime1 := time.Date(2026, 7, 23, 2, 0, 0, 0, time.UTC).UnixMilli()
 	candleTime2 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
-	var sawCandles, sawFills bool
+	var sawBalance, sawCandles, sawFills bool
 	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/api/v5/account/balance":
+			sawBalance = true
+			if r.URL.RawQuery != "" {
+				t.Fatalf("balance should request all assets, got query: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
+				t.Fatalf("missing private OKX headers")
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"totalEq":"80078.07","adjEq":"80000","availEq":"79900","uTime":"1784880000000","details":[
+				{"ccy":"BTC","eq":"1","eqUsd":"64973.4","availBal":"1","cashBal":"1","frozenBal":"0","uTime":"1784880000000"},
+				{"ccy":"USDT","eq":"5000","eqUsd":"4996.65","availBal":"5000","cashBal":"5000","frozenBal":"0","uTime":"1784880000000"}
+			]}]}`))
 		case "/api/v5/market/candles":
 			sawCandles = true
 			if r.URL.Query().Get("instId") != "USDT-USD" || r.URL.Query().Get("bar") != "1H" || r.URL.Query().Get("limit") != "72" {
@@ -556,12 +577,15 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("analysis code=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if !sawCandles || !sawFills {
-		t.Fatalf("expected OKX candle and fills calls candles=%v fills=%v", sawCandles, sawFills)
+	if !sawBalance || !sawCandles || !sawFills {
+		t.Fatalf("expected OKX balance, candle and fills calls balance=%v candles=%v fills=%v", sawBalance, sawCandles, sawFills)
 	}
 	var resp analysisResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
+	}
+	if resp.Balance.TotalEq != "80078.07" || len(resp.Balance.Details) != 2 || resp.Balance.Details[0].Ccy != "BTC" {
+		t.Fatalf("bad balance data: %#v", resp.Balance)
 	}
 	if len(resp.PricePoints) != 2 || resp.PriceInstID != "USDT-USD" || resp.PriceBar != "1H" {
 		t.Fatalf("bad price data: %#v", resp)
@@ -584,10 +608,13 @@ func TestTVBotAPIKeysTestUsesSelectedStoredAccount(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v5/account/balance":
 			seenAPIKey = r.Header.Get("OK-ACCESS-KEY")
+			if r.URL.RawQuery != "" {
+				t.Fatalf("balance should request all assets, got query: %s", r.URL.RawQuery)
+			}
 			if r.Header.Get("x-simulated-trading") != "1" {
 				t.Fatal("missing demo header")
 			}
-			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"totalEq":"1001.25","details":[{"ccy":"USDT","eq":"999.75","availEq":"888.5","availBal":"887.5","cashBal":"900","frozenBal":"11.25","uTime":"1784886000000"}]}]}`))
 		case "/api/v5/public/instruments":
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 		default:
@@ -634,6 +661,22 @@ func TestTVBotAPIKeysTestUsesSelectedStoredAccount(t *testing.T) {
 	}
 	if !bytes.Contains(rr.Body.Bytes(), []byte(`"api_id":"backup"`)) {
 		t.Fatalf("response missing api id: %s", rr.Body.String())
+	}
+	var resp struct {
+		Found   bool `json:"usdt_balance_found"`
+		Balance struct {
+			Ccy             string `json:"ccy"`
+			Equity          string `json:"eq"`
+			AvailableEquity string `json:"avail_eq"`
+			FrozenBalance   string `json:"frozen_bal"`
+			UpdateTime      string `json:"u_time"`
+		} `json:"usdt_balance"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Found || resp.Balance.Ccy != "USDT" || resp.Balance.AvailableEquity != "888.5" || resp.Balance.Equity != "999.75" || resp.Balance.FrozenBalance != "11.25" || resp.Balance.UpdateTime != "1784886000000" {
+		t.Fatalf("bad usdt balance: %#v", resp)
 	}
 }
 
