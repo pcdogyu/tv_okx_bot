@@ -1,0 +1,8 @@
+tv-okx-bot.exe
+*.test
+coverage.out
+config.json
+data/
+dist/
+tmp/
+pem/

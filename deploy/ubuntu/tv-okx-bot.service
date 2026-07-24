@@ -1,0 +1,22 @@
+[Unit]
+Description=TradingView OKX Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=tvokx
+Group=tvokx
+WorkingDirectory=/opt/tv_okx_bot
+EnvironmentFile=/etc/tv-okx-bot/tv-okx-bot.env
+ExecStart=/opt/tv_okx_bot/tv-okx-bot serve --config /etc/tv-okx-bot/config.json --addr 0.0.0.0:18080
+Restart=always
+RestartSec=5
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/tv_okx_bot /etc/tv-okx-bot
+
+[Install]
+WantedBy=multi-user.target
+

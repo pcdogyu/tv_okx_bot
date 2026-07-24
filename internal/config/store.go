@@ -1,0 +1,51 @@
+package config
+
+import "sync"
+
+type Store struct {
+	mu   sync.RWMutex
+	path string
+	cfg  Config
+}
+
+func NewStore(path string, cfg Config) *Store {
+	cfg.Normalize()
+	return &Store{path: path, cfg: cfg}
+}
+
+func (s *Store) Get() Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cfg := s.cfg
+	cfg.Symbols = cloneSymbols(s.cfg.Symbols)
+	return cfg
+}
+
+func (s *Store) Update(fn func(*Config) error) (Config, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.cfg
+	next.Symbols = cloneSymbols(s.cfg.Symbols)
+	if err := fn(&next); err != nil {
+		return Config{}, err
+	}
+	next.Normalize()
+	if err := next.Validate(); err != nil {
+		return Config{}, err
+	}
+	if s.path != "" {
+		if err := Save(s.path, next); err != nil {
+			return Config{}, err
+		}
+	}
+	s.cfg = next
+	return next, nil
+}
+
+func cloneSymbols(in map[string]SymbolConfig) map[string]SymbolConfig {
+	out := make(map[string]SymbolConfig, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
