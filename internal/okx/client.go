@@ -155,6 +155,32 @@ type Instrument struct {
 	MinSz  string `json:"minSz"`
 }
 
+type MarketCandle struct {
+	TS      string
+	Open    string
+	High    string
+	Low     string
+	Close   string
+	Volume  string
+	Confirm string
+}
+
+type Fill struct {
+	InstType string `json:"instType"`
+	InstID   string `json:"instId"`
+	TradeID  string `json:"tradeId"`
+	OrdID    string `json:"ordId"`
+	ClOrdID  string `json:"clOrdId"`
+	Side     string `json:"side"`
+	FillPx   string `json:"fillPx"`
+	FillSz   string `json:"fillSz"`
+	FillPnl  string `json:"fillPnl"`
+	Fee      string `json:"fee"`
+	FeeCcy   string `json:"feeCcy"`
+	FillTime string `json:"fillTime"`
+	RawJSON  string `json:"-"`
+}
+
 func (c Client) SetLeverage(ctx context.Context, req SetLeverageRequest) error {
 	_, err := c.Do(ctx, http.MethodPost, "/api/v5/account/set-leverage", nil, req, true)
 	return err
@@ -188,6 +214,77 @@ func (c Client) Instruments(ctx context.Context) (Envelope, error) {
 	q := url.Values{}
 	q.Set("instType", "SWAP")
 	return c.Do(ctx, http.MethodGet, "/api/v5/public/instruments", q, nil, false)
+}
+
+func (c Client) MarketCandles(ctx context.Context, instID, bar string, limit int) ([]MarketCandle, Envelope, error) {
+	q := url.Values{}
+	q.Set("instId", strings.ToUpper(strings.TrimSpace(instID)))
+	if bar != "" {
+		q.Set("bar", bar)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	env, err := c.Do(ctx, http.MethodGet, "/api/v5/market/candles", q, nil, false)
+	if err != nil {
+		return nil, env, err
+	}
+	var raw [][]string
+	if err := json.Unmarshal(env.Data, &raw); err != nil {
+		return nil, env, err
+	}
+	out := make([]MarketCandle, 0, len(raw))
+	for _, row := range raw {
+		if len(row) < 5 {
+			continue
+		}
+		candle := MarketCandle{
+			TS:    row[0],
+			Open:  row[1],
+			High:  row[2],
+			Low:   row[3],
+			Close: row[4],
+		}
+		if len(row) > 5 {
+			candle.Volume = row[5]
+		}
+		if len(row) > 8 {
+			candle.Confirm = row[8]
+		} else if len(row) > 6 {
+			candle.Confirm = row[len(row)-1]
+		}
+		out = append(out, candle)
+	}
+	return out, env, nil
+}
+
+func (c Client) FillsHistory(ctx context.Context, instType, after string, limit int) ([]Fill, Envelope, error) {
+	q := url.Values{}
+	q.Set("instType", strings.ToUpper(strings.TrimSpace(instType)))
+	if after != "" {
+		q.Set("after", after)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	env, err := c.Do(ctx, http.MethodGet, "/api/v5/trade/fills-history", q, nil, true)
+	if err != nil {
+		return nil, env, err
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(env.Data, &raw); err != nil {
+		return nil, env, err
+	}
+	out := make([]Fill, 0, len(raw))
+	for _, item := range raw {
+		var fill Fill
+		if err := json.Unmarshal(item, &fill); err != nil {
+			return nil, env, err
+		}
+		fill.RawJSON = string(item)
+		out = append(out, fill)
+	}
+	return out, env, nil
 }
 
 func (c Client) SwapInstrument(ctx context.Context, instID string) (Instrument, error) {

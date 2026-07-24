@@ -71,7 +71,9 @@ func runServe(args []string) error {
 		return err
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	orderStore, err := storage.NewOrderStore(resolveDataPath(*configPath, cfg.DataFile))
+	databaseFile := resolveDataPath(*configPath, cfg.DatabaseFile)
+	legacyOrdersFile := resolveDataPath(*configPath, cfg.DataFile)
+	orderStore, err := storage.NewSQLiteOrderStore(databaseFile, legacyOrdersFile)
 	if err != nil {
 		return err
 	}
@@ -108,6 +110,7 @@ func runServe(args []string) error {
 			Logger:             logger,
 		},
 		OKXCredentials: credentialStore,
+		OKXHTTPClient:  &http.Client{Timeout: 15 * time.Second},
 		AdminToken:     secrets.AdminToken,
 		AdminUser:      secrets.AdminUser,
 		AdminPass:      secrets.AdminPassword,

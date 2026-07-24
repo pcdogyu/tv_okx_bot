@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +126,22 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 		t.Fatal("duplicate webhook executed again")
 	case <-time.After(50 * time.Millisecond):
 	}
+	ordersReq := httptest.NewRequest(http.MethodGet, "/tvbot/orders", nil)
+	ordersReq.SetBasicAuth("admin", "Admin123")
+	ordersRR := httptest.NewRecorder()
+	srv.ServeHTTP(ordersRR, ordersReq)
+	if ordersRR.Code != http.StatusOK {
+		t.Fatalf("orders status=%d body=%s", ordersRR.Code, ordersRR.Body.String())
+	}
+	var list struct {
+		Orders []storage.OrderRecord `json:"orders"`
+	}
+	if err := json.Unmarshal(ordersRR.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Orders) != 2 || list.Orders[0].Status != storage.StatusDuplicate {
+		t.Fatalf("duplicate signal should be listed in history: %#v", list.Orders)
+	}
 }
 
 func TestTVOrderAllowsUnconfiguredCoinpair(t *testing.T) {
@@ -177,6 +194,88 @@ func TestTVOrderPassesSelectedAPIID(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
+	}
+}
+
+func TestTVOrderRecordsRejectedSignals(t *testing.T) {
+	srv := newTestServer(t)
+	body := []byte(`{
+		"token": "present-but-not-checked-before-signal-validation",
+		"sent_at": "2026-07-24T03:00:00Z",
+		"action": "{{strategy.order.action}}",
+		"ticker": "ETHUSDT.P",
+		"coinpair": "ETHUSDT.P",
+		"price": "1893.55",
+		"exchange": "OKX",
+		"interval": "15",
+		"condition": "{{strategy.order.comment}}",
+		"text": "{{strategy.order.alert_message}}",
+		"source": "tradingview"
+	}`)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`"error":"invalid_signal"`)) {
+		t.Fatalf("expected invalid_signal response, got %s", rr.Body.String())
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		t.Fatalf("rejected signal should not execute: %#v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	ordersReq := httptest.NewRequest(http.MethodGet, "/tvbot/orders", nil)
+	ordersReq.SetBasicAuth("admin", "Admin123")
+	ordersRR := httptest.NewRecorder()
+	srv.ServeHTTP(ordersRR, ordersReq)
+	if ordersRR.Code != http.StatusOK {
+		t.Fatalf("orders status=%d body=%s", ordersRR.Code, ordersRR.Body.String())
+	}
+	var list struct {
+		Orders []storage.OrderRecord `json:"orders"`
+	}
+	if err := json.Unmarshal(ordersRR.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Orders) != 1 {
+		t.Fatalf("orders len=%d records=%#v", len(list.Orders), list.Orders)
+	}
+	got := list.Orders[0]
+	if got.Status != storage.StatusRejected || got.ErrorCode != "invalid_signal" || !strings.Contains(got.Error, "action must be") {
+		t.Fatalf("bad rejected record: %#v", got)
+	}
+	if got.Action != trading.Side("{{strategy.order.action}}") || got.Coinpair != "ETHUSDT.P" || got.Price != "1893.55" || got.Amount != "100" {
+		t.Fatalf("rejected record lost signal fields: %#v", got)
+	}
+}
+
+func TestTVOrderRecordsBadJSONSignals(t *testing.T) {
+	srv := newTestServer(t)
+	body := []byte(`{"action":"buy","ticker":"BTCUSDT","price":"{{close}}","token":"x"}`)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	ordersReq := httptest.NewRequest(http.MethodGet, "/tvbot/orders", nil)
+	ordersReq.SetBasicAuth("admin", "Admin123")
+	ordersRR := httptest.NewRecorder()
+	srv.ServeHTTP(ordersRR, ordersReq)
+	if ordersRR.Code != http.StatusOK {
+		t.Fatalf("orders status=%d body=%s", ordersRR.Code, ordersRR.Body.String())
+	}
+	var list struct {
+		Orders []storage.OrderRecord `json:"orders"`
+	}
+	if err := json.Unmarshal(ordersRR.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Orders) != 1 || list.Orders[0].Status != storage.StatusRejected || list.Orders[0].ErrorCode != "bad_json" {
+		t.Fatalf("bad_json signal should be listed in history: %#v", list.Orders)
+	}
+	if list.Orders[0].Action != trading.ActionLong || list.Orders[0].Ticker != "BTCUSDT" {
+		t.Fatalf("bad_json preview lost readable fields: %#v", list.Orders[0])
 	}
 }
 

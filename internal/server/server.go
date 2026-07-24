@@ -27,6 +27,7 @@ type Server struct {
 	Token          security.TokenService
 	Executor       trading.Executor
 	OKXCredentials *okx.CredentialStore
+	OKXHTTPClient  *http.Client
 	AdminToken     string
 	AdminUser      string
 	AdminPass      string
@@ -55,9 +56,16 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "/tvorder only accepts POST")
 		return
 	}
+	now := s.now()
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		s.recordTVOrderRejected(r, trading.Signal{}, "bad_json", err, now)
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
 	var signal trading.Signal
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&signal); err != nil {
-		s.logTVOrderRejected(r, trading.Signal{}, "bad_json", err)
+	if err := json.Unmarshal(body, &signal); err != nil {
+		s.recordTVOrderRejected(r, signalPreviewFromJSON(body), "bad_json", err, now)
 		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 		return
 	}
@@ -65,14 +73,13 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 	tokenSignal := signal
 	cfg := s.ConfigStore.Get()
 	cfg.OrderSettings().ApplyToSignal(&signal)
-	now := s.now()
 	if err := signal.Validate(now, time.Duration(cfg.Trading.SignalTTLSeconds)*time.Second, cfg); err != nil {
-		s.logTVOrderRejected(r, signal, "invalid_signal", err)
+		s.recordTVOrderRejected(r, signal, "invalid_signal", err, now)
 		writeError(w, http.StatusBadRequest, "invalid_signal", err.Error())
 		return
 	}
 	if !s.validSignalToken(tokenSignal, signal) {
-		s.logTVOrderRejected(r, signal, "invalid_token", errors.New("token validation failed"))
+		s.recordTVOrderRejected(r, signal, "invalid_token", errors.New("token validation failed"), now)
 		writeError(w, http.StatusUnauthorized, "invalid_token", "token validation failed")
 		return
 	}
@@ -96,6 +103,16 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) recordTVOrderRejected(r *http.Request, signal trading.Signal, code string, err error, now time.Time) {
+	s.logTVOrderRejected(r, signal, code, err)
+	if s.Orders == nil {
+		return
+	}
+	if _, storeErr := s.Orders.RecordRejected(signal, code, err, now); storeErr != nil && s.Logger != nil {
+		s.Logger.Error("failed to record rejected tvorder", "code", code, "error", storeErr)
+	}
+}
+
 func (s *Server) validSignalToken(raw, applied trading.Signal) bool {
 	payloads := []string{
 		applied.CanonicalWebhookTokenPayload(),
@@ -113,6 +130,73 @@ func (s *Server) validSignalToken(raw, applied trading.Signal) bool {
 		}
 	}
 	return false
+}
+
+func signalPreviewFromJSON(body []byte) trading.Signal {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return trading.Signal{}
+	}
+	var signal trading.Signal
+	readString := func(name string) string {
+		raw, ok := fields[name]
+		if !ok {
+			return ""
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s
+		}
+		var n json.Number
+		if err := json.Unmarshal(raw, &n); err == nil {
+			return n.String()
+		}
+		return ""
+	}
+	readInt := func(name string) int {
+		raw, ok := fields[name]
+		if !ok {
+			return 0
+		}
+		var i int
+		if err := json.Unmarshal(raw, &i); err == nil {
+			return i
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			if parsed, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+				return parsed
+			}
+		}
+		return 0
+	}
+	readFloat := func(name string) trading.FlexibleFloat {
+		raw, ok := fields[name]
+		if !ok {
+			return trading.FlexibleFloat{}
+		}
+		var f trading.FlexibleFloat
+		if err := json.Unmarshal(raw, &f); err == nil {
+			return f
+		}
+		return trading.FlexibleFloat{}
+	}
+	signal.Action = trading.Side(readString("action"))
+	signal.APIID = readString("api_id")
+	signal.Coinpair = readString("coinpair")
+	signal.Price = readFloat("price")
+	signal.SentAt = readString("sent_at")
+	signal.Time = readString("time")
+	signal.Ticker = readString("ticker")
+	signal.Exchange = readString("exchange")
+	signal.Interval = readString("interval")
+	signal.Condition = readString("condition")
+	signal.Text = readString("text")
+	signal.Leverage = readInt("leverage")
+	signal.Amount = readFloat("amount")
+	signal.Token = readString("token")
+	signal.Normalize()
+	return signal
 }
 
 func (s *Server) execute(signalID string, signal trading.Signal, cfg config.Config) {
@@ -156,6 +240,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handleTemplates(w, r)
 	case "/orders":
 		s.handleOrders(w, r)
+	case "/analysis":
+		s.handleAnalysis(w, r)
 	case "/api-keys":
 		s.handleAPIKeys(w, r)
 	case "/api-keys/test":
@@ -514,9 +600,10 @@ func (s *Server) now() time.Time {
 }
 
 type configPatch struct {
-	Server   *serverPatch  `json:"server"`
-	DataFile *string       `json:"data_file"`
-	Trading  *tradingPatch `json:"trading"`
+	Server       *serverPatch  `json:"server"`
+	DataFile     *string       `json:"data_file"`
+	DatabaseFile *string       `json:"database_file"`
+	Trading      *tradingPatch `json:"trading"`
 }
 
 type serverPatch struct {
@@ -546,6 +633,9 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.DataFile != nil {
 		c.DataFile = *patch.DataFile
+	}
+	if patch.DatabaseFile != nil {
+		c.DatabaseFile = *patch.DatabaseFile
 	}
 	if patch.Trading == nil {
 		return

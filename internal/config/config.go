@@ -23,10 +23,11 @@ const (
 )
 
 type Config struct {
-	Server   ServerConfig            `json:"server"`
-	DataFile string                  `json:"data_file"`
-	Trading  TradingConfig           `json:"trading"`
-	Symbols  map[string]SymbolConfig `json:"symbols"`
+	Server       ServerConfig            `json:"server"`
+	DataFile     string                  `json:"data_file"`
+	DatabaseFile string                  `json:"database_file"`
+	Trading      TradingConfig           `json:"trading"`
+	Symbols      map[string]SymbolConfig `json:"symbols"`
 }
 
 type ServerConfig struct {
@@ -60,8 +61,9 @@ type SymbolConfig struct {
 
 func Default() Config {
 	return Config{
-		Server:   ServerConfig{Addr: ":8080"},
-		DataFile: "data/orders.json",
+		Server:       ServerConfig{Addr: ":8080"},
+		DataFile:     "data/orders.json",
+		DatabaseFile: "data/tvbot.db",
 		Trading: TradingConfig{
 			Env:                       EnvDemo,
 			AllowLiveTrading:          false,
@@ -143,6 +145,9 @@ func (c *Config) Normalize() {
 	}
 	if strings.TrimSpace(c.DataFile) == "" {
 		c.DataFile = "data/orders.json"
+	}
+	if strings.TrimSpace(c.DatabaseFile) == "" {
+		c.DatabaseFile = "data/tvbot.db"
 	}
 	c.Trading.Env = strings.ToLower(strings.TrimSpace(c.Trading.Env))
 	if c.Trading.Env == "" {

@@ -326,7 +326,7 @@ const tvbotHTML = `<!doctype html>
       <div class="metric"><div class="label">交易环境</div><div class="value" id="metric-env">-</div></div>
       <div class="metric"><div class="label">OKX API</div><div class="value" id="metric-api-keys">-</div></div>
       <div class="metric"><div class="label">下单金额</div><div class="value" id="metric-amount">-</div></div>
-      <div class="metric"><div class="label">最近订单</div><div class="value" id="metric-orders">-</div></div>
+      <div class="metric"><div class="label">最近信号</div><div class="value" id="metric-orders">-</div></div>
     </div>
 
     <section id="dashboard" class="active">
@@ -447,12 +447,12 @@ const tvbotHTML = `<!doctype html>
 
     <section id="orders">
       <div class="section-head">
-        <h2>订单</h2>
-        <button class="btn" type="button" id="refresh-orders">刷新订单</button>
+        <h2>订单 / 信号历史</h2>
+        <button class="btn" type="button" id="refresh-orders">刷新历史</button>
       </div>
       <table>
         <thead>
-          <tr><th>时间</th><th>状态</th><th>API</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th>OKX</th></tr>
+          <tr><th>时间</th><th>状态</th><th>API</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th>OKX / 原因</th></tr>
         </thead>
         <tbody id="order-rows"></tbody>
       </table>
@@ -690,8 +690,10 @@ const tvbotHTML = `<!doctype html>
 
     function renderOrders() {
       const rows = (state.orders || []).map((order) => {
-        const okx = order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : order.error || "-";
-        const tone = order.status === "submitted" ? "ok" : (order.status === "failed" ? "bad" : "warn");
+        const okxResult = order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : "";
+        const errorText = [order.error_code, order.error].filter(Boolean).join(": ");
+        const okx = okxResult || errorText || "-";
+        const tone = order.status === "submitted" ? "ok" : (order.status === "failed" || order.status === "rejected" ? "bad" : "warn");
         return "<tr>" +
           '<td class="time">' + escapeHTML(shanghaiTime(order.accepted_at)) + "</td>" +
           "<td>" + pill(order.status, tone) + "</td>" +

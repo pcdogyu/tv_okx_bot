@@ -3,6 +3,7 @@
     "addr": ":8080"
   },
   "data_file": "data/orders.json",
+  "database_file": "data/tvbot.db",
   "trading": {
     "env": "demo",
     "allow_live_trading": false,
