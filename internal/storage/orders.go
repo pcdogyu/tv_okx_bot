@@ -214,6 +214,12 @@ func (s *OrderStore) List(limit int) []OrderRecord {
 	return out
 }
 
+func (s *OrderStore) Get(signalID string) (OrderRecord, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.findLocked(signalID)
+}
+
 func (s *OrderStore) findLocked(signalID string) (OrderRecord, bool) {
 	if s.db != nil {
 		rec, err := s.findSQLiteLocked(signalID)
@@ -642,6 +648,22 @@ func RejectedKey(signal trading.Signal, code, message string, now time.Time) str
 		trading.NormalizeFloat(signal.Amount.Value) + "|" +
 		signal.CanonicalTokenPayload() + "|" +
 		signal.Token + "|" +
+		now.UTC().Format(time.RFC3339Nano)
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
+}
+
+func RetryKey(sourceSignalID string, signal trading.Signal, now time.Time) string {
+	payload := "retry|" +
+		sourceSignalID + "|" +
+		string(signal.Action) + "|" +
+		signal.APIID + "|" +
+		signal.Coinpair + "|" +
+		trading.NormalizeFloat(signal.Price.Value) + "|" +
+		signal.SentAt + "|" +
+		signal.Ticker + "|" +
+		strconv.Itoa(signal.Leverage) + "|" +
+		trading.NormalizeFloat(signal.Amount.Value) + "|" +
 		now.UTC().Format(time.RFC3339Nano)
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])

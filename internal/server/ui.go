@@ -304,6 +304,25 @@ const tvbotHTML = `<!doctype html>
       gap: 6px;
       flex-wrap: wrap;
     }
+    .btn.small {
+      min-height: 28px;
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+    .btn:disabled {
+      opacity: 0.58;
+      cursor: not-allowed;
+    }
+    .okx-cell {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .okx-text {
+      flex: 1;
+      min-width: 0;
+    }
     .analysis-controls {
       display: flex;
       gap: 10px;
@@ -590,7 +609,7 @@ const tvbotHTML = `<!doctype html>
 
   <script>
     const activeTabStorageKey = "tvbot.active_tab";
-    const state = { config: null, apiKeys: null, selectedAPIID: "", orders: [], analysis: null, analysisError: "", upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", orders: [], retrying: {}, analysis: null, analysisError: "", upgrade: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -963,6 +982,9 @@ const tvbotHTML = `<!doctype html>
         const errorText = [order.error_code, order.error].filter(Boolean).join(": ");
         const okx = okxResult || errorText || "-";
         const tone = order.status === "submitted" ? "ok" : (order.status === "failed" || order.status === "rejected" ? "bad" : "warn");
+        const canRetry = order.status === "failed" && order.signal_id;
+        const retrying = canRetry && state.retrying[order.signal_id];
+        const retryButton = canRetry ? '<button class="btn small" type="button" data-retry-id="' + escapeHTML(order.signal_id) + '"' + (retrying ? " disabled" : "") + ">" + (retrying ? "重试中" : "重试") + "</button>" : "";
         return "<tr>" +
           '<td class="time">' + escapeHTML(shanghaiTime(order.accepted_at)) + "</td>" +
           "<td>" + pill(order.status, tone) + "</td>" +
@@ -971,7 +993,7 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(asText(order.coinpair)) + "</td>" +
           "<td>" + escapeHTML(asText(order.price)) + "</td>" +
           "<td>" + escapeHTML(asText(order.amount)) + "</td>" +
-          "<td>" + escapeHTML(okx) + "</td>" +
+          '<td><div class="okx-cell"><span class="okx-text">' + escapeHTML(okx) + "</span>" + retryButton + "</div></td>" +
           "</tr>";
       });
       $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="8" class="muted">-</td></tr>';
@@ -1078,6 +1100,21 @@ const tvbotHTML = `<!doctype html>
       toast("模板已生成");
     }
 
+    async function retryOrder(signalID) {
+      if (!signalID || state.retrying[signalID]) return;
+      state.retrying[signalID] = true;
+      renderOrders();
+      try {
+        const result = await api("/tvbot/orders/" + encodeURIComponent(signalID) + "/retry", { method: "POST" });
+        toast("重试已触发 " + asText(result.signal_id));
+        await loadOrders();
+        window.setTimeout(() => loadOrders().catch((err) => toast(err.message)), 1600);
+      } finally {
+        delete state.retrying[signalID];
+        renderOrders();
+      }
+    }
+
     async function checkOKX() {
       $("okx-output").textContent = "checking...";
       try {
@@ -1149,6 +1186,11 @@ const tvbotHTML = `<!doctype html>
     $("copy-template").addEventListener("click", async () => {
       await navigator.clipboard.writeText($("template-output").value);
       toast("已复制");
+    });
+    $("order-rows").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-retry-id]");
+      if (!button) return;
+      retryOrder(button.dataset.retryId).catch((err) => toast(err.message));
     });
     $("refresh-orders").addEventListener("click", () => loadOrders().then(() => toast("订单已刷新")).catch((err) => toast(err.message)));
     $("refresh-upgrade").addEventListener("click", () => loadUpgrade().then(() => toast("升级状态已刷新")).catch((err) => toast(err.message)));

@@ -105,6 +105,10 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("Code by Yuhao@jiansutech.com - 2026-07-24T03:00:00Z - testhash - testbranch")) {
 		t.Fatalf("tvbot ui should include build footer")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("data-retry-id")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/retry")) {
+		t.Fatalf("tvbot ui should include retry controls")
+	}
 }
 
 func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
@@ -184,6 +188,114 @@ func TestTVOrderAllowsUnconfiguredCoinpair(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
+	}
+}
+
+func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.Action = trading.ActionShort
+	signal.APIID = "backup"
+	signal.Token = srv.Token.Generate(signal.CanonicalTokenPayload())
+	body, err := json.Marshal(signal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := httptest.NewRecorder()
+	srv.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", first.Code, first.Body.String())
+	}
+	var firstResp struct {
+		SignalID string `json:"signal_id"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &firstResp); err != nil {
+		t.Fatal(err)
+	}
+	waitOrderStatus(t, srv.Orders, firstResp.SignalID, storage.StatusSubmitted)
+	select {
+	case <-srv.Executor.(fakeExecutor).calls:
+	case <-time.After(time.Second):
+		t.Fatal("initial order was not executed")
+	}
+	sourceID := firstResp.SignalID
+	if err := srv.Orders.MarkFailed(sourceID, fmt.Errorf("okx failed"), srv.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+sourceID+"/retry", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var retryResp struct {
+		SignalID string `json:"signal_id"`
+		RetryOf  string `json:"retry_of"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &retryResp); err != nil {
+		t.Fatal(err)
+	}
+	if retryResp.RetryOf != sourceID || retryResp.SignalID == "" || retryResp.SignalID == sourceID {
+		t.Fatalf("bad retry response: %#v", retryResp)
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		if got.Action != trading.ActionShort || got.APIID != "backup" || got.Coinpair != "BTC" || got.Price.Value != 50000 {
+			t.Fatalf("bad retry signal: %#v", got)
+		}
+		if got.Amount.Value != 100 || got.Leverage != 5 || got.Risk.Type == "" {
+			t.Fatalf("retry signal lost order settings: %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry order was not executed")
+	}
+	gotRetry := waitOrderStatus(t, srv.Orders, retryResp.SignalID, storage.StatusSubmitted)
+	orders := srv.Orders.List(10)
+	if len(orders) != 2 {
+		t.Fatalf("orders len=%d records=%#v", len(orders), orders)
+	}
+	if gotRetry.SignalID == sourceID {
+		t.Fatalf("retry should create a new record: %#v", gotRetry)
+	}
+}
+
+func TestOrderRetryRejectsNonFailedRecord(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	body, err := json.Marshal(signal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := httptest.NewRecorder()
+	srv.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", first.Code, first.Body.String())
+	}
+	var firstResp struct {
+		SignalID string `json:"signal_id"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &firstResp); err != nil {
+		t.Fatal(err)
+	}
+	waitOrderStatus(t, srv.Orders, firstResp.SignalID, storage.StatusSubmitted)
+	select {
+	case <-srv.Executor.(fakeExecutor).calls:
+	case <-time.After(time.Second):
+		t.Fatal("initial order was not executed")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+firstResp.SignalID+"/retry", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("retry non-failed status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		t.Fatalf("non-failed order should not retry: %#v", got)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
@@ -591,6 +703,26 @@ func newTestServer(t *testing.T) *Server {
 			return time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
 		},
 	}
+}
+
+func waitOrderStatus(t *testing.T, store *storage.OrderStore, signalID string, want storage.OrderStatus) storage.OrderRecord {
+	t.Helper()
+	var last storage.OrderRecord
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, rec := range store.List(50) {
+			if rec.SignalID != signalID {
+				continue
+			}
+			last = rec
+			if rec.Status == want {
+				return rec
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("order %s did not reach status %s, last=%#v", signalID, want, last)
+	return storage.OrderRecord{}
 }
 
 func validSignal(t *testing.T, srv *Server) trading.Signal {

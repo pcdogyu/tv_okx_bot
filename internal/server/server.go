@@ -232,22 +232,24 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		writeHTML(w, http.StatusOK, renderTVBotHTML(s.BuildInfo))
 		return
 	}
-	switch path {
-	case "/config":
+	switch {
+	case path == "/config":
 		s.handleConfig(w, r)
-	case "/symbols":
+	case path == "/symbols":
 		s.handleSymbols(w, r)
-	case "/templates":
+	case path == "/templates":
 		s.handleTemplates(w, r)
-	case "/orders":
+	case path == "/orders":
 		s.handleOrders(w, r)
-	case "/analysis":
+	case isOrderRetryPath(path):
+		s.handleOrderRetry(w, r, path)
+	case path == "/analysis":
 		s.handleAnalysis(w, r)
-	case "/api-keys":
+	case path == "/api-keys":
 		s.handleAPIKeys(w, r)
-	case "/api-keys/test":
+	case path == "/api-keys/test":
 		s.handleAPIKeyTest(w, r)
-	case "/check-okx":
+	case path == "/check-okx":
 		s.handleCheckOKX(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "unknown /tvbot endpoint")
@@ -493,6 +495,107 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"orders": s.Orders.List(limit)})
+}
+
+func isOrderRetryPath(path string) bool {
+	rest := strings.TrimPrefix(path, "/orders/")
+	return rest != path && strings.HasSuffix(rest, "/retry") && strings.TrimSuffix(rest, "/retry") != ""
+}
+
+func orderRetrySignalID(path string) string {
+	rest := strings.TrimPrefix(path, "/orders/")
+	return strings.TrimSuffix(rest, "/retry")
+}
+
+func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
+		return
+	}
+	if s.Orders == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "order store is not configured")
+		return
+	}
+	sourceID := orderRetrySignalID(path)
+	source, ok := s.Orders.Get(sourceID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "order record not found")
+		return
+	}
+	if source.Status != storage.StatusFailed {
+		writeError(w, http.StatusConflict, "not_retriable", "only failed orders can be retried")
+		return
+	}
+	cfg := s.ConfigStore.Get()
+	now := s.now()
+	signal, err := retrySignalFromRecord(source, cfg, now)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_retry_signal", err.Error())
+		return
+	}
+	record, duplicate, err := s.Orders.RecordAccepted(signal, storage.RetryKey(source.SignalID, signal, now), now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if duplicate {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"status":    "duplicate",
+			"signal_id": record.SignalID,
+			"retry_of":  source.SignalID,
+		})
+		return
+	}
+	go s.execute(record.SignalID, signal, cfg)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":    "accepted",
+		"signal_id": record.SignalID,
+		"retry_of":  source.SignalID,
+	})
+}
+
+func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.Time) (trading.Signal, error) {
+	price, err := parseOrderRecordFloat("price", rec.Price)
+	if err != nil {
+		return trading.Signal{}, err
+	}
+	signal := trading.Signal{
+		Action:   rec.Action,
+		APIID:    rec.APIID,
+		Coinpair: rec.Coinpair,
+		Ticker:   rec.Ticker,
+		Price:    trading.NewFlexibleFloat(price),
+		Leverage: rec.Leverage,
+		SentAt:   now.UTC().Format(time.RFC3339Nano),
+	}
+	if strings.TrimSpace(rec.Amount) != "" {
+		amount, err := parseOrderRecordFloat("amount", rec.Amount)
+		if err != nil {
+			return trading.Signal{}, err
+		}
+		signal.Amount = trading.NewFlexibleFloat(amount)
+	}
+	signal.Normalize()
+	cfg.OrderSettings().ApplyToSignal(&signal)
+	if err := signal.Validate(now, 0, cfg); err != nil {
+		return trading.Signal{}, err
+	}
+	return signal, nil
+}
+
+func parseOrderRecordFloat(name, value string) (float64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("%s is required", name)
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 {
+		if err == nil {
+			err = fmt.Errorf("must be positive")
+		}
+		return 0, fmt.Errorf("%s %q is invalid: %w", name, value, err)
+	}
+	return parsed, nil
 }
 
 func (s *Server) handleCheckOKX(w http.ResponseWriter, r *http.Request) {
