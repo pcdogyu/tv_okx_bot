@@ -11,7 +11,6 @@ type TokenGenerator interface {
 }
 
 type alertTemplatePayload struct {
-	Token     string `json:"token"`
 	SentAt    string `json:"sent_at"`
 	APIID     string `json:"api_id,omitempty"`
 	Action    string `json:"action"`
@@ -23,6 +22,7 @@ type alertTemplatePayload struct {
 	Condition string `json:"condition"`
 	Text      string `json:"text"`
 	Source    string `json:"source"`
+	Token     string `json:"token"`
 }
 
 func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateResponse, error) {
@@ -46,7 +46,6 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 	}
 	token := generator.Generate(req.CanonicalTokenPayload())
 	payload := alertTemplatePayload{
-		Token:     token,
 		SentAt:    signal.SentAt,
 		APIID:     req.APIID,
 		Action:    string(signal.Action),
@@ -58,6 +57,7 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		Condition: "{{strategy.order.comment}}",
 		Text:      "{{strategy.order.alert_message}}",
 		Source:    "tradingview",
+		Token:     token,
 	}
 	b, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

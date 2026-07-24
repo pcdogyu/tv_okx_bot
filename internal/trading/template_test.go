@@ -2,6 +2,7 @@ package trading
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/security"
@@ -45,6 +46,9 @@ func TestBuildTemplateProducesValidJSONAndToken(t *testing.T) {
 	}
 	if !tokenSvc.Validate(req.CanonicalTokenPayload(), resp.Token) {
 		t.Fatal("generated token did not validate against canonical template payload")
+	}
+	if strings.LastIndex(resp.JSON, `"token"`) < strings.LastIndex(resp.JSON, `"source"`) {
+		t.Fatalf("token should be the final JSON field: %s", resp.JSON)
 	}
 }
 
