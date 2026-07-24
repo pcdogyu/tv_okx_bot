@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
+	"github.com/pcdogyu/tv_okx_bot/internal/okx"
 	"github.com/pcdogyu/tv_okx_bot/internal/security"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
@@ -174,6 +175,31 @@ func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestTVBotAPIKeysSaveAndMask(t *testing.T) {
+	srv := newTestServer(t)
+	reqBody := []byte(`{"api_key":"abcd12345678wxyz","secret_key":"super-secret-value","passphrase":"phrase-value"}`)
+	req := httptest.NewRequest(http.MethodPut, "/tvbot/api-keys", bytes.NewReader(reqBody))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("save status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("super-secret-value")) || bytes.Contains(rr.Body.Bytes(), []byte("phrase-value")) {
+		t.Fatalf("response leaked secret material: %s", rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("abcd...wxyz")) {
+		t.Fatalf("response did not include masked api key: %s", rr.Body.String())
+	}
+	getReq := httptest.NewRequest(http.MethodGet, "/tvbot/api-keys", nil)
+	getReq.SetBasicAuth("admin", "Admin123")
+	get := httptest.NewRecorder()
+	srv.ServeHTTP(get, getReq)
+	if get.Code != http.StatusOK || bytes.Contains(get.Body.Bytes(), []byte("super-secret-value")) || bytes.Contains(get.Body.Bytes(), []byte("phrase-value")) {
+		t.Fatalf("get status=%d body=%s", get.Code, get.Body.String())
+	}
+}
+
 func TestUpgradeEndpointRequiresAdminAndStartsRunner(t *testing.T) {
 	srv := newTestServer(t)
 	runner := fakeUpgradeRunner{done: make(chan struct{}, 1)}
@@ -218,15 +244,20 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
+	credentialStore, err := okx.NewCredentialStore(filepath.Join(t.TempDir(), "okx-credentials.json"), okx.Credentials{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &Server{
-		ConfigStore: config.NewStore("", cfg),
-		Orders:      orderStore,
-		Token:       security.NewTokenService("unit-test-secret"),
-		Executor:    fakeExecutor{calls: make(chan trading.Signal, 2)},
-		AdminToken:  "admin",
-		AdminUser:   "admin",
-		AdminPass:   "Admin123",
-		Upgrade:     upgrade.NewManager(fakeUpgradeRunner{done: make(chan struct{}, 1)}),
+		ConfigStore:    config.NewStore("", cfg),
+		Orders:         orderStore,
+		Token:          security.NewTokenService("unit-test-secret"),
+		Executor:       fakeExecutor{calls: make(chan trading.Signal, 2)},
+		OKXCredentials: credentialStore,
+		AdminToken:     "admin",
+		AdminUser:      "admin",
+		AdminPass:      "Admin123",
+		Upgrade:        upgrade.NewManager(fakeUpgradeRunner{done: make(chan struct{}, 1)}),
 		Now: func() time.Time {
 			return time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
 		},

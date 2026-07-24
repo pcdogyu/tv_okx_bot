@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
+	"github.com/pcdogyu/tv_okx_bot/internal/okx"
 	"github.com/pcdogyu/tv_okx_bot/internal/security"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
@@ -21,16 +22,17 @@ import (
 )
 
 type Server struct {
-	ConfigStore *config.Store
-	Orders      *storage.OrderStore
-	Token       security.TokenService
-	Executor    trading.Executor
-	AdminToken  string
-	AdminUser   string
-	AdminPass   string
-	Logger      *slog.Logger
-	Now         func() time.Time
-	Upgrade     *upgrade.Manager
+	ConfigStore    *config.Store
+	Orders         *storage.OrderStore
+	Token          security.TokenService
+	Executor       trading.Executor
+	OKXCredentials *okx.CredentialStore
+	AdminToken     string
+	AdminUser      string
+	AdminPass      string
+	Logger         *slog.Logger
+	Now            func() time.Time
+	Upgrade        *upgrade.Manager
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -131,10 +133,45 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handleTemplates(w, r)
 	case "/orders":
 		s.handleOrders(w, r)
+	case "/api-keys":
+		s.handleAPIKeys(w, r)
 	case "/check-okx":
 		s.handleCheckOKX(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "not_found", "unknown /tvbot endpoint")
+	}
+}
+
+func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
+	if s.OKXCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.OKXCredentials.Status())
+	case http.MethodPut:
+		var req struct {
+			APIKey     string `json:"api_key"`
+			SecretKey  string `json:"secret_key"`
+			Passphrase string `json:"passphrase"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+		status, err := s.OKXCredentials.Update(okx.Credentials{
+			APIKey:     req.APIKey,
+			SecretKey:  req.SecretKey,
+			Passphrase: req.Passphrase,
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and PUT are allowed")
 	}
 }
 

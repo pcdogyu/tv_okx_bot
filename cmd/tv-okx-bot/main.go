@@ -71,9 +71,6 @@ func runServe(args []string) error {
 		return err
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if err := secrets.RequireOKXCredentials(); err != nil {
-		logger.Warn("OKX credentials are incomplete; /tvorder accepts requests but execution will fail until credentials are set", "error", err)
-	}
 	orderStore, err := storage.NewOrderStore(resolveDataPath(*configPath, cfg.DataFile))
 	if err != nil {
 		return err
@@ -81,6 +78,21 @@ func runServe(args []string) error {
 	upgradeRunner, err := upgrade.NewShellRunnerFromEnv()
 	if err != nil {
 		return err
+	}
+	credentialsFile := os.Getenv("OKX_CREDENTIALS_FILE")
+	if credentialsFile == "" {
+		credentialsFile = filepath.Join(upgradeRunner.WorkDir, "data", "okx-credentials.json")
+	}
+	credentialStore, err := okx.NewCredentialStore(credentialsFile, okx.Credentials{
+		APIKey:     secrets.OKXAPIKey,
+		SecretKey:  secrets.OKXSecretKey,
+		Passphrase: secrets.OKXPassphrase,
+	})
+	if err != nil {
+		return err
+	}
+	if !credentialStore.Status().Configured {
+		logger.Warn("OKX credentials are incomplete; /tvorder accepts requests but execution will fail until credentials are set")
 	}
 	upgradeStatusFile := os.Getenv("TV_OKX_UPGRADE_STATUS_FILE")
 	if upgradeStatusFile == "" {
@@ -91,19 +103,16 @@ func runServe(args []string) error {
 		Orders:      orderStore,
 		Token:       security.NewTokenService(secrets.TVTokenSecret),
 		Executor: okx.Trader{
-			Credentials: okx.Credentials{
-				APIKey:     secrets.OKXAPIKey,
-				SecretKey:  secrets.OKXSecretKey,
-				Passphrase: secrets.OKXPassphrase,
-			},
-			HTTPClient: &http.Client{Timeout: 15 * time.Second},
-			Logger:     logger,
+			CredentialProvider: credentialStore,
+			HTTPClient:         &http.Client{Timeout: 15 * time.Second},
+			Logger:             logger,
 		},
-		AdminToken: secrets.AdminToken,
-		AdminUser:  secrets.AdminUser,
-		AdminPass:  secrets.AdminPassword,
-		Logger:     logger,
-		Upgrade:    upgrade.NewManager(upgradeRunner, upgrade.WithStatusFile(upgradeStatusFile)),
+		OKXCredentials: credentialStore,
+		AdminToken:     secrets.AdminToken,
+		AdminUser:      secrets.AdminUser,
+		AdminPass:      secrets.AdminPassword,
+		Logger:         logger,
+		Upgrade:        upgrade.NewManager(upgradeRunner, upgrade.WithStatusFile(upgradeStatusFile)),
 	}
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,

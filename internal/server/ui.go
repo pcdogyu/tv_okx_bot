@@ -280,6 +280,7 @@ const tvbotHTML = `<!doctype html>
       <nav aria-label="sections">
         <button type="button" data-tab="dashboard" aria-selected="true">总览</button>
         <button type="button" data-tab="config">配置</button>
+        <button type="button" data-tab="apiKeys">API Key</button>
         <button type="button" data-tab="symbols">币对</button>
         <button type="button" data-tab="template">告警模板</button>
         <button type="button" data-tab="orders">订单</button>
@@ -291,9 +292,9 @@ const tvbotHTML = `<!doctype html>
   <main>
     <div class="status">
       <div class="metric"><div class="label">交易环境</div><div class="value" id="metric-env">-</div></div>
+      <div class="metric"><div class="label">OKX API</div><div class="value" id="metric-api-keys">-</div></div>
       <div class="metric"><div class="label">币对映射</div><div class="value" id="metric-symbols">-</div></div>
       <div class="metric"><div class="label">最近订单</div><div class="value" id="metric-orders">-</div></div>
-      <div class="metric"><div class="label">升级状态</div><div class="value" id="metric-upgrade">-</div></div>
     </div>
 
     <section id="dashboard" class="active">
@@ -314,6 +315,26 @@ const tvbotHTML = `<!doctype html>
         <div>
           <h3>OKX 检查</h3>
           <pre id="okx-output">-</pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="apiKeys">
+      <div class="section-head">
+        <h2>API Key</h2>
+        <button class="btn primary" type="button" id="save-api-keys">保存 API Key</button>
+      </div>
+      <div class="split">
+        <div class="grid">
+          <label>OKX API Key<input id="key-api" autocomplete="off" spellcheck="false"></label>
+          <label>OKX Secret Key<input id="key-secret" type="password" autocomplete="new-password" spellcheck="false"></label>
+          <label>OKX Passphrase<input id="key-passphrase" type="password" autocomplete="new-password" spellcheck="false"></label>
+        </div>
+        <div>
+          <h3>当前状态</h3>
+          <table style="margin-top:10px">
+            <tbody id="api-key-status"></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -394,7 +415,7 @@ const tvbotHTML = `<!doctype html>
   <div class="toast" id="toast"></div>
 
   <script>
-    const state = { config: null, symbols: {}, orders: [], upgrade: null };
+    const state = { config: null, apiKeys: null, symbols: {}, orders: [], upgrade: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -430,7 +451,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadAll() {
-      await Promise.allSettled([loadConfig(), loadSymbols(), loadOrders(), loadUpgrade()]);
+      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadSymbols(), loadOrders(), loadUpgrade()]);
       renderDashboard();
     }
 
@@ -444,6 +465,12 @@ const tvbotHTML = `<!doctype html>
       const data = await api("/tvbot/symbols");
       state.symbols = data.symbols || {};
       renderSymbols();
+      updateMetrics();
+    }
+
+    async function loadAPIKeys() {
+      state.apiKeys = await api("/tvbot/api-keys");
+      renderAPIKeys();
       updateMetrics();
     }
 
@@ -462,9 +489,9 @@ const tvbotHTML = `<!doctype html>
 
     function updateMetrics() {
       $("metric-env").textContent = state.config && state.config.trading ? state.config.trading.env : "-";
+      $("metric-api-keys").textContent = state.apiKeys && state.apiKeys.configured ? "已配置" : "未配置";
       $("metric-symbols").textContent = Object.keys(state.symbols || {}).length;
       $("metric-orders").textContent = state.orders ? state.orders.length : "-";
-      $("metric-upgrade").textContent = state.upgrade && state.upgrade.status ? state.upgrade.status : "-";
     }
 
     function renderDashboard() {
@@ -493,6 +520,19 @@ const tvbotHTML = `<!doctype html>
       $("cfg-position").value = trading.position_mode || "net";
       $("cfg-ttl").value = trading.signal_ttl_seconds || 120;
       $("cfg-live").checked = !!trading.allow_live_trading;
+    }
+
+    function renderAPIKeys() {
+      const status = state.apiKeys || {};
+      const rows = [
+        ["配置状态", status.configured ? "已配置" : "未配置"],
+        ["API Key", status.api_key_masked || "-"],
+        ["Secret Key", status.secret_key_set ? "已保存" : "未保存"],
+        ["Passphrase", status.passphrase_set ? "已保存" : "未保存"],
+        ["来源", status.source || "-"],
+        ["更新时间", status.updated_at || "-"]
+      ];
+      $("api-key-status").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(row[1]) + "</td></tr>").join("");
     }
 
     function symbolRow(key, sym) {
@@ -570,6 +610,21 @@ const tvbotHTML = `<!doctype html>
       toast("配置已保存");
     }
 
+    async function saveAPIKeys() {
+      const body = {
+        api_key: $("key-api").value.trim(),
+        secret_key: $("key-secret").value.trim(),
+        passphrase: $("key-passphrase").value.trim()
+      };
+      state.apiKeys = await api("/tvbot/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      $("key-api").value = "";
+      $("key-secret").value = "";
+      $("key-passphrase").value = "";
+      renderAPIKeys();
+      updateMetrics();
+      toast("API Key 已保存");
+    }
+
     async function saveSymbols() {
       state.symbols = (await api("/tvbot/symbols", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbols: collectSymbols() }) })).symbols || {};
       renderSymbols();
@@ -629,6 +684,7 @@ const tvbotHTML = `<!doctype html>
     $("refresh-all").addEventListener("click", () => loadAll().then(() => toast("已刷新")).catch((err) => toast(err.message)));
     $("check-okx").addEventListener("click", () => checkOKX());
     $("save-config").addEventListener("click", () => saveConfig().catch((err) => toast(err.message)));
+    $("save-api-keys").addEventListener("click", () => saveAPIKeys().catch((err) => toast(err.message)));
     $("save-symbols").addEventListener("click", () => saveSymbols().catch((err) => toast(err.message)));
     $("add-symbol").addEventListener("click", () => {
       $("symbol-rows").insertAdjacentHTML("beforeend", symbolRow("", { coinpair: "", inst_id: "", ct_val: "", lot_sz: "", min_sz: "" }));

@@ -16,9 +16,10 @@ import (
 )
 
 type Trader struct {
-	Credentials Credentials
-	HTTPClient  *http.Client
-	Logger      *slog.Logger
+	Credentials        Credentials
+	CredentialProvider CredentialProvider
+	HTTPClient         *http.Client
+	Logger             *slog.Logger
 }
 
 func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg trading.RuntimeConfig) (trading.OrderResult, error) {
@@ -101,7 +102,7 @@ func (t Trader) resolveSymbol(ctx context.Context, client Client, signal trading
 }
 
 func (t Trader) Check(ctx context.Context, cfg trading.RuntimeConfig) (map[string]any, error) {
-	if err := t.Credentials.Validate(); err != nil {
+	if err := t.credentials().Validate(); err != nil {
 		return nil, err
 	}
 	client := t.client(cfg)
@@ -126,10 +127,17 @@ func (t Trader) Check(ctx context.Context, cfg trading.RuntimeConfig) (map[strin
 func (t Trader) client(cfg trading.RuntimeConfig) Client {
 	return Client{
 		BaseURL:     cfg.OKXBaseURL(),
-		Credentials: t.Credentials,
+		Credentials: t.credentials(),
 		Demo:        cfg.DemoTradingHeaderEnabled(),
 		HTTPClient:  t.HTTPClient,
 	}
+}
+
+func (t Trader) credentials() Credentials {
+	if t.CredentialProvider != nil {
+		return t.CredentialProvider.OKXCredentials()
+	}
+	return t.Credentials
 }
 
 func okxSide(action trading.Side) string {
