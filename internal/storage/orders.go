@@ -327,6 +327,23 @@ func (s *OrderStore) migrateSQLite() error {
 			payload_json TEXT NOT NULL,
 			refreshed_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS usdt_balance_snapshots (
+			api_id TEXT NOT NULL,
+			env TEXT NOT NULL,
+			bucket_ts INTEGER NOT NULL,
+			observed_at TEXT NOT NULL,
+			total_eq TEXT,
+			eq TEXT,
+			eq_usd TEXT,
+			avail_eq TEXT,
+			avail_bal TEXT,
+			cash_bal TEXT,
+			frozen_bal TEXT,
+			dis_eq TEXT,
+			balance_updated_at TEXT,
+			PRIMARY KEY(api_id, env, bucket_ts)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_usdt_balance_snapshots_time ON usdt_balance_snapshots(api_id, env, bucket_ts)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {

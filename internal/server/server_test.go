@@ -729,6 +729,16 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 	if len(resp.PricePoints) != 2 || resp.PriceInstID != "USDT-USD" || resp.PriceBar != "1H" {
 		t.Fatalf("bad price data: %#v", resp)
 	}
+	if len(resp.BalancePoints) != 1 || math.Abs(resp.BalancePoints[0].Value-4996.65) > 0.0000001 {
+		t.Fatalf("bad balance points: %#v", resp.BalancePoints)
+	}
+	snapshots, err := srv.Orders.ListUSDTBalanceSnapshots("default", cfg.Trading.Env, time.Date(2026, 7, 24, 2, 0, 0, 0, time.UTC), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 1 || snapshots[0].EqUsd != "4996.65" || snapshots[0].BucketTS != time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC).UnixMilli() {
+		t.Fatalf("analysis did not write USDT balance snapshot: %#v", snapshots)
+	}
 	if resp.Summary.TradeCount != 2 || resp.Summary.Wins != 1 || resp.Summary.Losses != 1 {
 		t.Fatalf("bad summary counts: %#v", resp.Summary)
 	}
@@ -737,6 +747,67 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 	}
 	if len(resp.Symbols) != 2 {
 		t.Fatalf("expected symbol stats: %#v", resp.Symbols)
+	}
+}
+
+func TestUSDTBalanceSamplerStoresConfiguredAccounts(t *testing.T) {
+	srv := newTestServer(t)
+	seen := map[string]bool{}
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/account/balance" {
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+		if r.Header.Get("x-simulated-trading") != "1" {
+			t.Fatalf("missing demo header")
+		}
+		apiKey := r.Header.Get("OK-ACCESS-KEY")
+		seen[apiKey] = true
+		eqUSD := map[string]string{"main-key": "100.5", "backup-key": "200.5"}[apiKey]
+		if eqUSD == "" {
+			t.Fatalf("unexpected api key %q", apiKey)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"totalEq":"` + eqUSD + `","uTime":"1784880000000","details":[{"ccy":"USDT","eq":"` + eqUSD + `","eqUsd":"` + eqUSD + `","availEq":"` + eqUSD + `","uTime":"1784880000000"}]}]}`))
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "main",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "main-key",
+			SecretKey:  "main-secret",
+			Passphrase: "main-pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID: "backup",
+		Credentials: okx.Credentials{
+			APIKey:     "backup-key",
+			SecretKey:  "backup-secret",
+			Passphrase: "backup-pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.sampleConfiguredUSDTBalances(context.Background())
+	if !seen["main-key"] || !seen["backup-key"] {
+		t.Fatalf("expected both accounts sampled, seen=%#v", seen)
+	}
+	for apiID, eqUSD := range map[string]string{"main": "100.5", "backup": "200.5"} {
+		snapshots, err := srv.Orders.ListUSDTBalanceSnapshots(apiID, cfg.Trading.Env, time.Date(2026, 7, 24, 2, 0, 0, 0, time.UTC), 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(snapshots) != 1 || snapshots[0].EqUsd != eqUSD {
+			t.Fatalf("bad %s snapshots: %#v", apiID, snapshots)
+		}
 	}
 }
 

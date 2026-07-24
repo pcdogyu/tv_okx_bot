@@ -882,7 +882,15 @@ const tvbotHTML = `<!doctype html>
       return details.find((row) => String(row.ccy || "").toUpperCase() === "USDT") || null;
     }
 
-    function usdtValuationPoints(pricePoints, balance) {
+    function usdtValuationPoints(balancePoints, pricePoints, balance) {
+      const stored = (Array.isArray(balancePoints) ? balancePoints : []).map((point, index) => {
+        return {
+          index: index,
+          value: Number(point.value !== undefined ? point.value : (point.eq_usd || point.eq)),
+          date: chartPointDate(point)
+        };
+      }).filter((point) => Number.isFinite(point.value));
+      if (stored.length) return stored;
       const usdt = usdtBalanceDetail(balance);
       const currentValue = Number(usdt && usdt.eq_usd);
       if (!Number.isFinite(currentValue)) return [];
@@ -1407,7 +1415,7 @@ const tvbotHTML = `<!doctype html>
           "</tr>";
       });
       $("analysis-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">暂无 OKX 成交历史</td></tr>';
-      drawUSDTChart(usdtValuationPoints(state.analysis.price_points || [], state.analysis.balance || null));
+      drawUSDTChart(usdtValuationPoints(state.analysis.balance_points || [], state.analysis.price_points || [], state.analysis.balance || null));
     }
 
     function renderAnalysisBalance(balance) {

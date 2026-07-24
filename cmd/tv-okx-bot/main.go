@@ -132,6 +132,7 @@ func runServe(args []string) error {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	handler.StartUSDTBalanceSampler(context.Background())
 	logger.Info("tv okx bot listening", "addr", cfg.Server.Addr, "env", cfg.Trading.Env, "commit", buildInfo.CommitHash, "branch", buildInfo.CommitBranch)
 	return srv.ListenAndServe()
 }

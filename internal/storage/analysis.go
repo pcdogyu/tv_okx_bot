@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -35,6 +36,22 @@ type OKXFill struct {
 	FeeCcy   string `json:"fee_ccy,omitempty"`
 	FillTime int64  `json:"fill_time"`
 	RawJSON  string `json:"raw_json,omitempty"`
+}
+
+type USDTBalanceSnapshot struct {
+	APIID            string    `json:"api_id"`
+	Env              string    `json:"env"`
+	BucketTS         int64     `json:"bucket_ts"`
+	ObservedAt       time.Time `json:"observed_at"`
+	TotalEq          string    `json:"total_eq,omitempty"`
+	Eq               string    `json:"eq,omitempty"`
+	EqUsd            string    `json:"eq_usd,omitempty"`
+	AvailEq          string    `json:"avail_eq,omitempty"`
+	AvailBal         string    `json:"avail_bal,omitempty"`
+	CashBal          string    `json:"cash_bal,omitempty"`
+	FrozenBal        string    `json:"frozen_bal,omitempty"`
+	DisEq            string    `json:"dis_eq,omitempty"`
+	BalanceUpdatedAt string    `json:"balance_updated_at,omitempty"`
 }
 
 type CachedPayload struct {
@@ -202,6 +219,121 @@ func (s *OrderStore) ListOKXFills(apiID string, since time.Time) ([]OKXFill, err
 			return nil, err
 		}
 		out = append(out, fill)
+	}
+	return out, rows.Err()
+}
+
+func (s *OrderStore) UpsertUSDTBalanceSnapshot(snapshot USDTBalanceSnapshot) error {
+	if s.db == nil {
+		return errors.New("sqlite database is not configured")
+	}
+	snapshot.APIID = strings.TrimSpace(snapshot.APIID)
+	snapshot.Env = strings.ToLower(strings.TrimSpace(snapshot.Env))
+	if snapshot.APIID == "" {
+		snapshot.APIID = "default"
+	}
+	if snapshot.Env == "" {
+		snapshot.Env = "demo"
+	}
+	if snapshot.ObservedAt.IsZero() {
+		snapshot.ObservedAt = time.Now().UTC()
+	}
+	snapshot.ObservedAt = snapshot.ObservedAt.UTC()
+	if snapshot.BucketTS <= 0 {
+		snapshot.BucketTS = snapshot.ObservedAt.Truncate(time.Hour).UnixMilli()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`INSERT INTO usdt_balance_snapshots
+		(api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(api_id, env, bucket_ts) DO UPDATE SET
+			observed_at=excluded.observed_at,
+			total_eq=excluded.total_eq,
+			eq=excluded.eq,
+			eq_usd=excluded.eq_usd,
+			avail_eq=excluded.avail_eq,
+			avail_bal=excluded.avail_bal,
+			cash_bal=excluded.cash_bal,
+			frozen_bal=excluded.frozen_bal,
+			dis_eq=excluded.dis_eq,
+			balance_updated_at=excluded.balance_updated_at`,
+		snapshot.APIID,
+		snapshot.Env,
+		snapshot.BucketTS,
+		snapshot.ObservedAt.Format(time.RFC3339Nano),
+		snapshot.TotalEq,
+		snapshot.Eq,
+		snapshot.EqUsd,
+		snapshot.AvailEq,
+		snapshot.AvailBal,
+		snapshot.CashBal,
+		snapshot.FrozenBal,
+		snapshot.DisEq,
+		snapshot.BalanceUpdatedAt,
+	)
+	return err
+}
+
+func (s *OrderStore) ListUSDTBalanceSnapshots(apiID, env string, since time.Time, limit int) ([]USDTBalanceSnapshot, error) {
+	if s.db == nil {
+		return nil, errors.New("sqlite database is not configured")
+	}
+	apiID = strings.TrimSpace(apiID)
+	env = strings.ToLower(strings.TrimSpace(env))
+	if apiID == "" {
+		apiID = "default"
+	}
+	if env == "" {
+		env = "demo"
+	}
+	if limit <= 0 {
+		limit = 72
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at
+		FROM usdt_balance_snapshots
+		WHERE api_id = ? AND env = ? AND bucket_ts >= ?
+		ORDER BY bucket_ts ASC LIMIT ?`,
+		apiID,
+		env,
+		since.UTC().UnixMilli(),
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []USDTBalanceSnapshot
+	for rows.Next() {
+		var snapshot USDTBalanceSnapshot
+		var observedAt string
+		if err := rows.Scan(
+			&snapshot.APIID,
+			&snapshot.Env,
+			&snapshot.BucketTS,
+			&observedAt,
+			&snapshot.TotalEq,
+			&snapshot.Eq,
+			&snapshot.EqUsd,
+			&snapshot.AvailEq,
+			&snapshot.AvailBal,
+			&snapshot.CashBal,
+			&snapshot.FrozenBal,
+			&snapshot.DisEq,
+			&snapshot.BalanceUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if observedAt != "" {
+			parsed, err := time.Parse(time.RFC3339Nano, observedAt)
+			if err != nil {
+				return nil, err
+			}
+			snapshot.ObservedAt = parsed
+		}
+		out = append(out, snapshot)
 	}
 	return out, rows.Err()
 }

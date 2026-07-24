@@ -149,4 +149,37 @@ func TestSQLiteAnalysisTables(t *testing.T) {
 	if len(fills) != 1 || fills[0].TradeID != "trade-1" {
 		t.Fatalf("bad fills: %#v", fills)
 	}
+	if err := store.UpsertUSDTBalanceSnapshot(USDTBalanceSnapshot{
+		APIID:            "default",
+		Env:              "demo",
+		BucketTS:         now.UnixMilli(),
+		ObservedAt:       now,
+		TotalEq:          "1001",
+		Eq:               "1000",
+		EqUsd:            "999.5",
+		AvailEq:          "900",
+		AvailBal:         "899",
+		CashBal:          "950",
+		FrozenBal:        "50",
+		BalanceUpdatedAt: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertUSDTBalanceSnapshot(USDTBalanceSnapshot{
+		APIID:      "default",
+		Env:        "demo",
+		BucketTS:   now.UnixMilli(),
+		ObservedAt: now.Add(10 * time.Minute),
+		Eq:         "1002",
+		EqUsd:      "1001.5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := store.ListUSDTBalanceSnapshots("default", "demo", now.Add(-time.Hour), 72)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 1 || snapshots[0].EqUsd != "1001.5" || !snapshots[0].ObservedAt.Equal(now.Add(10*time.Minute)) {
+		t.Fatalf("bad USDT balance snapshots: %#v", snapshots)
+	}
 }

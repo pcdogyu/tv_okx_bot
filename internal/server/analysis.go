@@ -20,22 +20,25 @@ const (
 	defaultPriceDays    = 3
 	defaultPNLDays      = 30
 	analysisCacheTTL    = 60 * time.Second
+	usdtSampleInterval  = time.Hour
 )
 
 type analysisResponse struct {
-	OK          bool                  `json:"ok"`
-	APIID       string                `json:"api_id"`
-	PriceDays   int                   `json:"price_days"`
-	PNLDays     int                   `json:"pnl_days"`
-	PriceInstID string                `json:"price_inst_id"`
-	PriceBar    string                `json:"price_bar"`
-	RefreshedAt time.Time             `json:"refreshed_at"`
-	Cache       analysisCacheStatus   `json:"cache"`
-	Source      analysisSourceStatus  `json:"source"`
-	Balance     analysisBalance       `json:"balance"`
-	PricePoints []analysisPricePoint  `json:"price_points"`
-	Summary     analysisSymbolStats   `json:"summary"`
-	Symbols     []analysisSymbolStats `json:"symbols"`
+	OK            bool                   `json:"ok"`
+	APIID         string                 `json:"api_id"`
+	Env           string                 `json:"env"`
+	PriceDays     int                    `json:"price_days"`
+	PNLDays       int                    `json:"pnl_days"`
+	PriceInstID   string                 `json:"price_inst_id"`
+	PriceBar      string                 `json:"price_bar"`
+	RefreshedAt   time.Time              `json:"refreshed_at"`
+	Cache         analysisCacheStatus    `json:"cache"`
+	Source        analysisSourceStatus   `json:"source"`
+	Balance       analysisBalance        `json:"balance"`
+	PricePoints   []analysisPricePoint   `json:"price_points"`
+	BalancePoints []analysisBalancePoint `json:"balance_points"`
+	Summary       analysisSymbolStats    `json:"summary"`
+	Symbols       []analysisSymbolStats  `json:"symbols"`
 }
 
 type analysisCacheStatus struct {
@@ -82,6 +85,20 @@ type analysisPricePoint struct {
 	Confirm string    `json:"confirm,omitempty"`
 }
 
+type analysisBalancePoint struct {
+	Time             time.Time `json:"time"`
+	TS               int64     `json:"ts"`
+	Value            float64   `json:"value"`
+	Eq               string    `json:"eq,omitempty"`
+	EqUsd            string    `json:"eq_usd,omitempty"`
+	AvailEq          string    `json:"avail_eq,omitempty"`
+	AvailBal         string    `json:"avail_bal,omitempty"`
+	CashBal          string    `json:"cash_bal,omitempty"`
+	FrozenBal        string    `json:"frozen_bal,omitempty"`
+	ObservedAt       time.Time `json:"observed_at"`
+	BalanceUpdatedAt string    `json:"balance_updated_at,omitempty"`
+}
+
 type analysisSymbolStats struct {
 	InstID           string  `json:"inst_id"`
 	TradeCount       int     `json:"trade_count"`
@@ -96,6 +113,76 @@ type analysisSymbolStats struct {
 	ProfitFactor     float64 `json:"profit_factor"`
 	ProfitFactorText string  `json:"profit_factor_text,omitempty"`
 	PayoffRatio      float64 `json:"payoff_ratio"`
+}
+
+func (s *Server) StartUSDTBalanceSampler(ctx context.Context) {
+	if s.ConfigStore == nil || s.Orders == nil || s.OKXCredentials == nil {
+		return
+	}
+	go s.runUSDTBalanceSampler(ctx, usdtSampleInterval)
+}
+
+func (s *Server) runUSDTBalanceSampler(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = usdtSampleInterval
+	}
+	s.sampleConfiguredUSDTBalances(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.sampleConfiguredUSDTBalances(ctx)
+		}
+	}
+}
+
+func (s *Server) sampleConfiguredUSDTBalances(ctx context.Context) {
+	ids := configuredAPIIDs(s.OKXCredentials.Status())
+	if len(ids) == 0 {
+		return
+	}
+	cfg := s.ConfigStore.Get()
+	envName := analysisEnvName(cfg)
+	now := s.now()
+	for _, requestedAPIID := range ids {
+		sampleCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err := s.sampleUSDTBalance(sampleCtx, cfg, requestedAPIID, envName, now)
+		cancel()
+		if err != nil && s.Logger != nil {
+			s.Logger.Warn("failed to sample USDT balance", "api_id", requestedAPIID, "env", envName, "error", err)
+		}
+	}
+}
+
+func configuredAPIIDs(status okx.CredentialStatus) []string {
+	ids := make([]string, 0, len(status.Credentials))
+	seen := map[string]bool{}
+	for _, account := range status.Credentials {
+		id := strings.TrimSpace(account.ID)
+		if id == "" || !account.Configured || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	activeID := strings.TrimSpace(status.ActiveID)
+	if len(ids) == 0 && status.Configured && activeID != "" {
+		ids = append(ids, activeID)
+	}
+	return ids
+}
+
+func (s *Server) sampleUSDTBalance(ctx context.Context, cfg config.Config, requestedAPIID, envName string, now time.Time) error {
+	creds, apiID, err := s.OKXCredentials.OKXCredentials(requestedAPIID)
+	if err != nil {
+		return err
+	}
+	client := s.analysisOKXClient(cfg, creds)
+	_, err = s.fetchAnalysisBalance(ctx, client, apiID, envName, now)
+	return err
 }
 
 func (s *Server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +217,8 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		return analysisResponse{}, err
 	}
 	now := s.now()
-	cacheKey := "analysis|" + apiID + "|" + strconv.Itoa(priceDays) + "|" + strconv.Itoa(pnlDays)
+	envName := analysisEnvName(cfg)
+	cacheKey := analysisCacheKey(apiID, envName, priceDays, pnlDays)
 	if !refresh {
 		if cached, ok, err := s.Orders.CachedPayload(cacheKey); err != nil {
 			return analysisResponse{}, err
@@ -146,13 +234,8 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 			return resp, nil
 		}
 	}
-	client := okx.Client{
-		BaseURL:     cfg.OKXBaseURL(),
-		Credentials: creds,
-		Demo:        cfg.DemoTradingHeaderEnabled(),
-		HTTPClient:  s.okxHTTPClient(),
-	}
-	balance, err := fetchAnalysisBalance(ctx, client)
+	client := s.analysisOKXClient(cfg, creds)
+	balance, err := s.fetchAnalysisBalance(ctx, client, apiID, envName, now)
 	if err != nil {
 		return analysisResponse{}, err
 	}
@@ -172,7 +255,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		}
 		return analysisResponse{}, err
 	}
-	resp, err := s.analysisFromStore(apiID, priceDays, pnlDays, now, source)
+	resp, err := s.analysisFromStore(apiID, envName, priceDays, pnlDays, now, source)
 	if err != nil {
 		return analysisResponse{}, err
 	}
@@ -182,6 +265,27 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		s.Logger.Warn("failed to write analysis cache", "error", err)
 	}
 	return resp, nil
+}
+
+func (s *Server) analysisOKXClient(cfg config.Config, creds okx.Credentials) okx.Client {
+	return okx.Client{
+		BaseURL:     cfg.OKXBaseURL(),
+		Credentials: creds,
+		Demo:        cfg.DemoTradingHeaderEnabled(),
+		HTTPClient:  s.okxHTTPClient(),
+	}
+}
+
+func analysisEnvName(cfg config.Config) string {
+	envName := strings.ToLower(strings.TrimSpace(cfg.Trading.Env))
+	if envName == "" {
+		return config.EnvDemo
+	}
+	return envName
+}
+
+func analysisCacheKey(apiID, envName string, priceDays, pnlDays int) string {
+	return "analysis|" + apiID + "|" + envName + "|" + strconv.Itoa(priceDays) + "|" + strconv.Itoa(pnlDays)
 }
 
 func (s *Server) refreshAnalysisData(ctx context.Context, client okx.Client, apiID string, priceDays, pnlDays int, now time.Time) error {
@@ -217,12 +321,16 @@ func (s *Server) refreshAnalysisData(ctx context.Context, client okx.Client, api
 	return s.refreshFills(ctx, client, apiID, pnlDays, now)
 }
 
-func fetchAnalysisBalance(ctx context.Context, client okx.Client) (analysisBalance, error) {
+func (s *Server) fetchAnalysisBalance(ctx context.Context, client okx.Client, apiID, envName string, now time.Time) (analysisBalance, error) {
 	balance, _, err := client.AccountBalanceSnapshot(ctx)
 	if err != nil {
 		return analysisBalance{}, err
 	}
-	return analysisBalanceFromOKX(balance), nil
+	out := analysisBalanceFromOKX(balance)
+	if err := s.recordUSDTBalanceSnapshot(apiID, envName, balance, now); err != nil && s.Logger != nil {
+		s.Logger.Warn("failed to write USDT balance snapshot", "api_id", apiID, "env", envName, "error", err)
+	}
+	return out, nil
 }
 
 func analysisBalanceFromOKX(balance okx.AccountBalanceData) analysisBalance {
@@ -266,6 +374,37 @@ func sortBalanceDetails(details []analysisBalanceDetail) {
 			}
 		}
 	}
+}
+
+func (s *Server) recordUSDTBalanceSnapshot(apiID, envName string, balance okx.AccountBalanceData, observedAt time.Time) error {
+	if s.Orders == nil {
+		return nil
+	}
+	for _, detail := range balance.Details {
+		if !strings.EqualFold(strings.TrimSpace(detail.Ccy), "USDT") {
+			continue
+		}
+		updatedAt := okxMillisToRFC3339(detail.UTime)
+		if updatedAt == "" {
+			updatedAt = okxMillisToRFC3339(balance.UTime)
+		}
+		return s.Orders.UpsertUSDTBalanceSnapshot(storage.USDTBalanceSnapshot{
+			APIID:            apiID,
+			Env:              envName,
+			BucketTS:         observedAt.UTC().Truncate(time.Hour).UnixMilli(),
+			ObservedAt:       observedAt.UTC(),
+			TotalEq:          strings.TrimSpace(balance.TotalEq),
+			Eq:               strings.TrimSpace(detail.Eq),
+			EqUsd:            strings.TrimSpace(detail.EqUsd),
+			AvailEq:          strings.TrimSpace(detail.AvailEq),
+			AvailBal:         strings.TrimSpace(detail.AvailBal),
+			CashBal:          strings.TrimSpace(detail.CashBal),
+			FrozenBal:        strings.TrimSpace(detail.FrozenBal),
+			DisEq:            strings.TrimSpace(detail.DisEq),
+			BalanceUpdatedAt: updatedAt,
+		})
+	}
+	return nil
 }
 
 func okxMillisToRFC3339(raw string) string {
@@ -335,7 +474,7 @@ func (s *Server) refreshFills(ctx context.Context, client okx.Client, apiID stri
 	return nil
 }
 
-func (s *Server) analysisFromStore(apiID string, priceDays, pnlDays int, now time.Time, source analysisSourceStatus) (analysisResponse, error) {
+func (s *Server) analysisFromStore(apiID, envName string, priceDays, pnlDays int, now time.Time, source analysisSourceStatus) (analysisResponse, error) {
 	priceLimit := priceDays * 24
 	priceSince := now.AddDate(0, 0, -priceDays)
 	candles, err := s.Orders.ListMarketCandles(analysisPriceInstID, analysisPriceBar, priceSince, priceLimit)
@@ -354,6 +493,26 @@ func (s *Server) analysisFromStore(apiID string, priceDays, pnlDays int, now tim
 			Confirm: candle.Confirm,
 		})
 	}
+	snapshots, err := s.Orders.ListUSDTBalanceSnapshots(apiID, envName, priceSince, priceLimit)
+	if err != nil {
+		return analysisResponse{}, err
+	}
+	balancePoints := make([]analysisBalancePoint, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		balancePoints = append(balancePoints, analysisBalancePoint{
+			Time:             time.UnixMilli(snapshot.BucketTS).UTC(),
+			TS:               snapshot.BucketTS,
+			Value:            snapshotValue(snapshot),
+			Eq:               snapshot.Eq,
+			EqUsd:            snapshot.EqUsd,
+			AvailEq:          snapshot.AvailEq,
+			AvailBal:         snapshot.AvailBal,
+			CashBal:          snapshot.CashBal,
+			FrozenBal:        snapshot.FrozenBal,
+			ObservedAt:       snapshot.ObservedAt,
+			BalanceUpdatedAt: snapshot.BalanceUpdatedAt,
+		})
+	}
 	fills, err := s.Orders.ListOKXFills(apiID, now.AddDate(0, 0, -pnlDays))
 	if err != nil {
 		return analysisResponse{}, err
@@ -362,6 +521,7 @@ func (s *Server) analysisFromStore(apiID string, priceDays, pnlDays int, now tim
 	return analysisResponse{
 		OK:          true,
 		APIID:       apiID,
+		Env:         envName,
 		PriceDays:   priceDays,
 		PNLDays:     pnlDays,
 		PriceInstID: analysisPriceInstID,
@@ -370,13 +530,28 @@ func (s *Server) analysisFromStore(apiID string, priceDays, pnlDays int, now tim
 		Cache: analysisCacheStatus{
 			Hit:      false,
 			Stale:    false,
-			CacheKey: "analysis|" + apiID + "|" + strconv.Itoa(priceDays) + "|" + strconv.Itoa(pnlDays),
+			CacheKey: analysisCacheKey(apiID, envName, priceDays, pnlDays),
 		},
-		Source:      source,
-		PricePoints: points,
-		Summary:     summary,
-		Symbols:     symbols,
+		Source:        source,
+		PricePoints:   points,
+		BalancePoints: balancePoints,
+		Summary:       summary,
+		Symbols:       symbols,
 	}, nil
+}
+
+func snapshotValue(snapshot storage.USDTBalanceSnapshot) float64 {
+	for _, raw := range []string{snapshot.EqUsd, snapshot.Eq, snapshot.AvailEq, snapshot.AvailBal} {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		parsed, err := strconv.ParseFloat(raw, 64)
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func computeStats(fills []storage.OKXFill) (analysisSymbolStats, []analysisSymbolStats) {
