@@ -87,6 +87,9 @@ func TestRoutes(t *testing.T) {
 	if got := ui.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
 		t.Fatalf("tvbot ui content-type=%q", got)
 	}
+	if got := ui.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("tvbot ui cache-control=%q", got)
+	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("OKX Bot")) || !bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/config")) {
 		t.Fatalf("tvbot ui body does not look like dashboard")
 	}
@@ -464,6 +467,9 @@ func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("template cache-control=%q", got)
+	}
 	var resp trading.TemplateResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -476,6 +482,9 @@ func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	}
 	if bytes.Contains([]byte(resp.JSON), []byte(`"amount"`)) || bytes.Contains([]byte(resp.JSON), []byte(`"leverage"`)) {
 		t.Fatalf("template should not include server-side order settings: %s", resp.JSON)
+	}
+	if strings.LastIndex(resp.JSON, `"token"`) < strings.LastIndex(resp.JSON, `"source"`) {
+		t.Fatalf("token should be the final JSON field: %s", resp.JSON)
 	}
 }
 

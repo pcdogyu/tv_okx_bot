@@ -29,6 +29,7 @@ func buildInfoValue(value string) string {
 
 func writeHTML(w http.ResponseWriter, status int, html string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(html))
 }
