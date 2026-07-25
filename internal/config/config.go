@@ -339,6 +339,8 @@ func normalizeMenuItems(items []MenuItemConfig) []MenuItemConfig {
 		label := strings.TrimSpace(item.Label)
 		if label == "" {
 			label = defaultMenuLabel(tab)
+		} else if owner := defaultMenuLabelOwner(label); owner != "" && owner != tab {
+			label = defaultMenuLabel(tab)
 		}
 		normalized = append(normalized, MenuItemConfig{Tab: tab, Hidden: item.Hidden, Label: label})
 		seen[tab] = true
@@ -357,6 +359,16 @@ func defaultMenuLabel(tab string) string {
 		return label
 	}
 	return tab
+}
+
+func defaultMenuLabelOwner(label string) string {
+	label = strings.TrimSpace(label)
+	for tab, defaultLabel := range defaultMenuLabels {
+		if label == defaultLabel {
+			return tab
+		}
+	}
+	return ""
 }
 
 func hasVisibleMenuSettings(items []MenuItemConfig) bool {

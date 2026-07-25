@@ -1135,9 +1135,18 @@ const tvbotHTML = `<!doctype html>
       return defaultMenuItems.find((item) => item.tab === tabID) || null;
     }
 
+    function defaultMenuTabByLabel(label) {
+      const normalized = String(label || "").trim();
+      const found = defaultMenuItems.find((item) => item.label === normalized);
+      return found ? found.tab : "";
+    }
+
     function menuLabel(item, def) {
       const label = item && item.label ? String(item.label).trim() : "";
-      return label || (def ? def.label : "");
+      if (!label) return def ? def.label : "";
+      const owner = defaultMenuTabByLabel(label);
+      if (owner && def && owner !== def.tab) return def.label;
+      return label;
     }
 
     function normalizeMenuItems(items) {

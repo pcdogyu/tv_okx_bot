@@ -257,6 +257,7 @@ func TestTVBotConfigSavesMenuSettings(t *testing.T) {
 				{"tab":"dashboard","hidden":false,"label":"首页"},
 				{"tab":"menuSettings","hidden":true,"label":"菜单管理"},
 				{"tab":"upgrade","hidden":false,"label":"   "},
+				{"tab":"apiKeys","hidden":false,"label":"下单设置"},
 				{"tab":"unknown","hidden":false}
 			]
 		}
@@ -288,6 +289,9 @@ func TestTVBotConfigSavesMenuSettings(t *testing.T) {
 	}
 	if cfg.UI.MenuItems[3].Tab != "upgrade" || cfg.UI.MenuItems[3].Label != "升级" {
 		t.Fatalf("blank menu label should fall back to default: %#v", cfg.UI.MenuItems[3])
+	}
+	if cfg.UI.MenuItems[4].Tab != "apiKeys" || cfg.UI.MenuItems[4].Label != "API Key" {
+		t.Fatalf("menu label that belongs to another tab should be repaired: %#v", cfg.UI.MenuItems[4])
 	}
 	for _, item := range cfg.UI.MenuItems {
 		if item.Tab == "unknown" {
@@ -1517,6 +1521,9 @@ func TestTVBotPendingOrderChaseFallsBackToMarketAfterTimeout(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	key := pendingOrderChaseKey(pendingOrderChaseRequest{APIID: "default", InstID: "BTC-USDT-SWAP", OrdID: "100", ClOrdID: "client-100"})
+	for i := 0; i < 100 && pendingOrderChaseJobs.activeKey(key); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if pendingOrderChaseJobs.activeKey(key) {
@@ -1628,6 +1635,9 @@ func TestTVBotPendingOrderChaseFallbackMarketIncludesRiskControls(t *testing.T) 
 		time.Sleep(10 * time.Millisecond)
 	}
 	key := pendingOrderChaseKey(pendingOrderChaseRequest{APIID: "default", InstID: "BTC-USDT-SWAP", OrdID: "100", ClOrdID: "client-100"})
+	for i := 0; i < 100 && pendingOrderChaseJobs.activeKey(key); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if pendingOrderChaseJobs.activeKey(key) {
