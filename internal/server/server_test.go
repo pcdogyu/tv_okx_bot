@@ -160,6 +160,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("menu-settings-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("saveMenuSettings")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("applyMenuSettings")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-label")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-hidden")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-move")) {
 		t.Fatalf("tvbot ui should include menu settings tab")
@@ -241,8 +242,9 @@ func TestTVBotConfigSavesMenuSettings(t *testing.T) {
 		"ui": {
 			"menu_items": [
 				{"tab":"orders","hidden":true},
-				{"tab":"dashboard","hidden":false},
-				{"tab":"menuSettings","hidden":true},
+				{"tab":"dashboard","hidden":false,"label":"首页"},
+				{"tab":"menuSettings","hidden":true,"label":"菜单管理"},
+				{"tab":"upgrade","hidden":false,"label":"   "},
 				{"tab":"unknown","hidden":false}
 			]
 		}
@@ -266,8 +268,14 @@ func TestTVBotConfigSavesMenuSettings(t *testing.T) {
 	if cfg.UI.MenuItems[1].Tab != "dashboard" || cfg.UI.MenuItems[1].Hidden {
 		t.Fatalf("second menu item should preserve visible dashboard: %#v", cfg.UI.MenuItems[1])
 	}
-	if cfg.UI.MenuItems[2].Tab != config.MenuSettingsTab || cfg.UI.MenuItems[2].Hidden {
+	if cfg.UI.MenuItems[1].Label != "首页" {
+		t.Fatalf("custom menu label should be saved: %#v", cfg.UI.MenuItems[1])
+	}
+	if cfg.UI.MenuItems[2].Tab != config.MenuSettingsTab || cfg.UI.MenuItems[2].Hidden || cfg.UI.MenuItems[2].Label != "菜单管理" {
 		t.Fatalf("menu settings should be forced visible: %#v", cfg.UI.MenuItems[2])
+	}
+	if cfg.UI.MenuItems[3].Tab != "upgrade" || cfg.UI.MenuItems[3].Label != "升级" {
+		t.Fatalf("blank menu label should fall back to default: %#v", cfg.UI.MenuItems[3])
 	}
 	for _, item := range cfg.UI.MenuItems {
 		if item.Tab == "unknown" {

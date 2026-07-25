@@ -68,6 +68,7 @@ type UIConfig struct {
 type MenuItemConfig struct {
 	Tab    string `json:"tab"`
 	Hidden bool   `json:"hidden"`
+	Label  string `json:"label,omitempty"`
 }
 
 const MenuSettingsTab = "menuSettings"
@@ -84,6 +85,20 @@ var DefaultMenuTabs = []string{
 	"orders",
 	MenuSettingsTab,
 	"upgrade",
+}
+
+var defaultMenuLabels = map[string]string{
+	"dashboard":     "总览",
+	"positions":     "持仓",
+	"analysis":      "订单分析",
+	"symbols":       "币对配置",
+	"config":        "订单配置",
+	"apiKeys":       "API Key",
+	"orderSettings": "下单设置",
+	"template":      "告警模板",
+	"orders":        "订单",
+	MenuSettingsTab: "菜单设置",
+	"upgrade":       "升级",
 }
 
 func Default() Config {
@@ -301,7 +316,7 @@ func (c Config) Validate() error {
 func defaultMenuItems() []MenuItemConfig {
 	items := make([]MenuItemConfig, 0, len(DefaultMenuTabs))
 	for _, tab := range DefaultMenuTabs {
-		items = append(items, MenuItemConfig{Tab: tab})
+		items = append(items, MenuItemConfig{Tab: tab, Label: defaultMenuLabel(tab)})
 	}
 	return items
 }
@@ -321,16 +336,27 @@ func normalizeMenuItems(items []MenuItemConfig) []MenuItemConfig {
 		if tab == MenuSettingsTab {
 			item.Hidden = false
 		}
-		normalized = append(normalized, MenuItemConfig{Tab: tab, Hidden: item.Hidden})
+		label := strings.TrimSpace(item.Label)
+		if label == "" {
+			label = defaultMenuLabel(tab)
+		}
+		normalized = append(normalized, MenuItemConfig{Tab: tab, Hidden: item.Hidden, Label: label})
 		seen[tab] = true
 	}
 	for _, tab := range DefaultMenuTabs {
 		if seen[tab] {
 			continue
 		}
-		normalized = append(normalized, MenuItemConfig{Tab: tab})
+		normalized = append(normalized, MenuItemConfig{Tab: tab, Label: defaultMenuLabel(tab)})
 	}
 	return normalized
+}
+
+func defaultMenuLabel(tab string) string {
+	if label := defaultMenuLabels[tab]; label != "" {
+		return label
+	}
+	return tab
 }
 
 func hasVisibleMenuSettings(items []MenuItemConfig) bool {

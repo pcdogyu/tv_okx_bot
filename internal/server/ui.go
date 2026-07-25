@@ -507,6 +507,9 @@ const tvbotHTML = `<!doctype html>
       gap: 6px;
       flex-wrap: wrap;
     }
+    .menu-label-input {
+      max-width: 260px;
+    }
     .analysis-metrics {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -881,7 +884,7 @@ const tvbotHTML = `<!doctype html>
       </div>
       <table>
         <thead>
-          <tr><th>菜单</th><th>是否隐藏</th><th>排序</th></tr>
+          <tr><th>默认菜单</th><th>菜单名称</th><th>是否隐藏</th><th>排序</th></tr>
         </thead>
         <tbody id="menu-settings-rows"></tbody>
       </table>
@@ -1115,6 +1118,11 @@ const tvbotHTML = `<!doctype html>
       return defaultMenuItems.find((item) => item.tab === tabID) || null;
     }
 
+    function menuLabel(item, def) {
+      const label = item && item.label ? String(item.label).trim() : "";
+      return label || (def ? def.label : "");
+    }
+
     function normalizeMenuItems(items) {
       const seen = {};
       const normalized = [];
@@ -1122,11 +1130,11 @@ const tvbotHTML = `<!doctype html>
         const tab = item && item.tab ? String(item.tab) : "";
         const def = menuDefinition(tab);
         if (!def || seen[tab]) return;
-        normalized.push({ tab: tab, hidden: def.locked ? false : !!item.hidden });
+        normalized.push({ tab: tab, hidden: def.locked ? false : !!item.hidden, label: menuLabel(item, def) });
         seen[tab] = true;
       });
       defaultMenuItems.forEach((def) => {
-        if (!seen[def.tab]) normalized.push({ tab: def.tab, hidden: false });
+        if (!seen[def.tab]) normalized.push({ tab: def.tab, hidden: false, label: def.label });
       });
       return normalized;
     }
@@ -1159,7 +1167,7 @@ const tvbotHTML = `<!doctype html>
         const button = tabButton(item.tab);
         const def = menuDefinition(item.tab);
         if (!button || !def) return;
-        button.textContent = def.label;
+        button.textContent = menuLabel(item, def);
         button.hidden = !!item.hidden;
         nav.appendChild(button);
         known[item.tab] = true;
@@ -1182,6 +1190,7 @@ const tvbotHTML = `<!doctype html>
           : '<label class="menu-hidden-check"><input type="checkbox" data-menu-hidden="' + escapeHTML(item.tab) + '"' + (item.hidden ? " checked" : "") + '>隐藏</label>';
         return "<tr>" +
           "<td>" + escapeHTML(def.label) + "</td>" +
+          '<td><input class="menu-label-input" data-menu-label="' + escapeHTML(item.tab) + '" value="' + escapeHTML(menuLabel(item, def)) + '" maxlength="24" autocomplete="off" spellcheck="false"></td>' +
           "<td>" + hiddenCell + "</td>" +
           '<td><div class="menu-sort-actions">' +
             '<button class="btn small" type="button" data-menu-index="' + index + '" data-menu-move="-1"' + (index === 0 ? " disabled" : "") + ">上移</button>" +
@@ -2044,6 +2053,16 @@ const tvbotHTML = `<!doctype html>
       $(id).addEventListener("change", () => renderOrderSettingsPreview());
     });
     $("save-menu-settings").addEventListener("click", () => saveMenuSettings().catch((err) => toast(err.message)));
+    $("menu-settings-rows").addEventListener("input", (event) => {
+      const input = event.target.closest("input[data-menu-label]");
+      if (!input) return;
+      const items = currentMenuItems();
+      const item = items.find((entry) => entry.tab === input.dataset.menuLabel);
+      if (!item) return;
+      item.label = input.value;
+      setCurrentMenuItems(items);
+      applyMenuSettings();
+    });
     $("menu-settings-rows").addEventListener("change", (event) => {
       const input = event.target.closest("input[data-menu-hidden]");
       if (!input) return;

@@ -39,17 +39,17 @@
   },
   "ui": {
     "menu_items": [
-      { "tab": "dashboard", "hidden": false },
-      { "tab": "positions", "hidden": false },
-      { "tab": "analysis", "hidden": false },
-      { "tab": "symbols", "hidden": false },
-      { "tab": "config", "hidden": false },
-      { "tab": "apiKeys", "hidden": false },
-      { "tab": "orderSettings", "hidden": false },
-      { "tab": "template", "hidden": false },
-      { "tab": "orders", "hidden": false },
-      { "tab": "menuSettings", "hidden": false },
-      { "tab": "upgrade", "hidden": false }
+      { "tab": "dashboard", "hidden": false, "label": "总览" },
+      { "tab": "positions", "hidden": false, "label": "持仓" },
+      { "tab": "analysis", "hidden": false, "label": "订单分析" },
+      { "tab": "symbols", "hidden": false, "label": "币对配置" },
+      { "tab": "config", "hidden": false, "label": "订单配置" },
+      { "tab": "apiKeys", "hidden": false, "label": "API Key" },
+      { "tab": "orderSettings", "hidden": false, "label": "下单设置" },
+      { "tab": "template", "hidden": false, "label": "告警模板" },
+      { "tab": "orders", "hidden": false, "label": "订单" },
+      { "tab": "menuSettings", "hidden": false, "label": "菜单设置" },
+      { "tab": "upgrade", "hidden": false, "label": "升级" }
     ]
   }
 }
