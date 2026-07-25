@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/okx"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
@@ -37,6 +38,7 @@ var (
 
 type positionsResponse struct {
 	OK          bool           `json:"ok"`
+	Exchange    string         `json:"exchange"`
 	APIID       string         `json:"api_id"`
 	InstType    string         `json:"inst_type"`
 	Count       int            `json:"count"`
@@ -46,6 +48,7 @@ type positionsResponse struct {
 
 type pendingOrdersResponse struct {
 	OK          bool               `json:"ok"`
+	Exchange    string             `json:"exchange"`
 	APIID       string             `json:"api_id"`
 	InstType    string             `json:"inst_type"`
 	Count       int                `json:"count"`
@@ -181,10 +184,7 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is allowed")
 		return
 	}
-	if s.OKXCredentials == nil {
-		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
-		return
-	}
+	exchange := trading.NormalizeExchange(r.URL.Query().Get("exchange"))
 	instType := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("inst_type")))
 	if instType == "" {
 		instType = "SWAP"
@@ -193,7 +193,23 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 	cfg := s.ConfigStore.Get()
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	resp, err := s.fetchPositions(ctx, cfg, apiID, instType)
+	var (
+		resp positionsResponse
+		err  error
+	)
+	if exchange == trading.ExchangeBinance {
+		if s.BinanceCredentials == nil {
+			writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+			return
+		}
+		resp, err = s.fetchBinancePositions(ctx, cfg, apiID)
+	} else {
+		if s.OKXCredentials == nil {
+			writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+			return
+		}
+		resp, err = s.fetchPositions(ctx, cfg, apiID, instType)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "positions_failed", err.Error())
 		return
@@ -206,10 +222,7 @@ func (s *Server) handlePendingOrders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is allowed")
 		return
 	}
-	if s.OKXCredentials == nil {
-		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
-		return
-	}
+	exchange := trading.NormalizeExchange(r.URL.Query().Get("exchange"))
 	instType := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("inst_type")))
 	if instType == "" {
 		instType = "SWAP"
@@ -218,7 +231,23 @@ func (s *Server) handlePendingOrders(w http.ResponseWriter, r *http.Request) {
 	cfg := s.ConfigStore.Get()
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	resp, err := s.fetchPendingOrders(ctx, cfg, apiID, instType)
+	var (
+		resp pendingOrdersResponse
+		err  error
+	)
+	if exchange == trading.ExchangeBinance {
+		if s.BinanceCredentials == nil {
+			writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+			return
+		}
+		resp, err = s.fetchBinancePendingOrders(ctx, cfg, apiID)
+	} else {
+		if s.OKXCredentials == nil {
+			writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+			return
+		}
+		resp, err = s.fetchPendingOrders(ctx, cfg, apiID, instType)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "pending_orders_failed", err.Error())
 		return
@@ -522,6 +551,7 @@ func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requeste
 	})
 	return positionsResponse{
 		OK:          true,
+		Exchange:    trading.ExchangeOKX,
 		APIID:       apiID,
 		InstType:    instType,
 		Count:       len(positions),
@@ -551,12 +581,142 @@ func (s *Server) fetchPendingOrders(ctx context.Context, cfg config.Config, requ
 	views := s.pendingOrderViews(ctx, client, apiID, orders)
 	return pendingOrdersResponse{
 		OK:          true,
+		Exchange:    trading.ExchangeOKX,
 		APIID:       apiID,
 		InstType:    instType,
 		Count:       len(orders),
 		RefreshedAt: s.now(),
 		Orders:      views,
 	}, nil
+}
+
+func (s *Server) fetchBinancePositions(ctx context.Context, cfg config.Config, requestedAPIID string) (positionsResponse, error) {
+	client, apiID, err := s.binanceClientForCredentials(cfg, requestedAPIID)
+	if err != nil {
+		return positionsResponse{}, err
+	}
+	positions, err := client.Positions(ctx, "")
+	if err != nil {
+		return positionsResponse{}, err
+	}
+	out := make([]okx.Position, 0, len(positions))
+	for _, position := range positions {
+		converted := binancePositionToOKX(position)
+		if isOpenPosition(converted.Pos) {
+			out = append(out, converted)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].InstID == out[j].InstID {
+			return out[i].PosSide < out[j].PosSide
+		}
+		return out[i].InstID < out[j].InstID
+	})
+	return positionsResponse{
+		OK:          true,
+		Exchange:    trading.ExchangeBinance,
+		APIID:       apiID,
+		InstType:    "USDT-M",
+		Count:       len(out),
+		RefreshedAt: s.now(),
+		Positions:   out,
+	}, nil
+}
+
+func (s *Server) fetchBinancePendingOrders(ctx context.Context, cfg config.Config, requestedAPIID string) (pendingOrdersResponse, error) {
+	client, apiID, err := s.binanceClientForCredentials(cfg, requestedAPIID)
+	if err != nil {
+		return pendingOrdersResponse{}, err
+	}
+	orders, err := client.OpenOrders(ctx, "")
+	if err != nil {
+		return pendingOrdersResponse{}, err
+	}
+	sort.Slice(orders, func(i, j int) bool {
+		if orders[i].Symbol == orders[j].Symbol {
+			return orders[i].Time > orders[j].Time
+		}
+		return orders[i].Symbol < orders[j].Symbol
+	})
+	views := make([]pendingOrderView, 0, len(orders))
+	for _, order := range orders {
+		views = append(views, pendingOrderView{
+			PendingOrder: binanceOpenOrderToOKX(order),
+			PriceError:   "Binance 暂不支持追单",
+			Chasing:      false,
+		})
+	}
+	return pendingOrdersResponse{
+		OK:          true,
+		Exchange:    trading.ExchangeBinance,
+		APIID:       apiID,
+		InstType:    "USDT-M",
+		Count:       len(views),
+		RefreshedAt: s.now(),
+		Orders:      views,
+	}, nil
+}
+
+func binancePositionToOKX(position binance.Position) okx.Position {
+	posSide := strings.ToLower(strings.TrimSpace(position.PositionSide))
+	if posSide == "" || posSide == "both" {
+		posSide = "net"
+	}
+	marginMode := strings.ToLower(strings.TrimSpace(position.MarginType))
+	if marginMode == "" && strings.TrimSpace(position.IsolatedMargin) != "" {
+		marginMode = config.MarginIsolated
+	}
+	margin := strings.TrimSpace(position.IsolatedMargin)
+	if margin == "" || margin == "0" {
+		margin = strings.TrimSpace(position.InitialMargin)
+	}
+	return okx.Position{
+		InstType:    "USDT-M",
+		InstID:      strings.ToUpper(strings.TrimSpace(position.Symbol)),
+		MgnMode:     marginMode,
+		PosSide:     posSide,
+		Pos:         strings.TrimSpace(position.PositionAmt),
+		AvailPos:    strings.TrimSpace(position.PositionAmt),
+		AvgPx:       strings.TrimSpace(position.EntryPrice),
+		MarkPx:      strings.TrimSpace(position.MarkPrice),
+		Upl:         strings.TrimSpace(position.UnRealizedProfit),
+		UplRatio:    binanceUPLRatio(position),
+		Lever:       strings.TrimSpace(position.Leverage),
+		LiqPx:       strings.TrimSpace(position.LiquidationPrice),
+		NotionalUsd: strings.TrimLeft(strings.TrimSpace(position.Notional), "-"),
+		Margin:      margin,
+		Adl:         strconv.Itoa(position.Adl),
+		UTime:       strconv.FormatInt(position.UpdateTime, 10),
+		Ccy:         strings.TrimSpace(position.MarginAsset),
+	}
+}
+
+func binanceOpenOrderToOKX(order binance.OpenOrder) okx.PendingOrder {
+	return okx.PendingOrder{
+		InstType:  "USDT-M",
+		InstID:    strings.ToUpper(strings.TrimSpace(order.Symbol)),
+		OrdID:     strconv.FormatInt(order.OrderID, 10),
+		ClOrdID:   strings.TrimSpace(order.ClientOrderID),
+		Side:      strings.ToLower(strings.TrimSpace(order.Side)),
+		PosSide:   strings.ToLower(strings.TrimSpace(order.PositionSide)),
+		OrdType:   strings.ToLower(strings.TrimSpace(order.Type)),
+		Px:        strings.TrimSpace(order.Price),
+		Sz:        strings.TrimSpace(order.OrigQty),
+		AccFillSz: strings.TrimSpace(order.ExecutedQty),
+		AvgPx:     strings.TrimSpace(order.AvgPrice),
+		State:     strings.ToLower(strings.TrimSpace(order.Status)),
+		CTime:     strconv.FormatInt(order.Time, 10),
+		UTime:     strconv.FormatInt(order.UpdateTime, 10),
+	}
+}
+
+func binanceUPLRatio(position binance.Position) string {
+	upl, err1 := strconv.ParseFloat(strings.TrimSpace(position.UnRealizedProfit), 64)
+	notional, err2 := strconv.ParseFloat(strings.TrimLeft(strings.TrimSpace(position.Notional), "-"), 64)
+	if err1 != nil || err2 != nil || notional <= 0 {
+		return ""
+	}
+	return strconv.FormatFloat(upl/notional, 'f', 8, 64)
 }
 
 func (s *Server) pendingOrderViews(ctx context.Context, client okx.Client, apiID string, orders []okx.PendingOrder) []pendingOrderView {
@@ -1075,6 +1235,18 @@ func (s *Server) okxClientForCredentials(cfg config.Config, requestedAPIID strin
 		Credentials: creds,
 		Demo:        cfg.DemoTradingHeaderEnabled(),
 		HTTPClient:  s.okxHTTPClient(),
+	}, apiID, nil
+}
+
+func (s *Server) binanceClientForCredentials(cfg config.Config, requestedAPIID string) (binance.Client, string, error) {
+	creds, apiID, err := s.BinanceCredentials.BinanceCredentials(requestedAPIID)
+	if err != nil {
+		return binance.Client{}, "", err
+	}
+	return binance.Client{
+		BaseURL:     cfg.BinanceBaseURL(),
+		Credentials: creds,
+		HTTPClient:  s.binanceHTTPClient(),
 	}, apiID, nil
 }
 

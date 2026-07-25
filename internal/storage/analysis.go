@@ -39,6 +39,7 @@ type OKXFill struct {
 }
 
 type USDTBalanceSnapshot struct {
+	Exchange         string    `json:"exchange,omitempty"`
 	APIID            string    `json:"api_id"`
 	Env              string    `json:"env"`
 	BucketTS         int64     `json:"bucket_ts"`
@@ -229,6 +230,10 @@ func (s *OrderStore) UpsertUSDTBalanceSnapshot(snapshot USDTBalanceSnapshot) err
 	if s.db == nil {
 		return errors.New("sqlite database is not configured")
 	}
+	snapshot.Exchange = strings.ToLower(strings.TrimSpace(snapshot.Exchange))
+	if snapshot.Exchange == "" {
+		snapshot.Exchange = "okx"
+	}
 	snapshot.APIID = strings.TrimSpace(snapshot.APIID)
 	snapshot.Env = strings.ToLower(strings.TrimSpace(snapshot.Env))
 	if snapshot.APIID == "" {
@@ -247,9 +252,9 @@ func (s *OrderStore) UpsertUSDTBalanceSnapshot(snapshot USDTBalanceSnapshot) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`INSERT INTO usdt_balance_snapshots
-		(api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(api_id, env, bucket_ts) DO UPDATE SET
+		(exchange, api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(exchange, api_id, env, bucket_ts) DO UPDATE SET
 			observed_at=excluded.observed_at,
 			total_eq=excluded.total_eq,
 			eq=excluded.eq,
@@ -260,6 +265,7 @@ func (s *OrderStore) UpsertUSDTBalanceSnapshot(snapshot USDTBalanceSnapshot) err
 			frozen_bal=excluded.frozen_bal,
 			dis_eq=excluded.dis_eq,
 			balance_updated_at=excluded.balance_updated_at`,
+		snapshot.Exchange,
 		snapshot.APIID,
 		snapshot.Env,
 		snapshot.BucketTS,
@@ -278,8 +284,16 @@ func (s *OrderStore) UpsertUSDTBalanceSnapshot(snapshot USDTBalanceSnapshot) err
 }
 
 func (s *OrderStore) ListUSDTBalanceSnapshots(apiID, env string, since time.Time, limit int) ([]USDTBalanceSnapshot, error) {
+	return s.ListExchangeUSDTBalanceSnapshots("okx", apiID, env, since, limit)
+}
+
+func (s *OrderStore) ListExchangeUSDTBalanceSnapshots(exchange, apiID, env string, since time.Time, limit int) ([]USDTBalanceSnapshot, error) {
 	if s.db == nil {
 		return nil, errors.New("sqlite database is not configured")
+	}
+	exchange = strings.ToLower(strings.TrimSpace(exchange))
+	if exchange == "" {
+		exchange = "okx"
 	}
 	apiID = strings.TrimSpace(apiID)
 	env = strings.ToLower(strings.TrimSpace(env))
@@ -294,10 +308,11 @@ func (s *OrderStore) ListUSDTBalanceSnapshots(apiID, env string, since time.Time
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at
+	rows, err := s.db.Query(`SELECT exchange, api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at
 		FROM usdt_balance_snapshots
-		WHERE api_id = ? AND env = ? AND bucket_ts >= ?
+		WHERE exchange = ? AND api_id = ? AND env = ? AND bucket_ts >= ?
 		ORDER BY bucket_ts ASC LIMIT ?`,
+		exchange,
 		apiID,
 		env,
 		since.UTC().UnixMilli(),
@@ -312,6 +327,7 @@ func (s *OrderStore) ListUSDTBalanceSnapshots(apiID, env string, since time.Time
 		var snapshot USDTBalanceSnapshot
 		var observedAt string
 		if err := rows.Scan(
+			&snapshot.Exchange,
 			&snapshot.APIID,
 			&snapshot.Env,
 			&snapshot.BucketTS,

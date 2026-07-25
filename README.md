@@ -1,6 +1,6 @@
-# TradingView OKX Bot
+# TradingView OKX/Binance Bot
 
-Go service that receives TradingView webhook JSON at `/tvorder`, validates a Base64-wrapped HMAC token, and places OKX USDT perpetual swap orders. TradingView supplies `action` and `coinpair`; the token is not bound to either field.
+Go service that receives TradingView webhook JSON at `/tvorder`, validates a Base64-wrapped HMAC token, and places OKX USDT perpetual swap or Binance USD-M Futures orders. TradingView supplies `action` and `coinpair`; the token is not bound to either field.
 
 ## Environment
 
@@ -26,12 +26,21 @@ $env:OKX_SECRET_KEY = "..."
 $env:OKX_PASSPHRASE = "..."
 ```
 
-OKX API credentials can also be configured from the `/tvbot/` browser dashboard. Multiple OKX APIs are supported; each account has an `api_id`, one account can be marked as the active trading API, and TradingView templates can include `api_id` to select a specific API for that order. Order amount, leverage, order type (market by default or limit), fixed TP/SL or trailing stop, and long/short limit price multipliers are configured on the server. Credentials are saved outside Git, masked in API responses, and take effect without restarting the service.
+Required for Binance USD-M Futures trading or checks:
+
+```powershell
+$env:BINANCE_API_KEY = "..."
+$env:BINANCE_SECRET_KEY = "..."
+$env:BINANCE_CREDENTIALS_FILE = "data/binance-credentials.json"
+```
+
+OKX and Binance API credentials can also be configured from the `/tvbot/` browser dashboard. Multiple APIs are supported per exchange; each account has an `api_id`, one account can be marked as the active trading API, and TradingView templates can include `api_id` and `target_exchange` to select the destination for that order. Order amount, leverage, order type (market by default or limit), fixed TP/SL or trailing stop, and long/short limit price multipliers are configured on the server. Credentials are saved outside Git, masked in API responses, and take effect without restarting the service.
 
 Demo trading is the default. Live trading requires both config `"env": "live"` and:
 
 ```powershell
 $env:OKX_ENV = "live"
+$env:BINANCE_ENV = "live"
 $env:ALLOW_LIVE_TRADING = "true"
 ```
 
@@ -53,8 +62,8 @@ Future AI agents should read `AGENTS.md` before making changes. It records the d
 - `GET /` returns `302` to `https://www.mext.go.jp/`.
 - `POST /tvorder` accepts TradingView alerts.
 - `/tvbot/` is the browser dashboard. `/tvbot/config`, `/tvbot/api-keys`, `/tvbot/api-keys/test`, `/tvbot/templates`, `/tvbot/orders`, and `/tvbot/check-okx` remain JSON APIs. Admin access accepts browser Basic Auth. Default credentials are `admin` / `Admin123`. `X-Admin-Token` is still supported when `ADMIN_TOKEN` is set.
-- `TradingView` alert JSON can include optional `api_id`; when omitted the active OKX API is used. New templates do not include order amount or leverage because those values are read from `/tvbot` order settings.
-- Orders are submitted as OKX limit orders. By default long orders use `TradingView price * 0.997`, and short orders use `TradingView price * 1.003`.
+- `TradingView` alert JSON can include optional `api_id` and `target_exchange`; when omitted the active OKX API is used for backward compatibility. The existing `exchange` field remains the TradingView signal source.
+- OKX orders keep the existing behavior. Binance USD-M Futures supports market and limit entries; `tp_sl` places protective Binance algo orders after the main order, while Binance trailing stop is explicitly rejected in this version.
 - `POST /upgrade` runs `git pull --ff-only`, `go test ./...`, `go build`, replaces the service binary, and restarts the Ubuntu systemd service.
 - `GET /upgrade` returns the latest upgrade status.
 - Every other path returns local JSON `404`.

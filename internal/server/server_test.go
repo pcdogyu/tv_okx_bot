@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/okx"
 	"github.com/pcdogyu/tv_okx_bot/internal/security"
@@ -190,10 +191,15 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("资产估值")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("USDT估值")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("USDT估值 最近 3 天")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/balances/overview")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("OKX USDT 余额")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("Binance USDT 余额")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("overview-okx-usdt-chart")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("overview-binance-usdt-chart")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-total-eq")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-usdt-eq")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) {
-		t.Fatalf("tvbot ui should include OKX balance analysis")
+		t.Fatalf("tvbot ui should include exchange balance analysis")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("chart-grid")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("chartTimeLabel")) ||
@@ -202,10 +208,18 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("tvbot ui should render full-width chart grid and time axis")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("账户名称")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("OKX / 返回")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`data-api-key-exchange="okx"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`data-api-key-exchange="binance"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("Binance API Key")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("交易所 / 返回")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("信号来源")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("下单去向")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("target_exchange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-target-exchange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("position-exchange")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("order-okx")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("apiDisplayName")) {
-		t.Fatalf("tvbot ui should render order API names and wider OKX return column")
+		t.Fatalf("tvbot ui should render exchange-aware API, template and order history controls")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("activateTab")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("location.hash")) ||
@@ -410,6 +424,9 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 		if got.Coinpair != "BTC" || got.Action != trading.ActionLong {
 			t.Fatalf("bad executed signal: %#v", got)
 		}
+		if got.TargetExchange != trading.ExchangeOKX {
+			t.Fatalf("old webhook should default to OKX target exchange: %#v", got)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
@@ -439,8 +456,46 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 	if err := json.Unmarshal(ordersRR.Body.Bytes(), &list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Orders) != 2 || list.Orders[0].Status != storage.StatusDuplicate {
+	var foundDuplicate bool
+	for _, order := range list.Orders {
+		if order.TargetExchange != trading.ExchangeOKX {
+			t.Fatalf("orders should default target exchange to OKX: %#v", list.Orders)
+		}
+		if order.Status == storage.StatusDuplicate {
+			foundDuplicate = true
+		}
+	}
+	if len(list.Orders) != 2 || !foundDuplicate {
 		t.Fatalf("duplicate signal should be listed in history: %#v", list.Orders)
+	}
+}
+
+func TestTVOrderRoutesTargetExchangeBinance(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.TargetExchange = trading.ExchangeBinance
+	signal.APIID = "binance-main"
+	signal.Token = srv.Token.Generate(signal.CanonicalWebhookTokenPayload())
+	body, err := json.Marshal(signal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		if got.TargetExchange != trading.ExchangeBinance || got.APIID != "binance-main" {
+			t.Fatalf("signal should route to Binance target exchange: %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor was not called")
+	}
+	records := srv.Orders.List(10)
+	if len(records) != 1 || records[0].TargetExchange != trading.ExchangeBinance {
+		t.Fatalf("order record should save Binance target exchange: %#v", records)
 	}
 }
 
@@ -789,6 +844,52 @@ func TestTVBotAPIKeysSaveAndMask(t *testing.T) {
 	}
 }
 
+func TestTVBotBinanceAPIKeysSaveAndTest(t *testing.T) {
+	srv := newTestServer(t)
+	var sawAPIKey string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v3/balance":
+			sawAPIKey = r.Header.Get("X-MBX-APIKEY")
+			_, _ = w.Write([]byte(`[{"asset":"USDT","balance":"1000.25","availableBalance":"900.25","crossWalletBalance":"980.25","updateTime":1784886000000}]`))
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING"}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	reqBody := []byte(`{"exchange":"binance","id":"main","name":"Binance Main","api_key":"bnabcd12345678wxyz","secret_key":"binance-secret-value","active":true}`)
+	req := httptest.NewRequest(http.MethodPut, "/tvbot/api-keys?exchange=binance", bytes.NewReader(reqBody))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("save status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("binance-secret-value")) || !bytes.Contains(rr.Body.Bytes(), []byte("bnab...wxyz")) {
+		t.Fatalf("bad save response: %s", rr.Body.String())
+	}
+
+	testReq := httptest.NewRequest(http.MethodPost, "/tvbot/api-keys/test", bytes.NewReader([]byte(`{"exchange":"binance","id":"main"}`)))
+	testReq.SetBasicAuth("admin", "Admin123")
+	testRR := httptest.NewRecorder()
+	srv.ServeHTTP(testRR, testReq)
+	if testRR.Code != http.StatusOK {
+		t.Fatalf("test status=%d body=%s", testRR.Code, testRR.Body.String())
+	}
+	if sawAPIKey != "bnabcd12345678wxyz" {
+		t.Fatalf("used api key %q", sawAPIKey)
+	}
+	if !bytes.Contains(testRR.Body.Bytes(), []byte(`"exchange":"binance"`)) || !bytes.Contains(testRR.Body.Bytes(), []byte(`"api_id":"main"`)) || !bytes.Contains(testRR.Body.Bytes(), []byte(`"eq":"1000.25"`)) {
+		t.Fatalf("bad test response: %s", testRR.Body.String())
+	}
+}
+
 func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 	srv := newTestServer(t)
 	fillTime1 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
@@ -1023,6 +1124,102 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	}
 	if resp.Positions[0].InstID != "BTC-USDT-SWAP" || resp.Positions[0].Upl != "500" {
 		t.Fatalf("bad position data: %#v", resp.Positions[0])
+	}
+}
+
+func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
+	srv := newTestServer(t)
+	seen := map[string]bool{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key for %s", r.URL.Path)
+		}
+		seen[r.URL.Path] = true
+		switch r.URL.Path {
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[
+				{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0.2","entryPrice":"50000","markPrice":"50100","unRealizedProfit":"20","liquidationPrice":"40000","isolatedMargin":"1000","notional":"10020","marginAsset":"USDT","leverage":"10","marginType":"isolated","updateTime":1784880000000},
+				{"symbol":"ETHUSDT","positionSide":"BOTH","positionAmt":"0","entryPrice":"3000","markPrice":"3000","unRealizedProfit":"0","notional":"0","marginAsset":"USDT","updateTime":1784880000000}
+			]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":123456,"clientOrderId":"client-1","price":"49900","origQty":"0.2","executedQty":"0.1","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880005000}]`))
+		case "/fapi/v3/balance":
+			_, _ = w.Write([]byte(`[{"asset":"USDT","balance":"2000.5","availableBalance":"1500.25","crossWalletBalance":"1800.25","updateTime":1784886000000}]`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.BinanceHTTPClient = ts.Client()
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:     "main",
+		Active: true,
+		Credentials: binance.Credentials{
+			APIKey:    "binance-key",
+			SecretKey: "binance-secret",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	positionsReq := httptest.NewRequest(http.MethodGet, "/tvbot/positions?exchange=binance&api_id=main", nil)
+	positionsReq.SetBasicAuth("admin", "Admin123")
+	positionsRR := httptest.NewRecorder()
+	srv.ServeHTTP(positionsRR, positionsReq)
+	if positionsRR.Code != http.StatusOK {
+		t.Fatalf("positions status=%d body=%s", positionsRR.Code, positionsRR.Body.String())
+	}
+	var positions positionsResponse
+	if err := json.Unmarshal(positionsRR.Body.Bytes(), &positions); err != nil {
+		t.Fatal(err)
+	}
+	if positions.Exchange != trading.ExchangeBinance || positions.APIID != "main" || len(positions.Positions) != 1 || positions.Positions[0].InstID != "BTCUSDT" {
+		t.Fatalf("bad Binance positions response: %#v", positions)
+	}
+
+	pendingReq := httptest.NewRequest(http.MethodGet, "/tvbot/pending-orders?exchange=binance&api_id=main", nil)
+	pendingReq.SetBasicAuth("admin", "Admin123")
+	pendingRR := httptest.NewRecorder()
+	srv.ServeHTTP(pendingRR, pendingReq)
+	if pendingRR.Code != http.StatusOK {
+		t.Fatalf("pending status=%d body=%s", pendingRR.Code, pendingRR.Body.String())
+	}
+	var pending pendingOrdersResponse
+	if err := json.Unmarshal(pendingRR.Body.Bytes(), &pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending.Exchange != trading.ExchangeBinance || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].PriceError == "" {
+		t.Fatalf("bad Binance pending response: %#v", pending)
+	}
+
+	overviewReq := httptest.NewRequest(http.MethodGet, "/tvbot/balances/overview?days=3", nil)
+	overviewReq.SetBasicAuth("admin", "Admin123")
+	overviewRR := httptest.NewRecorder()
+	srv.ServeHTTP(overviewRR, overviewReq)
+	if overviewRR.Code != http.StatusOK {
+		t.Fatalf("overview status=%d body=%s", overviewRR.Code, overviewRR.Body.String())
+	}
+	var overview balanceOverviewResponse
+	if err := json.Unmarshal(overviewRR.Body.Bytes(), &overview); err != nil {
+		t.Fatal(err)
+	}
+	var binanceOverview exchangeBalanceOverview
+	for _, item := range overview.Exchanges {
+		if item.Exchange == trading.ExchangeBinance {
+			binanceOverview = item
+		}
+	}
+	if binanceOverview.Status != "ok" || binanceOverview.APIID != "main" || len(binanceOverview.BalancePoints) != 1 || binanceOverview.Balance.Details[0].Eq != "2000.5" {
+		t.Fatalf("bad Binance overview: %#v", overview)
+	}
+	for _, path := range []string{"/fapi/v3/positionRisk", "/fapi/v1/openOrders", "/fapi/v3/balance"} {
+		if !seen[path] {
+			t.Fatalf("expected %s to be called, seen=%#v", path, seen)
+		}
 	}
 }
 
@@ -2092,17 +2289,22 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
+	binanceCredentialStore, err := binance.NewCredentialStore(filepath.Join(dir, "binance-credentials.json"), binance.Credentials{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &Server{
-		ConfigStore:    config.NewStore("", cfg),
-		Orders:         orderStore,
-		Token:          security.NewTokenService("unit-test-secret"),
-		Executor:       fakeExecutor{calls: make(chan trading.Signal, 2)},
-		OKXCredentials: credentialStore,
-		AdminToken:     "admin",
-		AdminUser:      "admin",
-		AdminPass:      "Admin123",
-		Upgrade:        upgrade.NewManager(fakeUpgradeRunner{done: make(chan struct{}, 1)}),
-		BuildInfo:      BuildInfo{CommitTime: "2026-07-24T03:00:00Z", CommitHash: "testhash", CommitBranch: "testbranch"},
+		ConfigStore:        config.NewStore("", cfg),
+		Orders:             orderStore,
+		Token:              security.NewTokenService("unit-test-secret"),
+		Executor:           fakeExecutor{calls: make(chan trading.Signal, 2)},
+		OKXCredentials:     credentialStore,
+		BinanceCredentials: binanceCredentialStore,
+		AdminToken:         "admin",
+		AdminUser:          "admin",
+		AdminPass:          "Admin123",
+		Upgrade:            upgrade.NewManager(fakeUpgradeRunner{done: make(chan struct{}, 1)}),
+		BuildInfo:          BuildInfo{CommitTime: "2026-07-24T03:00:00Z", CommitHash: "testhash", CommitBranch: "testbranch"},
 		Now: func() time.Time {
 			return time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
 		},

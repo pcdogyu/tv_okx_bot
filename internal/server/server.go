@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/okx"
 	"github.com/pcdogyu/tv_okx_bot/internal/security"
@@ -27,19 +28,21 @@ import (
 )
 
 type Server struct {
-	ConfigStore    *config.Store
-	Orders         *storage.OrderStore
-	Token          security.TokenService
-	Executor       trading.Executor
-	OKXCredentials *okx.CredentialStore
-	OKXHTTPClient  *http.Client
-	AdminToken     string
-	AdminUser      string
-	AdminPass      string
-	Logger         *slog.Logger
-	Now            func() time.Time
-	Upgrade        *upgrade.Manager
-	BuildInfo      BuildInfo
+	ConfigStore        *config.Store
+	Orders             *storage.OrderStore
+	Token              security.TokenService
+	Executor           trading.Executor
+	OKXCredentials     *okx.CredentialStore
+	BinanceCredentials *binance.CredentialStore
+	OKXHTTPClient      *http.Client
+	BinanceHTTPClient  *http.Client
+	AdminToken         string
+	AdminUser          string
+	AdminPass          string
+	Logger             *slog.Logger
+	Now                func() time.Time
+	Upgrade            *upgrade.Manager
+	BuildInfo          BuildInfo
 }
 
 const (
@@ -194,6 +197,7 @@ func signalPreviewFromJSON(body []byte) trading.Signal {
 	}
 	signal.Action = trading.Side(readString("action"))
 	signal.APIID = readString("api_id")
+	signal.TargetExchange = readString("target_exchange")
 	signal.Coinpair = readString("coinpair")
 	signal.Price = readFloat("price")
 	signal.SentAt = readString("sent_at")
@@ -263,6 +267,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handleOrderRetry(w, r, path)
 	case path == "/analysis":
 		s.handleAnalysis(w, r)
+	case path == "/balances/overview":
+		s.handleBalanceOverview(w, r)
 	case path == "/positions":
 		s.handlePositions(w, r)
 	case path == "/pending-orders":
@@ -319,15 +325,26 @@ func clientIP(r *http.Request) string {
 }
 
 func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
-	if s.OKXCredentials == nil {
-		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
-		return
-	}
+	exchange := trading.NormalizeExchange(r.URL.Query().Get("exchange"))
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, s.OKXCredentials.Status())
+		switch exchange {
+		case trading.ExchangeBinance:
+			if s.BinanceCredentials == nil {
+				writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+				return
+			}
+			writeJSON(w, http.StatusOK, s.BinanceCredentials.Status())
+		default:
+			if s.OKXCredentials == nil {
+				writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+				return
+			}
+			writeJSON(w, http.StatusOK, s.OKXCredentials.Status())
+		}
 	case http.MethodPut:
 		var req struct {
+			Exchange   string `json:"exchange"`
 			ID         string `json:"id"`
 			Name       string `json:"name"`
 			APIKey     string `json:"api_key"`
@@ -339,34 +356,84 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 			return
 		}
+		if req.Exchange != "" {
+			exchange = trading.NormalizeExchange(req.Exchange)
+		}
 		active := false
 		if req.Active != nil {
 			active = *req.Active
 		}
-		status, err := s.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
-			ID:              req.ID,
-			Name:            req.Name,
-			Active:          active,
-			PreserveMissing: true,
-			Credentials: okx.Credentials{
-				APIKey:     req.APIKey,
-				SecretKey:  req.SecretKey,
-				Passphrase: req.Passphrase,
-			},
-		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+		switch exchange {
+		case trading.ExchangeBinance:
+			if s.BinanceCredentials == nil {
+				writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+				return
+			}
+			status, err := s.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+				ID:              req.ID,
+				Name:            req.Name,
+				Active:          active,
+				PreserveMissing: true,
+				Credentials: binance.Credentials{
+					APIKey:    req.APIKey,
+					SecretKey: req.SecretKey,
+				},
+			})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, status)
 			return
+		default:
+			if s.OKXCredentials == nil {
+				writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+				return
+			}
+			status, err := s.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+				ID:              req.ID,
+				Name:            req.Name,
+				Active:          active,
+				PreserveMissing: true,
+				Credentials: okx.Credentials{
+					APIKey:     req.APIKey,
+					SecretKey:  req.SecretKey,
+					Passphrase: req.Passphrase,
+				},
+			})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, status)
 		}
-		writeJSON(w, http.StatusOK, status)
 	case http.MethodDelete:
 		id := r.URL.Query().Get("id")
-		status, err := s.OKXCredentials.DeleteAccount(id)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+		switch exchange {
+		case trading.ExchangeBinance:
+			if s.BinanceCredentials == nil {
+				writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+				return
+			}
+			status, err := s.BinanceCredentials.DeleteAccount(id)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, status)
 			return
+		default:
+			if s.OKXCredentials == nil {
+				writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+				return
+			}
+			status, err := s.OKXCredentials.DeleteAccount(id)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, status)
 		}
-		writeJSON(w, http.StatusOK, status)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET, PUT and DELETE are allowed")
 	}
@@ -378,6 +445,7 @@ func (s *Server) handleAPIKeyTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		Exchange   string `json:"exchange"`
 		ID         string `json:"id"`
 		APIKey     string `json:"api_key"`
 		SecretKey  string `json:"secret_key"`
@@ -387,14 +455,40 @@ func (s *Server) handleAPIKeyTest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 		return
 	}
+	exchange := trading.NormalizeExchange(req.Exchange)
+	cfg := s.ConfigStore.Get()
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	if exchange == trading.ExchangeBinance {
+		creds := binance.Credentials{APIKey: strings.TrimSpace(req.APIKey), SecretKey: strings.TrimSpace(req.SecretKey)}
+		if binanceCredentialFieldsProvided(creds) {
+			if s.BinanceCredentials != nil {
+				if stored, resolvedID, err := s.BinanceCredentials.BinanceCredentials(req.ID); err == nil {
+					req.ID = resolvedID
+					mergeMissingBinanceCredentials(&creds, stored)
+				}
+			}
+			result, err := checkBinanceCredentials(ctx, cfg, req.ID, creds)
+			if err != nil {
+				writeError(w, http.StatusBadGateway, "binance_check_failed", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
+		result, err := s.checkStoredBinance(ctx, cfg, req.ID)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "binance_check_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	creds := okx.Credentials{
 		APIKey:     strings.TrimSpace(req.APIKey),
 		SecretKey:  strings.TrimSpace(req.SecretKey),
 		Passphrase: strings.TrimSpace(req.Passphrase),
 	}
-	cfg := s.ConfigStore.Get()
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
 	if credentialFieldsProvided(creds) {
 		if s.OKXCredentials != nil {
 			if stored, resolvedID, err := s.OKXCredentials.OKXCredentials(req.ID); err == nil {
@@ -660,12 +754,13 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 		return trading.Signal{}, err
 	}
 	signal := trading.Signal{
-		Action:   rec.Action,
-		APIID:    rec.APIID,
-		Coinpair: rec.Coinpair,
-		Ticker:   rec.Ticker,
-		Price:    trading.NewFlexibleFloat(price),
-		SentAt:   now.UTC().Format(time.RFC3339Nano),
+		Action:         rec.Action,
+		APIID:          rec.APIID,
+		TargetExchange: rec.TargetExchange,
+		Coinpair:       rec.Coinpair,
+		Ticker:         rec.Ticker,
+		Price:          trading.NewFlexibleFloat(price),
+		SentAt:         now.UTC().Format(time.RFC3339Nano),
 	}
 	if strings.TrimSpace(rec.Amount) != "" {
 		amount, err := parseOrderRecordFloat("amount", rec.Amount)
@@ -703,13 +798,26 @@ func (s *Server) handleCheckOKX(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		APIID string `json:"api_id"`
+		Exchange string `json:"exchange"`
+		APIID    string `json:"api_id"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 			return
 		}
+	}
+	exchange := trading.NormalizeExchange(req.Exchange)
+	if exchange == trading.ExchangeBinance {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		result, err := s.checkStoredBinance(ctx, s.ConfigStore.Get(), req.APIID)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "binance_check_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
 	}
 	if strings.TrimSpace(req.APIID) != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -755,6 +863,25 @@ func checkOKXCredentials(ctx context.Context, cfg trading.RuntimeConfig, apiID s
 	return trader.CheckCredentials(ctx, cfg, apiID, creds)
 }
 
+func (s *Server) checkStoredBinance(ctx context.Context, cfg trading.RuntimeConfig, apiID string) (map[string]any, error) {
+	if s.BinanceCredentials == nil {
+		return nil, errors.New("Binance credential store is not configured")
+	}
+	creds, resolvedID, err := s.BinanceCredentials.BinanceCredentials(apiID)
+	if err != nil {
+		return nil, err
+	}
+	return checkBinanceCredentials(ctx, cfg, resolvedID, creds)
+}
+
+func checkBinanceCredentials(ctx context.Context, cfg trading.RuntimeConfig, apiID string, creds binance.Credentials) (map[string]any, error) {
+	trader := binance.Trader{
+		Credentials: creds,
+		HTTPClient:  &http.Client{Timeout: 15 * time.Second},
+	}
+	return trader.CheckCredentials(ctx, cfg, apiID, creds)
+}
+
 func credentialFieldsProvided(creds okx.Credentials) bool {
 	return strings.TrimSpace(creds.APIKey) != "" ||
 		strings.TrimSpace(creds.SecretKey) != "" ||
@@ -770,6 +897,20 @@ func mergeMissingCredentials(creds *okx.Credentials, stored okx.Credentials) {
 	}
 	if strings.TrimSpace(creds.Passphrase) == "" {
 		creds.Passphrase = stored.Passphrase
+	}
+}
+
+func binanceCredentialFieldsProvided(creds binance.Credentials) bool {
+	return strings.TrimSpace(creds.APIKey) != "" ||
+		strings.TrimSpace(creds.SecretKey) != ""
+}
+
+func mergeMissingBinanceCredentials(creds *binance.Credentials, stored binance.Credentials) {
+	if strings.TrimSpace(creds.APIKey) == "" {
+		creds.APIKey = stored.APIKey
+	}
+	if strings.TrimSpace(creds.SecretKey) == "" {
+		creds.SecretKey = stored.SecretKey
 	}
 }
 
@@ -969,6 +1110,8 @@ type tradingPatch struct {
 	Env                       *string  `json:"env"`
 	AllowLiveTrading          *bool    `json:"allow_live_trading"`
 	BaseURL                   *string  `json:"base_url"`
+	BinanceBaseURL            *string  `json:"binance_base_url"`
+	BinanceDemoBaseURL        *string  `json:"binance_demo_base_url"`
 	DefaultMarginMode         *string  `json:"default_margin_mode"`
 	PositionMode              *string  `json:"position_mode"`
 	SignalTTLSeconds          *int     `json:"signal_ttl_seconds"`
@@ -1017,6 +1160,12 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.Trading.BaseURL != nil {
 		c.Trading.BaseURL = *patch.Trading.BaseURL
+	}
+	if patch.Trading.BinanceBaseURL != nil {
+		c.Trading.BinanceBaseURL = *patch.Trading.BinanceBaseURL
+	}
+	if patch.Trading.BinanceDemoBaseURL != nil {
+		c.Trading.BinanceDemoBaseURL = *patch.Trading.BinanceDemoBaseURL
 	}
 	if patch.Trading.DefaultMarginMode != nil {
 		c.Trading.DefaultMarginMode = *patch.Trading.DefaultMarginMode

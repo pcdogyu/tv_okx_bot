@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/env"
 	"github.com/pcdogyu/tv_okx_bot/internal/okx"
@@ -104,6 +105,20 @@ func runServe(args []string) error {
 	if !credentialStore.Status().Configured {
 		logger.Warn("OKX credentials are incomplete; /tvorder accepts requests but execution will fail until credentials are set")
 	}
+	binanceCredentialsFile := os.Getenv("BINANCE_CREDENTIALS_FILE")
+	if binanceCredentialsFile == "" {
+		binanceCredentialsFile = filepath.Join(upgradeRunner.WorkDir, "data", "binance-credentials.json")
+	}
+	binanceCredentialStore, err := binance.NewCredentialStore(binanceCredentialsFile, binance.Credentials{
+		APIKey:    secrets.BinanceAPIKey,
+		SecretKey: secrets.BinanceSecretKey,
+	})
+	if err != nil {
+		return err
+	}
+	if !binanceCredentialStore.Status().Configured {
+		logger.Warn("Binance credentials are incomplete; target_exchange=binance execution will fail until credentials are set")
+	}
 	upgradeStatusFile := os.Getenv("TV_OKX_UPGRADE_STATUS_FILE")
 	if upgradeStatusFile == "" {
 		upgradeStatusFile = filepath.Join(upgradeRunner.WorkDir, "data", "upgrade-status.json")
@@ -113,19 +128,28 @@ func runServe(args []string) error {
 		ConfigStore: config.NewStore(*configPath, cfg),
 		Orders:      orderStore,
 		Token:       security.NewTokenService(secrets.TVTokenSecret),
-		Executor: okx.Trader{
-			CredentialProvider: credentialStore,
-			HTTPClient:         &http.Client{Timeout: 15 * time.Second},
-			Logger:             logger,
+		Executor: server.ExchangeExecutor{
+			OKX: okx.Trader{
+				CredentialProvider: credentialStore,
+				HTTPClient:         &http.Client{Timeout: 15 * time.Second},
+				Logger:             logger,
+			},
+			Binance: binance.Trader{
+				CredentialProvider: binanceCredentialStore,
+				HTTPClient:         &http.Client{Timeout: 15 * time.Second},
+				Logger:             logger,
+			},
 		},
-		OKXCredentials: credentialStore,
-		OKXHTTPClient:  &http.Client{Timeout: 15 * time.Second},
-		AdminToken:     secrets.AdminToken,
-		AdminUser:      secrets.AdminUser,
-		AdminPass:      secrets.AdminPassword,
-		Logger:         logger,
-		Upgrade:        upgrade.NewManager(upgradeRunner, upgrade.WithStatusFile(upgradeStatusFile)),
-		BuildInfo:      buildInfo,
+		OKXCredentials:     credentialStore,
+		BinanceCredentials: binanceCredentialStore,
+		OKXHTTPClient:      &http.Client{Timeout: 15 * time.Second},
+		BinanceHTTPClient:  &http.Client{Timeout: 15 * time.Second},
+		AdminToken:         secrets.AdminToken,
+		AdminUser:          secrets.AdminUser,
+		AdminPass:          secrets.AdminPassword,
+		Logger:             logger,
+		Upgrade:            upgrade.NewManager(upgradeRunner, upgrade.WithStatusFile(upgradeStatusFile)),
+		BuildInfo:          buildInfo,
 	}
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,

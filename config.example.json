@@ -8,6 +8,8 @@
     "env": "demo",
     "allow_live_trading": false,
     "base_url": "https://www.okx.com",
+    "binance_base_url": "https://fapi.binance.com",
+    "binance_demo_base_url": "https://demo-fapi.binance.com",
     "default_margin_mode": "isolated",
     "position_mode": "net",
     "signal_ttl_seconds": 120,

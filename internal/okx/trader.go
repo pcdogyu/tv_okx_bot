@@ -86,16 +86,17 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	}
 	ack, env, err := client.PlaceOrder(ctx, req)
 	result := trading.OrderResult{
-		SignalID: "",
-		APIID:    apiID,
-		InstID:   sym.InstID,
-		ClOrdID:  clOrdID,
-		OrdType:  req.OrdType,
-		Px:       req.Px,
-		OrdID:    ack.OrdID,
-		OKXCode:  env.Code,
-		OKXMsg:   env.Msg,
-		Leverage: usedLeverage,
+		SignalID:       "",
+		APIID:          apiID,
+		TargetExchange: trading.ExchangeOKX,
+		InstID:         sym.InstID,
+		ClOrdID:        clOrdID,
+		OrdType:        req.OrdType,
+		Px:             req.Px,
+		OrdID:          ack.OrdID,
+		OKXCode:        env.Code,
+		OKXMsg:         env.Msg,
+		Leverage:       usedLeverage,
 	}
 	if err != nil {
 		return result, err

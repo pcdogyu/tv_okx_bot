@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,22 +29,24 @@ const (
 )
 
 type OrderRecord struct {
-	SignalID   string              `json:"signal_id"`
-	DedupeKey  string              `json:"dedupe_key"`
-	Status     OrderStatus         `json:"status"`
-	Action     trading.Side        `json:"action"`
-	APIID      string              `json:"api_id,omitempty"`
-	Coinpair   string              `json:"coinpair"`
-	Ticker     string              `json:"ticker"`
-	Price      string              `json:"price"`
-	Leverage   int                 `json:"leverage"`
-	Amount     string              `json:"amount"`
-	TokenHash  string              `json:"token_hash"`
-	AcceptedAt time.Time           `json:"accepted_at"`
-	UpdatedAt  time.Time           `json:"updated_at"`
-	Result     trading.OrderResult `json:"result,omitempty"`
-	ErrorCode  string              `json:"error_code,omitempty"`
-	Error      string              `json:"error,omitempty"`
+	SignalID       string              `json:"signal_id"`
+	DedupeKey      string              `json:"dedupe_key"`
+	Status         OrderStatus         `json:"status"`
+	Action         trading.Side        `json:"action"`
+	APIID          string              `json:"api_id,omitempty"`
+	SourceExchange string              `json:"source_exchange,omitempty"`
+	TargetExchange string              `json:"target_exchange,omitempty"`
+	Coinpair       string              `json:"coinpair"`
+	Ticker         string              `json:"ticker"`
+	Price          string              `json:"price"`
+	Leverage       int                 `json:"leverage"`
+	Amount         string              `json:"amount"`
+	TokenHash      string              `json:"token_hash"`
+	AcceptedAt     time.Time           `json:"accepted_at"`
+	UpdatedAt      time.Time           `json:"updated_at"`
+	Result         trading.OrderResult `json:"result,omitempty"`
+	ErrorCode      string              `json:"error_code,omitempty"`
+	Error          string              `json:"error,omitempty"`
 }
 
 type OrderStore struct {
@@ -275,6 +278,8 @@ func (s *OrderStore) migrateSQLite() error {
 			status TEXT NOT NULL,
 			action TEXT,
 			api_id TEXT,
+			source_exchange TEXT,
+			target_exchange TEXT,
 			coinpair TEXT,
 			ticker TEXT,
 			price TEXT,
@@ -328,6 +333,7 @@ func (s *OrderStore) migrateSQLite() error {
 			refreshed_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS usdt_balance_snapshots (
+			exchange TEXT NOT NULL DEFAULT 'okx',
 			api_id TEXT NOT NULL,
 			env TEXT NOT NULL,
 			bucket_ts INTEGER NOT NULL,
@@ -341,16 +347,155 @@ func (s *OrderStore) migrateSQLite() error {
 			frozen_bal TEXT,
 			dis_eq TEXT,
 			balance_updated_at TEXT,
-			PRIMARY KEY(api_id, env, bucket_ts)
+			PRIMARY KEY(exchange, api_id, env, bucket_ts)
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_usdt_balance_snapshots_time ON usdt_balance_snapshots(api_id, env, bucket_ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_usdt_balance_snapshots_time ON usdt_balance_snapshots(exchange, api_id, env, bucket_ts)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return err
 		}
 	}
+	if err := s.ensureOrderExchangeColumns(); err != nil {
+		return err
+	}
+	if err := s.ensureUSDTBalanceExchangeKey(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *OrderStore) ensureOrderExchangeColumns() error {
+	columns, err := sqliteTableColumns(s.db, "orders")
+	if err != nil {
+		return err
+	}
+	if !columns["source_exchange"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN source_exchange TEXT`); err != nil {
+			return err
+		}
+	}
+	if !columns["target_exchange"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN target_exchange TEXT`); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE orders SET target_exchange = 'okx' WHERE target_exchange IS NULL OR target_exchange = ''`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *OrderStore) ensureUSDTBalanceExchangeKey() error {
+	columns, err := sqliteTableColumnInfo(s.db, "usdt_balance_snapshots")
+	if err != nil {
+		return err
+	}
+	exchangePK := false
+	for _, column := range columns {
+		if column.Name == "exchange" && column.PK > 0 {
+			exchangePK = true
+			break
+		}
+	}
+	if exchangePK {
+		return nil
+	}
+	_, err = s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS usdt_balance_snapshots_new (
+			exchange TEXT NOT NULL DEFAULT 'okx',
+			api_id TEXT NOT NULL,
+			env TEXT NOT NULL,
+			bucket_ts INTEGER NOT NULL,
+			observed_at TEXT NOT NULL,
+			total_eq TEXT,
+			eq TEXT,
+			eq_usd TEXT,
+			avail_eq TEXT,
+			avail_bal TEXT,
+			cash_bal TEXT,
+			frozen_bal TEXT,
+			dis_eq TEXT,
+			balance_updated_at TEXT,
+			PRIMARY KEY(exchange, api_id, env, bucket_ts)
+		);
+		INSERT OR REPLACE INTO usdt_balance_snapshots_new
+			(exchange, api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at)
+		SELECT
+			COALESCE(NULLIF(exchange, ''), 'okx'), api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at
+		FROM usdt_balance_snapshots;
+		DROP TABLE usdt_balance_snapshots;
+		ALTER TABLE usdt_balance_snapshots_new RENAME TO usdt_balance_snapshots;
+		CREATE INDEX IF NOT EXISTS idx_usdt_balance_snapshots_time ON usdt_balance_snapshots(exchange, api_id, env, bucket_ts);
+	`)
+	if err != nil && strings.Contains(err.Error(), "no such column: exchange") {
+		_, err = s.db.Exec(`
+			DROP TABLE IF EXISTS usdt_balance_snapshots_new;
+			CREATE TABLE usdt_balance_snapshots_new (
+				exchange TEXT NOT NULL DEFAULT 'okx',
+				api_id TEXT NOT NULL,
+				env TEXT NOT NULL,
+				bucket_ts INTEGER NOT NULL,
+				observed_at TEXT NOT NULL,
+				total_eq TEXT,
+				eq TEXT,
+				eq_usd TEXT,
+				avail_eq TEXT,
+				avail_bal TEXT,
+				cash_bal TEXT,
+				frozen_bal TEXT,
+				dis_eq TEXT,
+				balance_updated_at TEXT,
+				PRIMARY KEY(exchange, api_id, env, bucket_ts)
+			);
+			INSERT OR REPLACE INTO usdt_balance_snapshots_new
+				(exchange, api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at)
+			SELECT
+				'okx', api_id, env, bucket_ts, observed_at, total_eq, eq, eq_usd, avail_eq, avail_bal, cash_bal, frozen_bal, dis_eq, balance_updated_at
+			FROM usdt_balance_snapshots;
+			DROP TABLE usdt_balance_snapshots;
+			ALTER TABLE usdt_balance_snapshots_new RENAME TO usdt_balance_snapshots;
+			CREATE INDEX IF NOT EXISTS idx_usdt_balance_snapshots_time ON usdt_balance_snapshots(exchange, api_id, env, bucket_ts);
+		`)
+	}
+	return err
+}
+
+type sqliteColumnInfo struct {
+	Name string
+	PK   int
+}
+
+func sqliteTableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	infos, err := sqliteTableColumnInfo(db, table)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, info := range infos {
+		out[info.Name] = true
+	}
+	return out, nil
+}
+
+func sqliteTableColumnInfo(db *sql.DB, table string) ([]sqliteColumnInfo, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []sqliteColumnInfo
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		out = append(out, sqliteColumnInfo{Name: name, PK: pk})
+	}
+	return out, rows.Err()
 }
 
 func (s *OrderStore) importLegacyJSON() error {
@@ -484,14 +629,16 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 		resultJSON = string(b)
 	}
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO orders (
-		signal_id, dedupe_key, status, action, api_id, coinpair, ticker, price,
+		signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
 		leverage, amount, token_hash, accepted_at, updated_at, result_json, error_code, error
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.SignalID,
 		rec.DedupeKey,
 		string(rec.Status),
 		string(rec.Action),
 		rec.APIID,
+		rec.SourceExchange,
+		rec.TargetExchange,
 		rec.Coinpair,
 		rec.Ticker,
 		rec.Price,
@@ -511,7 +658,7 @@ func (s *OrderStore) listSQLiteLocked(limit int) ([]OrderRecord, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, coinpair, ticker, price,
+	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
 		leverage, amount, token_hash, accepted_at, updated_at, result_json, error_code, error
 		FROM orders ORDER BY accepted_at DESC, signal_id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -530,7 +677,7 @@ func (s *OrderStore) listSQLiteLocked(limit int) ([]OrderRecord, error) {
 }
 
 func (s *OrderStore) findSQLiteLocked(signalID string) (OrderRecord, error) {
-	row := s.db.QueryRow(`SELECT signal_id, dedupe_key, status, action, api_id, coinpair, ticker, price,
+	row := s.db.QueryRow(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
 		leverage, amount, token_hash, accepted_at, updated_at, result_json, error_code, error
 		FROM orders WHERE signal_id = ?`, signalID)
 	return scanOrder(row)
@@ -560,6 +707,8 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 		&status,
 		&action,
 		&rec.APIID,
+		&rec.SourceExchange,
+		&rec.TargetExchange,
 		&rec.Coinpair,
 		&rec.Ticker,
 		&rec.Price,
@@ -576,6 +725,7 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	}
 	rec.Status = OrderStatus(status)
 	rec.Action = trading.Side(action)
+	rec.TargetExchange = trading.NormalizeExchange(rec.TargetExchange)
 	if acceptedAt != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, acceptedAt)
 		if err != nil {
@@ -641,6 +791,7 @@ func (s *OrderStore) saveLocked() error {
 
 func DedupeKey(signal trading.Signal) string {
 	payload := string(signal.Action) + "|" +
+		trading.NormalizeExchange(signal.TargetExchange) + "|" +
 		signal.APIID + "|" +
 		signal.Coinpair + "|" +
 		trading.NormalizeFloat(signal.Price.Value) + "|" +
@@ -657,6 +808,7 @@ func RejectedKey(signal trading.Signal, code, message string, now time.Time) str
 	payload := code + "|" +
 		message + "|" +
 		string(signal.Action) + "|" +
+		trading.NormalizeExchange(signal.TargetExchange) + "|" +
 		signal.APIID + "|" +
 		signal.Coinpair + "|" +
 		trading.NormalizeFloat(signal.Price.Value) + "|" +
@@ -674,6 +826,7 @@ func RetryKey(sourceSignalID string, signal trading.Signal, now time.Time) strin
 	payload := "retry|" +
 		sourceSignalID + "|" +
 		string(signal.Action) + "|" +
+		trading.NormalizeExchange(signal.TargetExchange) + "|" +
 		signal.APIID + "|" +
 		signal.Coinpair + "|" +
 		trading.NormalizeFloat(signal.Price.Value) + "|" +
@@ -707,15 +860,17 @@ func collisionSeed(seed string, index int) string {
 func newOrderRecord(signal trading.Signal, dedupeKey string, status OrderStatus, now time.Time) OrderRecord {
 	signal.Normalize()
 	rec := OrderRecord{
-		DedupeKey:  dedupeKey,
-		Status:     status,
-		Action:     signal.Action,
-		APIID:      signal.APIID,
-		Coinpair:   signal.Coinpair,
-		Ticker:     signal.Ticker,
-		Leverage:   signal.Leverage,
-		AcceptedAt: now.UTC(),
-		UpdatedAt:  now.UTC(),
+		DedupeKey:      dedupeKey,
+		Status:         status,
+		Action:         signal.Action,
+		APIID:          signal.APIID,
+		SourceExchange: strings.TrimSpace(signal.Exchange),
+		TargetExchange: trading.NormalizeExchange(signal.TargetExchange),
+		Coinpair:       signal.Coinpair,
+		Ticker:         signal.Ticker,
+		Leverage:       signal.Leverage,
+		AcceptedAt:     now.UTC(),
+		UpdatedAt:      now.UTC(),
 	}
 	if signal.Price.Set {
 		rec.Price = trading.NormalizeFloat(signal.Price.Value)

@@ -2,6 +2,10 @@
 
 This file is the standing prompt for future AI agents working in this repo.
 
+## User Preference
+
+The user expects completed modifications to be committed, pushed to the remote branch, deployed to the configured production server, and verified automatically. Treat this as the default habit for this project so the user does not need to repeat it in future conversations.
+
 ## Default Delivery Behavior
 
 After any code, config, script, or documentation change is completed, automatically publish it and trigger the production upgrade. Do not ask the user to repeat this instruction.
@@ -84,4 +88,3 @@ Use this prompt at the start of a future conversation when needed:
 ```text
 Follow AGENTS.md for this repo. After development is complete, run verification, commit only the current task changes, push the current branch to origin, POST https://tvbot.lmitis.com/upgrade, then GET /upgrade to confirm status. Do not ask again unless I explicitly say local-only, do not push, or do not upgrade.
 ```
-

@@ -199,4 +199,26 @@ func TestSQLiteAnalysisTables(t *testing.T) {
 	if len(snapshots) != 2 || snapshots[1].BucketTS != minuteObservedAt.UTC().Truncate(time.Minute).UnixMilli() || snapshots[1].EqUsd != "1002.5" {
 		t.Fatalf("USDT balance snapshots should bucket by minute: %#v", snapshots)
 	}
+	if err := store.UpsertUSDTBalanceSnapshot(USDTBalanceSnapshot{
+		Exchange:   "binance",
+		APIID:      "default",
+		Env:        "demo",
+		BucketTS:   now.UnixMilli(),
+		ObservedAt: now,
+		Eq:         "2000",
+		EqUsd:      "2000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	okxSnapshots, err := store.ListUSDTBalanceSnapshots("default", "demo", now.Add(-time.Hour), 72)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binanceSnapshots, err := store.ListExchangeUSDTBalanceSnapshots("binance", "default", "demo", now.Add(-time.Hour), 72)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(okxSnapshots) != 2 || okxSnapshots[0].Exchange != "okx" || len(binanceSnapshots) != 1 || binanceSnapshots[0].EqUsd != "2000" {
+		t.Fatalf("exchange-specific USDT snapshots not isolated okx=%#v binance=%#v", okxSnapshots, binanceSnapshots)
+	}
 }

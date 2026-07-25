@@ -81,6 +81,34 @@ func TestBuildTemplateCanBindSelectedAPI(t *testing.T) {
 	}
 }
 
+func TestBuildTemplateCanBindTargetExchange(t *testing.T) {
+	req := TemplateRequest{
+		TargetExchange: ExchangeBinance,
+		PriceSource:    "close",
+		APIID:          "binance-main",
+	}
+	tokenSvc := security.NewTokenService("unit-test-secret")
+	resp, err := BuildTemplate(req, tokenSvc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(resp.JSON), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["target_exchange"] != ExchangeBinance || payload["api_id"] != "binance-main" {
+		t.Fatalf("target exchange not included: %#v", payload)
+	}
+	if !tokenSvc.Validate(req.CanonicalTokenPayload(), resp.Token) {
+		t.Fatal("generated token did not validate against Binance target payload")
+	}
+	okxReq := req
+	okxReq.TargetExchange = ExchangeOKX
+	if tokenSvc.Validate(okxReq.CanonicalTokenPayload(), resp.Token) {
+		t.Fatal("Binance target token should not validate as OKX token")
+	}
+}
+
 func TestCanonicalTokenPayloadDoesNotBindActionOrCoinpair(t *testing.T) {
 	longBTC := Signal{Action: ActionLong, Coinpair: "BTC", Leverage: 5, Amount: NewFlexibleFloat(100)}
 	shortETH := Signal{Action: ActionShort, Coinpair: "ETH", Leverage: 5, Amount: NewFlexibleFloat(100)}

@@ -19,6 +19,11 @@ const (
 	ActionShort Side = "short"
 )
 
+const (
+	ExchangeOKX     = "okx"
+	ExchangeBinance = "binance"
+)
+
 type RiskType string
 
 const (
@@ -85,21 +90,22 @@ type Risk struct {
 }
 
 type Signal struct {
-	Action    Side          `json:"action"`
-	APIID     string        `json:"api_id,omitempty"`
-	Coinpair  string        `json:"coinpair"`
-	Price     FlexibleFloat `json:"price"`
-	SentAt    string        `json:"sent_at"`
-	Time      string        `json:"time,omitempty"`
-	Ticker    string        `json:"ticker"`
-	Exchange  string        `json:"exchange,omitempty"`
-	Interval  string        `json:"interval,omitempty"`
-	Condition string        `json:"condition,omitempty"`
-	Text      string        `json:"text,omitempty"`
-	Leverage  int           `json:"leverage"`
-	Amount    FlexibleFloat `json:"amount"`
-	Risk      Risk          `json:"risk,omitempty"`
-	Token     string        `json:"token"`
+	Action         Side          `json:"action"`
+	APIID          string        `json:"api_id,omitempty"`
+	TargetExchange string        `json:"target_exchange,omitempty"`
+	Coinpair       string        `json:"coinpair"`
+	Price          FlexibleFloat `json:"price"`
+	SentAt         string        `json:"sent_at"`
+	Time           string        `json:"time,omitempty"`
+	Ticker         string        `json:"ticker"`
+	Exchange       string        `json:"exchange,omitempty"`
+	Interval       string        `json:"interval,omitempty"`
+	Condition      string        `json:"condition,omitempty"`
+	Text           string        `json:"text,omitempty"`
+	Leverage       int           `json:"leverage"`
+	Amount         FlexibleFloat `json:"amount"`
+	Risk           Risk          `json:"risk,omitempty"`
+	Token          string        `json:"token"`
 }
 
 type OrderSettings struct {
@@ -112,10 +118,11 @@ type OrderSettings struct {
 }
 
 type TemplateRequest struct {
-	PriceSource string        `json:"price_source"`
-	APIID       string        `json:"api_id,omitempty"`
-	Leverage    int           `json:"leverage"`
-	Amount      FlexibleFloat `json:"amount"`
+	PriceSource    string        `json:"price_source"`
+	APIID          string        `json:"api_id,omitempty"`
+	TargetExchange string        `json:"target_exchange,omitempty"`
+	Leverage       int           `json:"leverage"`
+	Amount         FlexibleFloat `json:"amount"`
 }
 
 type TemplateResponse struct {
@@ -124,16 +131,19 @@ type TemplateResponse struct {
 }
 
 type OrderResult struct {
-	SignalID string `json:"signal_id"`
-	APIID    string `json:"api_id,omitempty"`
-	InstID   string `json:"inst_id"`
-	ClOrdID  string `json:"cl_ord_id"`
-	OrdType  string `json:"ord_type,omitempty"`
-	Px       string `json:"px,omitempty"`
-	Leverage int    `json:"leverage,omitempty"`
-	OrdID    string `json:"ord_id,omitempty"`
-	OKXCode  string `json:"okx_code,omitempty"`
-	OKXMsg   string `json:"okx_msg,omitempty"`
+	SignalID       string `json:"signal_id"`
+	APIID          string `json:"api_id,omitempty"`
+	TargetExchange string `json:"target_exchange,omitempty"`
+	InstID         string `json:"inst_id"`
+	ClOrdID        string `json:"cl_ord_id"`
+	OrdType        string `json:"ord_type,omitempty"`
+	Px             string `json:"px,omitempty"`
+	Leverage       int    `json:"leverage,omitempty"`
+	OrdID          string `json:"ord_id,omitempty"`
+	OKXCode        string `json:"okx_code,omitempty"`
+	OKXMsg         string `json:"okx_msg,omitempty"`
+	BinanceCode    int    `json:"binance_code,omitempty"`
+	BinanceMsg     string `json:"binance_msg,omitempty"`
 }
 
 type Executor interface {
@@ -145,6 +155,8 @@ type RuntimeConfig interface {
 	SymbolMeta(coinpair string) (SymbolInfo, bool)
 	DemoTradingHeaderEnabled() bool
 	LiveTradingAllowedByEnvironment() bool
+	BinanceBaseURL() string
+	BinanceLiveTradingAllowedByEnvironment() bool
 	OKXBaseURL() string
 	MarginMode() string
 	PositionMode() string
@@ -176,6 +188,7 @@ func (s *Signal) Normalize() {
 		s.Action = Side(strings.ToLower(strings.TrimSpace(string(s.Action))))
 	}
 	s.APIID = strings.TrimSpace(s.APIID)
+	s.TargetExchange = NormalizeExchange(s.TargetExchange)
 	s.Coinpair = strings.ToUpper(strings.TrimSpace(s.Coinpair))
 	s.Ticker = strings.TrimSpace(s.Ticker)
 	s.SentAt = strings.TrimSpace(s.SentAt)
@@ -192,6 +205,26 @@ func (s *Signal) Normalize() {
 	}
 	s.Token = strings.TrimSpace(s.Token)
 	s.Risk.Normalize()
+}
+
+func NormalizeExchange(exchange string) string {
+	switch strings.ToLower(strings.TrimSpace(exchange)) {
+	case "", ExchangeOKX:
+		return ExchangeOKX
+	case ExchangeBinance, "binance_futures", "binance-usdm", "binance_usdm":
+		return ExchangeBinance
+	default:
+		return strings.ToLower(strings.TrimSpace(exchange))
+	}
+}
+
+func ValidTargetExchange(exchange string) bool {
+	switch NormalizeExchange(exchange) {
+	case ExchangeOKX, ExchangeBinance:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r Risk) Validate() error {
@@ -277,6 +310,9 @@ func (s Signal) Validate(now time.Time, ttl time.Duration, cfg RuntimeConfig) er
 	case ActionLong, ActionShort:
 	default:
 		return fmt.Errorf("action must be %q or %q", ActionLong, ActionShort)
+	}
+	if !ValidTargetExchange(s.TargetExchange) {
+		return fmt.Errorf("target_exchange must be %q or %q", ExchangeOKX, ExchangeBinance)
 	}
 	if s.Coinpair == "" && strings.TrimSpace(s.Ticker) == "" {
 		return errors.New("coinpair or ticker is required")
@@ -393,9 +429,21 @@ func (s Signal) CanonicalTokenPayload() string {
 }
 
 func (s Signal) CanonicalWebhookTokenPayload() string {
-	return CanonicalWebhookTokenPayload(s.APIID)
+	return CanonicalTargetWebhookTokenPayload(s.TargetExchange, s.APIID)
 }
 
 func (t TemplateRequest) CanonicalTokenPayload() string {
-	return CanonicalWebhookTokenPayload(t.APIID)
+	return CanonicalTargetWebhookTokenPayload(t.TargetExchange, t.APIID)
+}
+
+func CanonicalTargetWebhookTokenPayload(targetExchange, apiID string) string {
+	targetExchange = NormalizeExchange(targetExchange)
+	apiID = strings.TrimSpace(apiID)
+	if targetExchange == ExchangeOKX {
+		return CanonicalWebhookTokenPayload(apiID)
+	}
+	if apiID == "" {
+		return strings.Join([]string{"v5", targetExchange}, "\n")
+	}
+	return strings.Join([]string{"v5", targetExchange, apiID}, "\n")
 }

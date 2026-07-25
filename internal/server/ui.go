@@ -447,6 +447,28 @@ const tvbotHTML = `<!doctype html>
       padding-top: 5px;
       padding-bottom: 5px;
     }
+    .exchange-tabs {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .exchange-tabs button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      min-height: 32px;
+      padding: 6px 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .exchange-tabs button[aria-selected="true"] {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #fff;
+    }
     .table-actions {
       display: flex;
       gap: 6px;
@@ -557,9 +579,27 @@ const tvbotHTML = `<!doctype html>
       padding: 10px;
       min-height: 460px;
     }
+    .dashboard-balance-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .balance-chart-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px;
+      min-height: 360px;
+    }
     #usdt-chart {
       width: 100%;
       height: 420px;
+      display: block;
+    }
+    .mini-usdt-chart {
+      width: 100%;
+      height: 250px;
       display: block;
     }
     .chart-grid {
@@ -620,10 +660,11 @@ const tvbotHTML = `<!doctype html>
     @media (max-width: 880px) {
       .bar { align-items: flex-start; flex-direction: column; }
       nav { justify-content: flex-start; }
-      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics { grid-template-columns: 1fr; }
+      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics, .dashboard-balance-grid { grid-template-columns: 1fr; }
       main { padding: 12px; }
       section { padding: 12px; }
       #usdt-chart { height: 320px; }
+      .mini-usdt-chart { height: 240px; }
     }
   </style>
 </head>
@@ -650,7 +691,7 @@ const tvbotHTML = `<!doctype html>
   <main>
     <div class="status">
       <div class="metric"><div class="label">交易环境</div><div class="value" id="metric-env">-</div></div>
-      <div class="metric"><div class="label">OKX API</div><div class="value" id="metric-api-keys">-</div></div>
+      <div class="metric"><div class="label">交易 API</div><div class="value" id="metric-api-keys">-</div></div>
       <div class="metric"><div class="label">下单金额</div><div class="value" id="metric-amount">-</div></div>
       <div class="metric"><div class="label">最近信号</div><div class="value" id="metric-orders">-</div></div>
     </div>
@@ -660,7 +701,7 @@ const tvbotHTML = `<!doctype html>
         <h2>总览</h2>
         <div class="actions" style="margin-top:0">
           <button class="btn" type="button" id="refresh-all">刷新</button>
-          <button class="btn success" type="button" id="check-okx">检查 OKX</button>
+          <button class="btn success" type="button" id="check-okx">检查交易所</button>
         </div>
       </div>
       <div class="split">
@@ -671,8 +712,36 @@ const tvbotHTML = `<!doctype html>
           </table>
         </div>
         <div>
-          <h3>OKX 检查</h3>
+          <h3>交易所检查</h3>
           <pre id="okx-output">-</pre>
+        </div>
+      </div>
+      <div class="dashboard-balance-grid">
+        <div class="balance-chart-card">
+          <div class="section-head" style="margin-bottom:8px">
+            <h3>OKX USDT 余额</h3>
+            <span class="muted" id="overview-okx-status">-</span>
+          </div>
+          <div class="analysis-metrics symbol-metrics">
+            <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="overview-okx-eq">-</div></div>
+            <div class="analysis-card"><div class="label">可用</div><div class="value" id="overview-okx-avail">-</div></div>
+            <div class="analysis-card"><div class="label">交易 API</div><div class="value" id="overview-okx-api">-</div></div>
+            <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="overview-okx-updated">-</div></div>
+          </div>
+          <svg id="overview-okx-usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT balance chart"></svg>
+        </div>
+        <div class="balance-chart-card">
+          <div class="section-head" style="margin-bottom:8px">
+            <h3>Binance USDT 余额</h3>
+            <span class="muted" id="overview-binance-status">-</span>
+          </div>
+          <div class="analysis-metrics symbol-metrics">
+            <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="overview-binance-eq">-</div></div>
+            <div class="analysis-card"><div class="label">可用</div><div class="value" id="overview-binance-avail">-</div></div>
+            <div class="analysis-card"><div class="label">交易 API</div><div class="value" id="overview-binance-api">-</div></div>
+            <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="overview-binance-updated">-</div></div>
+          </div>
+          <svg id="overview-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT balance chart"></svg>
         </div>
       </div>
     </section>
@@ -681,6 +750,7 @@ const tvbotHTML = `<!doctype html>
       <div class="section-head">
         <h2>当前持仓</h2>
         <div class="analysis-controls">
+          <label>交易所<select id="position-exchange"><option value="okx">OKX</option><option value="binance">Binance USDⓈ-M</option></select></label>
           <label>交易 API<select id="position-api-id"></select></label>
           <button class="btn primary" type="button" id="refresh-positions">刷新持仓</button>
         </div>
@@ -694,7 +764,7 @@ const tvbotHTML = `<!doctype html>
       <div class="symbol-table-wrap">
         <table class="symbol-table">
           <thead>
-            <tr><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>杠杆</th><th>保证金模式</th><th>保证金</th><th>强平价</th><th>操作</th></tr>
+            <tr><th>交易所</th><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>杠杆</th><th>保证金模式</th><th>保证金</th><th>强平价</th><th>操作</th></tr>
           </thead>
           <tbody id="position-rows"></tbody>
         </table>
@@ -706,7 +776,7 @@ const tvbotHTML = `<!doctype html>
       <div class="symbol-table-wrap">
         <table class="symbol-table pending-order-table">
           <thead>
-            <tr><th>时间</th><th>币对</th><th>方向</th><th>持仓方向</th><th>类型</th><th>委托价格</th><th>中间价</th><th>委托量</th><th>已成交</th><th>状态</th><th>操作</th></tr>
+            <tr><th>交易所</th><th>时间</th><th>币对</th><th>方向</th><th>持仓方向</th><th>类型</th><th>委托价格</th><th>中间价</th><th>委托量</th><th>已成交</th><th>状态</th><th>操作</th></tr>
           </thead>
           <tbody id="pending-order-rows"></tbody>
         </table>
@@ -759,7 +829,13 @@ const tvbotHTML = `<!doctype html>
 
     <section id="apiKeys">
       <div class="section-head">
-        <h2>API Key</h2>
+        <div>
+          <h2>API Key</h2>
+          <div class="exchange-tabs" id="api-key-exchange-tabs">
+            <button type="button" data-api-key-exchange="okx" aria-selected="true">OKX</button>
+            <button type="button" data-api-key-exchange="binance">Binance</button>
+          </div>
+        </div>
         <div class="actions" style="margin-top:0">
           <button class="btn primary" type="button" id="save-api-keys">保存 API Key</button>
           <button class="btn success" type="button" id="test-api-keys">测试 API</button>
@@ -774,9 +850,9 @@ const tvbotHTML = `<!doctype html>
             <label class="check"><input id="key-active" type="checkbox">设为交易 API</label>
           </div>
           <div class="grid api-key-inputs">
-            <label>OKX API Key<input id="key-api" autocomplete="off" spellcheck="false"></label>
-            <label>OKX Secret Key<input id="key-secret" type="password" autocomplete="new-password" spellcheck="false"></label>
-            <label>OKX Passphrase<input id="key-passphrase" type="password" autocomplete="new-password" spellcheck="false"></label>
+            <label id="key-api-label">OKX API Key<input id="key-api" autocomplete="off" spellcheck="false"></label>
+            <label id="key-secret-label">OKX Secret Key<input id="key-secret" type="password" autocomplete="new-password" spellcheck="false"></label>
+            <label id="key-passphrase-label">OKX Passphrase<input id="key-passphrase" type="password" autocomplete="new-password" spellcheck="false"></label>
           </div>
           <div class="actions">
             <button class="btn" type="button" id="add-api-key">新增 API</button>
@@ -833,6 +909,8 @@ const tvbotHTML = `<!doctype html>
         <label>数据文件<input id="cfg-data-file" autocomplete="off"></label>
         <label>SQLite 数据库<input id="cfg-database-file" autocomplete="off"></label>
         <label>OKX Base URL<input id="cfg-base-url" autocomplete="off"></label>
+        <label>Binance Base URL<input id="cfg-binance-base-url" autocomplete="off"></label>
+        <label>Binance Demo Base URL<input id="cfg-binance-demo-base-url" autocomplete="off"></label>
         <label>交易环境<select id="cfg-env"><option value="demo">demo</option><option value="live">live</option></select></label>
         <label>保证金模式<select id="cfg-margin"><option value="isolated">isolated</option><option value="cross">cross</option></select></label>
         <label>持仓模式<select id="cfg-position"><option value="net">net</option><option value="long_short">long_short</option></select></label>
@@ -869,6 +947,7 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="split">
         <div class="grid two">
+          <label>下单去向<select id="tpl-target-exchange"><option value="okx">OKX</option><option value="binance">Binance USDⓈ-M</option></select></label>
           <label>交易 API<select id="tpl-api-id"></select></label>
           <label>价格源<select id="tpl-price-source"><option value="close">close</option><option value="high">high</option><option value="low">low</option></select></label>
         </div>
@@ -886,7 +965,7 @@ const tvbotHTML = `<!doctype html>
       </div>
       <table>
         <thead>
-          <tr><th>时间</th><th>状态</th><th>API</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th class="order-okx">OKX / 返回</th></tr>
+          <tr><th>时间</th><th>状态</th><th>信号来源</th><th>下单去向</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th class="order-okx">交易所 / 返回</th></tr>
         </thead>
         <tbody id="order-rows"></tbody>
       </table>
@@ -920,7 +999,32 @@ const tvbotHTML = `<!doctype html>
   <div class="toast" id="toast"></div>
 
   <script>
-    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, positionClosing: {}, pendingOrderActions: {}, analysis: null, analysisError: "", positions: null, positionsError: "", pendingOrders: null, pendingOrdersError: "", symbols: null, symbolsError: "", upgrade: null };
+    const state = {
+      config: null,
+      apiKeys: null,
+      apiKeysByExchange: { okx: null, binance: null },
+      apiKeyExchange: "okx",
+      selectedAPIID: "",
+      selectedAPIIDs: { okx: "", binance: "" },
+      apiKeyTest: null,
+      apiKeyTestID: "",
+      apiKeyTestExchange: "okx",
+      orders: [],
+      retrying: {},
+      positionClosing: {},
+      pendingOrderActions: {},
+      analysis: null,
+      analysisError: "",
+      balanceOverview: null,
+      balanceOverviewError: "",
+      positions: null,
+      positionsError: "",
+      pendingOrders: null,
+      pendingOrdersError: "",
+      symbols: null,
+      symbolsError: "",
+      upgrade: null
+    };
     let positionViewPollTimer = null;
     let positionViewPollBusy = false;
     let menuSettingsSynced = false;
@@ -961,6 +1065,16 @@ const tvbotHTML = `<!doctype html>
     function asText(v) {
       if (v === null || v === undefined || v === "") return "-";
       return String(v);
+    }
+
+    function normalizeExchange(value) {
+      const raw = String(value || "").trim().toLowerCase();
+      if (raw === "binance" || raw === "binance_usdm" || raw === "binance-usdm" || raw === "usdm") return "binance";
+      return "okx";
+    }
+
+    function exchangeLabel(value) {
+      return normalizeExchange(value) === "binance" ? "Binance" : "OKX";
     }
 
     function formatNumber(v) {
@@ -1341,7 +1455,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadAll() {
-      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadUpgrade()]);
+      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadUpgrade(), loadBalanceOverview()]);
       await loadAnalysis(false);
       renderDashboard();
     }
@@ -1357,13 +1471,30 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadAPIKeys() {
-      state.apiKeys = await api("/tvbot/api-keys");
+      const [okxResult, binanceResult] = await Promise.allSettled([
+        api("/tvbot/api-keys?exchange=okx"),
+        api("/tvbot/api-keys?exchange=binance")
+      ]);
+      state.apiKeysByExchange.okx = okxResult.status === "fulfilled" ? okxResult.value : { configured: false, credentials: [], error: okxResult.reason ? okxResult.reason.message : "OKX API Key 读取失败" };
+      state.apiKeysByExchange.binance = binanceResult.status === "fulfilled" ? binanceResult.value : { configured: false, credentials: [], error: binanceResult.reason ? binanceResult.reason.message : "Binance API Key 读取失败" };
+      state.apiKeys = apiKeyStatus(state.apiKeyExchange);
       renderAPIKeys();
       renderTemplateAPIs();
       renderAnalysisAPIs();
       renderPositionAPIs();
       renderOrders();
       updateMetrics();
+    }
+
+    async function loadBalanceOverview() {
+      try {
+        state.balanceOverview = await api("/tvbot/balances/overview?days=3");
+        state.balanceOverviewError = "";
+      } catch (err) {
+        state.balanceOverview = null;
+        state.balanceOverviewError = err.message;
+      }
+      renderBalanceOverview();
     }
 
     async function loadOrders() {
@@ -1397,6 +1528,8 @@ const tvbotHTML = `<!doctype html>
     async function loadPositions() {
       const qs = new URLSearchParams({ inst_type: "SWAP" });
       const selected = $("position-api-id") ? $("position-api-id").value : "";
+      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
+      qs.set("exchange", exchange);
       if (selected) qs.set("api_id", selected);
       try {
         state.positions = await api("/tvbot/positions?" + qs.toString());
@@ -1411,6 +1544,8 @@ const tvbotHTML = `<!doctype html>
     async function loadPendingOrders() {
       const qs = new URLSearchParams({ inst_type: "SWAP" });
       const selected = $("position-api-id") ? $("position-api-id").value : "";
+      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
+      qs.set("exchange", exchange);
       if (selected) qs.set("api_id", selected);
       try {
         state.pendingOrders = await api("/tvbot/pending-orders?" + qs.toString());
@@ -1444,7 +1579,7 @@ const tvbotHTML = `<!doctype html>
 
     function updateMetrics() {
       $("metric-env").textContent = state.config && state.config.trading ? state.config.trading.env : "-";
-      $("metric-api-keys").textContent = state.apiKeys && state.apiKeys.configured ? (state.apiKeys.active_id || "已配置") : "未配置";
+      $("metric-api-keys").textContent = "OKX " + apiMetricText("okx") + " / Binance " + apiMetricText("binance");
       $("metric-amount").textContent = state.config && state.config.trading ? asText(state.config.trading.order_amount_usdt) + " USDT" : "-";
       $("metric-orders").textContent = state.orders ? state.orders.length : "-";
     }
@@ -1456,6 +1591,9 @@ const tvbotHTML = `<!doctype html>
         ["服务地址", state.config.server ? state.config.server.addr : "-"],
         ["数据文件", state.config.data_file],
         ["SQLite 数据库", state.config.database_file],
+        ["OKX Base URL", t.base_url],
+        ["Binance Base URL", t.binance_base_url],
+        ["Binance Demo Base URL", t.binance_demo_base_url],
         ["交易环境", t.env],
         ["实盘开关", t.allow_live_trading ? "enabled" : "disabled"],
         ["保证金模式", t.default_margin_mode],
@@ -1469,6 +1607,40 @@ const tvbotHTML = `<!doctype html>
         ["空单限价", "当前价格 x " + asText(t.short_limit_price_multiplier)]
       ];
       $("dashboard-config").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(asText(row[1])) + "</td></tr>").join("");
+      renderBalanceOverview();
+    }
+
+    function renderBalanceOverview() {
+      ["okx", "binance"].forEach((exchange) => {
+        const item = balanceOverviewExchange(exchange);
+        const prefix = "overview-" + exchange;
+        const label = exchangeLabel(exchange);
+        if (!item) {
+          $(prefix + "-status").textContent = state.balanceOverviewError || "-";
+          $(prefix + "-eq").textContent = "-";
+          $(prefix + "-avail").textContent = "-";
+          $(prefix + "-api").textContent = "-";
+          $(prefix + "-updated").textContent = "-";
+          drawUSDTChart([], prefix + "-usdt-chart", "暂无 " + label + " USDT 余额数据", exchange === "binance" ? "#138a55" : "#1f6feb");
+          return;
+        }
+        const balance = item.balance || {};
+        const usdt = usdtBalanceDetail(balance);
+        const configured = !!item.configured;
+        const statusText = configured ? (item.status === "ok" ? "已更新" : (item.error || item.status || "错误")) : "未配置";
+        $(prefix + "-status").textContent = statusText;
+        $(prefix + "-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
+        $(prefix + "-avail").textContent = usdt ? formatAssetAmount(usdt.avail_bal || usdt.avail_eq) + " USDT" : "-";
+        $(prefix + "-api").textContent = item.api_id ? apiDisplayName(item.api_id, exchange) : "-";
+        $(prefix + "-updated").textContent = balance.updated_at ? shanghaiTime(balance.updated_at) : (item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
+        const points = usdtValuationPoints(item.balance_points || [], [], balance);
+        drawUSDTChart(points, prefix + "-usdt-chart", configured ? "暂无 " + label + " USDT 余额数据" : label + " 未配置", exchange === "binance" ? "#138a55" : "#1f6feb");
+      });
+    }
+
+    function balanceOverviewExchange(exchange) {
+      const rows = state.balanceOverview && Array.isArray(state.balanceOverview.exchanges) ? state.balanceOverview.exchanges : [];
+      return rows.find((row) => normalizeExchange(row.exchange) === normalizeExchange(exchange)) || null;
     }
 
     function renderConfig() {
@@ -1478,6 +1650,8 @@ const tvbotHTML = `<!doctype html>
       $("cfg-data-file").value = cfg.data_file || "";
       $("cfg-database-file").value = cfg.database_file || "";
       $("cfg-base-url").value = trading.base_url || "";
+      $("cfg-binance-base-url").value = trading.binance_base_url || "";
+      $("cfg-binance-demo-base-url").value = trading.binance_demo_base_url || "";
       $("cfg-env").value = trading.env || "demo";
       $("cfg-margin").value = trading.default_margin_mode || "isolated";
       $("cfg-position").value = trading.position_mode || "net";
@@ -1608,10 +1782,18 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderAPIKeys() {
-      const status = state.apiKeys || {};
-      const accounts = apiAccounts();
+      const exchange = normalizeExchange(state.apiKeyExchange);
+      const status = apiKeyStatus(exchange);
+      state.apiKeys = status;
+      const accounts = apiAccounts(exchange);
       const select = $("key-selected");
-      const previous = state.selectedAPIID || select.value || status.active_id || "";
+      const previous = state.selectedAPIIDs[exchange] || select.value || status.active_id || "";
+      document.querySelectorAll("[data-api-key-exchange]").forEach((button) => {
+        button.setAttribute("aria-selected", normalizeExchange(button.dataset.apiKeyExchange) === exchange ? "true" : "false");
+      });
+      $("key-api-label").childNodes[0].nodeValue = exchangeLabel(exchange) + " API Key";
+      $("key-secret-label").childNodes[0].nodeValue = exchangeLabel(exchange) + " Secret Key";
+      $("key-passphrase-label").style.display = exchange === "okx" ? "" : "none";
       select.innerHTML = accounts.map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>').join("");
       if (!accounts.length) {
         select.innerHTML = '<option value="default">default - 新 API</option>';
@@ -1619,6 +1801,7 @@ const tvbotHTML = `<!doctype html>
       const selected = accounts.some((account) => account.id === previous) ? previous : (status.active_id || (accounts[0] && accounts[0].id) || "default");
       select.value = selected;
       state.selectedAPIID = selected;
+      state.selectedAPIIDs[exchange] = selected;
       fillAPIForm(selected);
       renderAPIKeyStatus(selected);
       $("api-key-accounts").innerHTML = accounts.map((account) => {
@@ -1632,19 +1815,22 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderAPIKeyStatus(selected) {
-      const status = state.apiKeys || {};
+      const exchange = normalizeExchange(state.apiKeyExchange);
+      const status = apiKeyStatus(exchange);
       const rows = [
+        ["交易所", exchangeLabel(exchange)],
         ["配置状态", status.configured ? "已配置" : "未配置"],
         ["交易 API", status.active_id || "-"],
         ["API Key", status.api_key_masked || "-"],
-        ["Secret Key", status.secret_key_set ? "已保存" : "未保存"],
-        ["Passphrase", status.passphrase_set ? "已保存" : "未保存"],
-        ["来源", status.source || "-"],
-        ["更新时间", status.updated_at || "-"]
+        ["Secret Key", status.secret_key_set ? "已保存" : "未保存"]
       ];
+      if (exchange === "okx") rows.push(["Passphrase", status.passphrase_set ? "已保存" : "未保存"]);
+      rows.push(["来源", status.source || "-"]);
+      rows.push(["更新时间", status.updated_at || "-"]);
+      if (status.error) rows.push(["读取错误", status.error]);
       const test = state.apiKeyTest;
       const testID = state.apiKeyTestID || (test && test.api_id) || "";
-      if (test && (!selected || !testID || selected === testID || test.api_id === "input")) {
+      if (test && state.apiKeyTestExchange === exchange && (!selected || !testID || selected === testID || test.api_id === "input")) {
         const balance = test.usdt_balance || {};
         rows.push(["测试 API", test.api_id || testID || "-"]);
         if (test.usdt_balance_found && balance) {
@@ -1653,29 +1839,40 @@ const tvbotHTML = `<!doctype html>
           rows.push(["USDT 冻结", balanceAmount(balance.frozen_bal)]);
           rows.push(["余额更新时间", shanghaiTimeFromOKX(balance.u_time)]);
         } else {
-          rows.push(["USDT 余额", "OKX 未返回 USDT 明细"]);
+          rows.push(["USDT 余额", exchangeLabel(exchange) + " 未返回 USDT 明细"]);
         }
       }
       $("api-key-status").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(row[1]) + "</td></tr>").join("");
     }
 
-    function apiAccounts() {
-      return state.apiKeys && Array.isArray(state.apiKeys.credentials) ? state.apiKeys.credentials : [];
+    function apiKeyStatus(exchange) {
+      exchange = normalizeExchange(exchange);
+      return state.apiKeysByExchange[exchange] || { configured: false, credentials: [] };
     }
 
-    function selectedAPIAccount(id) {
-      return apiAccounts().find((account) => account.id === id) || null;
+    function apiMetricText(exchange) {
+      const status = apiKeyStatus(exchange);
+      return status && status.configured ? (status.active_id || "已配置") : "未配置";
     }
 
-    function apiDisplayName(id) {
+    function apiAccounts(exchange) {
+      const status = apiKeyStatus(exchange || state.apiKeyExchange);
+      return status && Array.isArray(status.credentials) ? status.credentials : [];
+    }
+
+    function selectedAPIAccount(id, exchange) {
+      return apiAccounts(exchange).find((account) => account.id === id) || null;
+    }
+
+    function apiDisplayName(id, exchange) {
       const apiID = String(id || "").trim();
       if (!apiID) return "-";
-      const account = selectedAPIAccount(apiID);
+      const account = selectedAPIAccount(apiID, exchange) || selectedAPIAccount(apiID, "okx") || selectedAPIAccount(apiID, "binance");
       return account && account.name ? account.name : apiID;
     }
 
     function fillAPIForm(id) {
-      const account = selectedAPIAccount(id);
+      const account = selectedAPIAccount(id, state.apiKeyExchange);
       $("key-id").value = account ? account.id : (id || "default");
       $("key-name").value = account ? (account.name || "") : "";
       $("key-active").checked = account ? !!account.active : true;
@@ -1685,27 +1882,32 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderTemplateAPIs() {
-      const options = apiAccounts().map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
+      const exchange = $("tpl-target-exchange") ? normalizeExchange($("tpl-target-exchange").value) : "okx";
+      const status = apiKeyStatus(exchange);
+      const options = apiAccounts(exchange).map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
       $("tpl-api-id").innerHTML = '<option value="">默认交易 API</option>' + options.join("");
-      if (state.apiKeys && state.apiKeys.active_id) {
-        $("tpl-api-id").value = state.apiKeys.active_id;
+      if (status && status.active_id) {
+        $("tpl-api-id").value = status.active_id;
       }
     }
 
     function renderAnalysisAPIs() {
       const select = $("analysis-api-id");
       const current = select.value;
-      const options = apiAccounts().map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
+      const status = apiKeyStatus("okx");
+      const options = apiAccounts("okx").map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
       select.innerHTML = '<option value="">默认交易 API</option>' + options.join("");
-      select.value = current || (state.apiKeys && state.apiKeys.active_id ? state.apiKeys.active_id : "");
+      select.value = current || (status && status.active_id ? status.active_id : "");
     }
 
     function renderPositionAPIs() {
       const select = $("position-api-id");
       const current = select.value;
-      const options = apiAccounts().map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
+      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
+      const status = apiKeyStatus(exchange);
+      const options = apiAccounts(exchange).map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
       select.innerHTML = '<option value="">默认交易 API</option>' + options.join("");
-      select.value = current || (state.apiKeys && state.apiKeys.active_id ? state.apiKeys.active_id : "");
+      select.value = current || (status && status.active_id ? status.active_id : "");
     }
 
     function positionSideText(posSide, pos) {
@@ -1737,11 +1939,16 @@ const tvbotHTML = `<!doctype html>
 
     function pendingOrderRowKey(row) {
       const apiID = state.pendingOrders && state.pendingOrders.api_id ? state.pendingOrders.api_id : ($("position-api-id") ? $("position-api-id").value : "");
+      const exchange = state.pendingOrders && state.pendingOrders.exchange ? state.pendingOrders.exchange : ($("position-exchange") ? $("position-exchange").value : "okx");
       const orderID = row.ordId || ("cl:" + (row.clOrdId || ""));
-      return [apiID, String(row.instId || "").toUpperCase(), orderID].join("|");
+      return [normalizeExchange(exchange), apiID, String(row.instId || "").toUpperCase(), orderID].join("|");
     }
 
     function pendingOrderActionCell(row) {
+      const exchange = state.pendingOrders && state.pendingOrders.exchange ? normalizeExchange(state.pendingOrders.exchange) : ($("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx");
+      if (exchange === "binance") {
+        return '<td><span class="muted">不支持</span></td>';
+      }
       const key = pendingOrderRowKey(row);
       const busy = !!state.pendingOrderActions[key];
       const chasing = !!row.chasing;
@@ -1788,6 +1995,10 @@ const tvbotHTML = `<!doctype html>
     }
 
     function positionActionCell(row) {
+      const exchange = state.positions && state.positions.exchange ? normalizeExchange(state.positions.exchange) : ($("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx");
+      if (exchange === "binance") {
+        return '<td><span class="muted">不支持</span></td>';
+      }
       const key = positionCloseRowKey(row);
       const closing = !!state.positionClosing[key];
       const instID = escapeHTML(asText(row.instId));
@@ -1807,11 +2018,13 @@ const tvbotHTML = `<!doctype html>
       $("positions-notional").textContent = state.positions ? formatUSD(positionSum(rows, "notionalUsd")) : "-";
       $("positions-updated").textContent = state.positions && state.positions.refreshed_at ? shanghaiTime(state.positions.refreshed_at) : "-";
       if (!state.positions) {
-        $("position-rows").innerHTML = '<tr><td colspan="13" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
+        $("position-rows").innerHTML = '<tr><td colspan="14" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
         return;
       }
+      const exchange = normalizeExchange(state.positions.exchange || ($("position-exchange") ? $("position-exchange").value : "okx"));
       $("position-rows").innerHTML = rows.map((row) => {
         return "<tr>" +
+          "<td>" + escapeHTML(exchangeLabel(exchange)) + "</td>" +
           "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
           "<td>" + escapeHTML(positionSideText(row.posSide, row.pos)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.pos)) + "</td>" +
@@ -1826,19 +2039,21 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(formatNumber(row.liqPx)) + "</td>" +
           positionActionCell(row) +
           "</tr>";
-      }).join("") || '<tr><td colspan="13" class="muted">暂无当前持仓</td></tr>';
+      }).join("") || '<tr><td colspan="14" class="muted">暂无当前持仓</td></tr>';
     }
 
     function renderPendingOrders() {
       const rows = state.pendingOrders && Array.isArray(state.pendingOrders.orders) ? state.pendingOrders.orders : [];
       if (!state.pendingOrders) {
         $("pending-orders-updated").textContent = state.pendingOrdersError || "-";
-        $("pending-order-rows").innerHTML = '<tr><td colspan="11" class="muted">' + escapeHTML(state.pendingOrdersError || "-") + '</td></tr>';
+        $("pending-order-rows").innerHTML = '<tr><td colspan="12" class="muted">' + escapeHTML(state.pendingOrdersError || "-") + '</td></tr>';
         return;
       }
+      const exchange = normalizeExchange(state.pendingOrders.exchange || ($("position-exchange") ? $("position-exchange").value : "okx"));
       $("pending-orders-updated").textContent = "挂单数 " + asText(state.pendingOrders.count || rows.length) + " / 更新时间 " + (state.pendingOrders.refreshed_at ? shanghaiTime(state.pendingOrders.refreshed_at) : "-");
       $("pending-order-rows").innerHTML = rows.map((row) => {
         return "<tr>" +
+          "<td>" + escapeHTML(exchangeLabel(exchange)) + "</td>" +
           '<td class="time">' + escapeHTML(shanghaiTimeFromOKX(row.cTime || row.uTime)) + "</td>" +
           "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
           "<td>" + escapeHTML(tradeSideText(row.side)) + "</td>" +
@@ -1851,7 +2066,7 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(pendingOrderStateText(row.state)) + "</td>" +
           pendingOrderActionCell(row) +
           "</tr>";
-      }).join("") || '<tr><td colspan="11" class="muted">暂无当前挂单</td></tr>';
+      }).join("") || '<tr><td colspan="12" class="muted">暂无当前挂单</td></tr>';
     }
 
     function renderAnalysis() {
@@ -1914,12 +2129,15 @@ const tvbotHTML = `<!doctype html>
       $("analysis-balance-rows").innerHTML = rows.join("") || '<tr><td colspan="6" class="muted">暂无 OKX 资产余额</td></tr>';
     }
 
-    function drawUSDTChart(points) {
-      const svg = $("usdt-chart");
+    function drawUSDTChart(points, svgID, emptyText, strokeColor) {
+      const svg = $(svgID || "usdt-chart");
+      if (!svg) return;
+      const lineColor = strokeColor || "#1f6feb";
       const rect = svg.getBoundingClientRect();
       const parentWidth = svg.parentElement ? svg.parentElement.clientWidth : 0;
-      const width = Math.max(900, Math.floor(rect.width || parentWidth || (window.innerWidth - 72) || 900));
-      const height = Math.max(320, Math.floor(rect.height || svg.clientHeight || 420));
+      const isMini = svg.classList.contains("mini-usdt-chart");
+      const width = Math.max(isMini ? 520 : 900, Math.floor(rect.width || parentWidth || (window.innerWidth - 72) || 900));
+      const height = Math.max(isMini ? 240 : 320, Math.floor(rect.height || svg.clientHeight || (isMini ? 250 : 420)));
       const pad = { left: 64, right: 24, top: 18, bottom: 58 };
       const plotWidth = width - pad.left - pad.right;
       const plotHeight = height - pad.top - pad.bottom;
@@ -1927,14 +2145,14 @@ const tvbotHTML = `<!doctype html>
       svg.setAttribute("viewBox", "0 0 " + width + " " + height);
       svg.innerHTML = "";
       if (!points.length) {
-        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">暂无 USDT估值数据</text>';
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT估值数据") + '</text>';
         return;
       }
       const chartPoints = points.map((point, index) => {
         return { point: point, index: index, value: Number(point.value), date: chartPointDate(point) };
       }).filter((point) => Number.isFinite(point.value));
       if (!chartPoints.length) {
-        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">暂无 USDT估值数据</text>';
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT估值数据") + '</text>';
         return;
       }
       const values = chartPoints.map((point) => point.value);
@@ -1975,16 +2193,20 @@ const tvbotHTML = `<!doctype html>
         grid +
         '<line class="chart-axis" x1="' + pad.left + '" y1="' + pad.top + '" x2="' + pad.left + '" y2="' + plotBottom + '"/>' +
         '<line class="chart-axis" x1="' + pad.left + '" y1="' + plotBottom + '" x2="' + (width - pad.right) + '" y2="' + plotBottom + '"/>' +
-        '<path d="' + path + '" fill="none" stroke="#1f6feb" stroke-width="2.4"/>' +
-        '<circle cx="' + x(last).toFixed(2) + '" cy="' + y(last.value).toFixed(2) + '" r="4" fill="#1f6feb"/>';
+        '<path d="' + path + '" fill="none" stroke="' + lineColor + '" stroke-width="2.4"/>' +
+        '<circle cx="' + x(last).toFixed(2) + '" cy="' + y(last.value).toFixed(2) + '" r="4" fill="' + lineColor + '"/>';
     }
 
     function renderOrders() {
       const rows = (state.orders || []).map((order) => {
-        const okxResult = order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : "";
+        const targetExchange = normalizeExchange(order.target_exchange || (order.result && order.result.target_exchange));
+        const okxResult = targetExchange === "okx" && order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : "";
+        const binanceResult = targetExchange === "binance" && order.result && (order.result.ord_id || order.result.binance_code || order.result.binance_msg) ? [order.result.ord_id, order.result.binance_code, order.result.binance_msg].filter(Boolean).join(" / ") : "";
         const errorText = [order.error_code, order.error].filter(Boolean).join(": ");
-        const okx = okxResult || errorText || "-";
+        const exchangeResult = okxResult || binanceResult || errorText || "-";
         const apiID = order.api_id || (order.result && order.result.api_id);
+        const sourceExchange = order.source_exchange || "-";
+        const targetText = exchangeLabel(targetExchange) + " / " + apiDisplayName(apiID, targetExchange);
         const tone = order.status === "submitted" ? "ok" : (order.status === "failed" || order.status === "rejected" ? "bad" : "warn");
         const canRetry = order.status === "failed" && order.signal_id;
         const retrying = canRetry && state.retrying[order.signal_id];
@@ -1992,15 +2214,16 @@ const tvbotHTML = `<!doctype html>
         return "<tr>" +
           '<td class="time">' + escapeHTML(shanghaiTime(order.accepted_at)) + "</td>" +
           "<td>" + pill(order.status, tone) + "</td>" +
-          "<td>" + escapeHTML(apiDisplayName(apiID)) + "</td>" +
+          "<td>" + escapeHTML(sourceExchange) + "</td>" +
+          "<td>" + escapeHTML(targetText) + "</td>" +
           "<td>" + escapeHTML(asText(order.action)) + "</td>" +
           "<td>" + escapeHTML(asText(order.coinpair)) + "</td>" +
           "<td>" + escapeHTML(asText(order.price)) + "</td>" +
           "<td>" + escapeHTML(asText(order.amount)) + "</td>" +
-          '<td class="order-okx"><div class="okx-cell"><span class="okx-text">' + escapeHTML(okx) + "</span>" + retryButton + "</div></td>" +
+          '<td class="order-okx"><div class="okx-cell"><span class="okx-text">' + escapeHTML(exchangeResult) + "</span>" + retryButton + "</div></td>" +
           "</tr>";
       });
-      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="8" class="muted">-</td></tr>';
+      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">-</td></tr>';
     }
 
     function renderUpgrade() {
@@ -2016,6 +2239,8 @@ const tvbotHTML = `<!doctype html>
           env: $("cfg-env").value,
           allow_live_trading: $("cfg-live").checked,
           base_url: $("cfg-base-url").value.trim(),
+          binance_base_url: $("cfg-binance-base-url").value.trim(),
+          binance_demo_base_url: $("cfg-binance-demo-base-url").value.trim(),
           default_margin_mode: $("cfg-margin").value,
           position_mode: $("cfg-position").value,
           signal_ttl_seconds: Number($("cfg-ttl").value)
@@ -2063,18 +2288,23 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function saveAPIKeys() {
+      const exchange = normalizeExchange(state.apiKeyExchange);
       const body = {
+        exchange: exchange,
         id: $("key-id").value.trim(),
         name: $("key-name").value.trim(),
         api_key: $("key-api").value.trim(),
         secret_key: $("key-secret").value.trim(),
-        passphrase: $("key-passphrase").value.trim(),
+        passphrase: exchange === "okx" ? $("key-passphrase").value.trim() : "",
         active: $("key-active").checked
       };
-      state.apiKeys = await api("/tvbot/api-keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      state.apiKeysByExchange[exchange] = await api("/tvbot/api-keys?exchange=" + encodeURIComponent(exchange), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      state.apiKeys = apiKeyStatus(exchange);
       state.selectedAPIID = body.id || state.apiKeys.active_id || "default";
+      state.selectedAPIIDs[exchange] = state.selectedAPIID;
       state.apiKeyTest = null;
       state.apiKeyTestID = "";
+      state.apiKeyTestExchange = exchange;
       $("key-api").value = "";
       $("key-secret").value = "";
       $("key-passphrase").value = "";
@@ -2088,28 +2318,35 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function testAPIKeys() {
+      const exchange = normalizeExchange(state.apiKeyExchange);
       const body = {
+        exchange: exchange,
         id: $("key-id").value.trim(),
         api_key: $("key-api").value.trim(),
         secret_key: $("key-secret").value.trim(),
-        passphrase: $("key-passphrase").value.trim()
+        passphrase: exchange === "okx" ? $("key-passphrase").value.trim() : ""
       };
       $("okx-output").textContent = "checking...";
       const result = await api("/tvbot/api-keys/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       state.apiKeyTest = result;
       state.apiKeyTestID = result.api_id || body.id || $("key-selected").value || "";
+      state.apiKeyTestExchange = exchange;
       $("okx-output").textContent = JSON.stringify(result, null, 2);
       renderAPIKeyStatus(body.id || state.selectedAPIID || result.api_id || "");
-      toast("API 可用");
+      toast(exchangeLabel(exchange) + " API 可用");
     }
 
     async function deleteAPIKey() {
+      const exchange = normalizeExchange(state.apiKeyExchange);
       const id = $("key-id").value.trim() || $("key-selected").value;
       if (!id) return;
-      state.apiKeys = await api("/tvbot/api-keys?id=" + encodeURIComponent(id), { method: "DELETE" });
+      state.apiKeysByExchange[exchange] = await api("/tvbot/api-keys?exchange=" + encodeURIComponent(exchange) + "&id=" + encodeURIComponent(id), { method: "DELETE" });
+      state.apiKeys = apiKeyStatus(exchange);
       state.selectedAPIID = state.apiKeys.active_id || "";
+      state.selectedAPIIDs[exchange] = state.selectedAPIID;
       state.apiKeyTest = null;
       state.apiKeyTestID = "";
+      state.apiKeyTestExchange = exchange;
       renderAPIKeys();
       renderTemplateAPIs();
       renderAnalysisAPIs();
@@ -2121,6 +2358,7 @@ const tvbotHTML = `<!doctype html>
 
     async function makeTemplate() {
       const req = {
+        target_exchange: normalizeExchange($("tpl-target-exchange").value),
         api_id: $("tpl-api-id").value,
         price_source: $("tpl-price-source").value
       };
@@ -2145,6 +2383,11 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function closePosition(button) {
+      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
+      if (exchange !== "okx") {
+        toast("Binance 暂不支持页面平仓");
+        return;
+      }
       const mode = button.dataset.positionClose;
       const instID = button.dataset.instId || "";
       const posSide = button.dataset.posSide || "";
@@ -2173,6 +2416,11 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function chasePendingOrder(button) {
+      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
+      if (exchange !== "okx") {
+        toast("Binance 暂不支持追单");
+        return;
+      }
       const mode = button.dataset.pendingChase;
       const priceError = button.dataset.priceError || "";
       if (mode === "start" && priceError) {
@@ -2203,7 +2451,9 @@ const tvbotHTML = `<!doctype html>
     async function checkOKX() {
       $("okx-output").textContent = "checking...";
       try {
-        const body = state.apiKeys && state.apiKeys.active_id ? { api_id: state.apiKeys.active_id } : {};
+        const exchange = normalizeExchange(state.apiKeyExchange);
+        const status = apiKeyStatus(exchange);
+        const body = status && status.active_id ? { exchange: exchange, api_id: status.active_id } : { exchange: exchange };
         const result = await api("/tvbot/check-okx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
         $("okx-output").textContent = JSON.stringify(result, null, 2);
       } catch (err) {
@@ -2288,14 +2538,31 @@ const tvbotHTML = `<!doctype html>
       toast(err.message);
     }));
     $("delete-api-key").addEventListener("click", () => deleteAPIKey().catch((err) => toast(err.message)));
+    document.querySelectorAll("[data-api-key-exchange]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.apiKeyExchange = normalizeExchange(button.dataset.apiKeyExchange);
+        state.apiKeys = apiKeyStatus(state.apiKeyExchange);
+        state.apiKeyTest = null;
+        state.apiKeyTestID = "";
+        state.apiKeyTestExchange = state.apiKeyExchange;
+        renderAPIKeys();
+        renderTemplateAPIs();
+        renderPositionAPIs();
+        updateMetrics();
+      });
+    });
     $("add-api-key").addEventListener("click", () => {
+      const exchange = normalizeExchange(state.apiKeyExchange);
       state.selectedAPIID = "";
+      state.selectedAPIIDs[exchange] = "";
       state.apiKeyTest = null;
       state.apiKeyTestID = "";
+      state.apiKeyTestExchange = exchange;
       $("key-selected").value = "";
       $("key-id").value = "";
       $("key-name").value = "";
-      $("key-active").checked = !state.apiKeys || !state.apiKeys.configured;
+      const status = apiKeyStatus(exchange);
+      $("key-active").checked = !status || !status.configured;
       $("key-api").value = "";
       $("key-secret").value = "";
       $("key-passphrase").value = "";
@@ -2304,13 +2571,21 @@ const tvbotHTML = `<!doctype html>
     });
     $("key-selected").addEventListener("change", () => {
       state.selectedAPIID = $("key-selected").value;
+      state.selectedAPIIDs[normalizeExchange(state.apiKeyExchange)] = state.selectedAPIID;
       fillAPIForm(state.selectedAPIID);
       renderAPIKeyStatus(state.selectedAPIID);
     });
     $("analysis-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
     $("refresh-analysis").addEventListener("click", () => loadAnalysis(true).then(() => toast("分析已刷新")).catch((err) => toast(err.message)));
+    $("position-exchange").addEventListener("change", () => {
+      renderPositionAPIs();
+      state.positions = null;
+      state.pendingOrders = null;
+      loadPositionView().catch((err) => toast(err.message));
+    });
     $("position-api-id").addEventListener("change", () => loadPositionView().catch((err) => toast(err.message)));
     $("refresh-positions").addEventListener("click", () => loadPositionView().then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
+    $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
     $("copy-template").addEventListener("click", async () => {
       await navigator.clipboard.writeText($("template-output").value);

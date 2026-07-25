@@ -22,3 +22,16 @@ func TestNormalizeDefaultTab(t *testing.T) {
 		t.Fatalf("unknown default tab should fall back to %q, got %q", DefaultHomeTab, cfg.UI.DefaultTab)
 	}
 }
+
+func TestNormalizeBinanceBaseURLs(t *testing.T) {
+	cfg := Default()
+	cfg.Trading.BinanceBaseURL = "https://fapi.binance.com/"
+	cfg.Trading.BinanceDemoBaseURL = ""
+	cfg.Normalize()
+	if cfg.Trading.BinanceBaseURL != "https://fapi.binance.com" {
+		t.Fatalf("Binance base URL should be trimmed, got %q", cfg.Trading.BinanceBaseURL)
+	}
+	if cfg.Trading.BinanceDemoBaseURL != "https://demo-fapi.binance.com" {
+		t.Fatalf("Binance demo base URL should default, got %q", cfg.Trading.BinanceDemoBaseURL)
+	}
+}

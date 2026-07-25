@@ -39,6 +39,8 @@ type TradingConfig struct {
 	Env                       string  `json:"env"`
 	AllowLiveTrading          bool    `json:"allow_live_trading"`
 	BaseURL                   string  `json:"base_url"`
+	BinanceBaseURL            string  `json:"binance_base_url"`
+	BinanceDemoBaseURL        string  `json:"binance_demo_base_url"`
 	DefaultMarginMode         string  `json:"default_margin_mode"`
 	PositionMode              string  `json:"position_mode"`
 	SignalTTLSeconds          int     `json:"signal_ttl_seconds"`
@@ -114,6 +116,8 @@ func Default() Config {
 			Env:                       EnvDemo,
 			AllowLiveTrading:          false,
 			BaseURL:                   "https://www.okx.com",
+			BinanceBaseURL:            "https://fapi.binance.com",
+			BinanceDemoBaseURL:        "https://demo-fapi.binance.com",
 			DefaultMarginMode:         MarginIsolated,
 			PositionMode:              PositionNet,
 			SignalTTLSeconds:          120,
@@ -204,6 +208,14 @@ func (c *Config) Normalize() {
 	c.Trading.BaseURL = strings.TrimRight(strings.TrimSpace(c.Trading.BaseURL), "/")
 	if c.Trading.BaseURL == "" {
 		c.Trading.BaseURL = "https://www.okx.com"
+	}
+	c.Trading.BinanceBaseURL = strings.TrimRight(strings.TrimSpace(c.Trading.BinanceBaseURL), "/")
+	if c.Trading.BinanceBaseURL == "" {
+		c.Trading.BinanceBaseURL = "https://fapi.binance.com"
+	}
+	c.Trading.BinanceDemoBaseURL = strings.TrimRight(strings.TrimSpace(c.Trading.BinanceDemoBaseURL), "/")
+	if c.Trading.BinanceDemoBaseURL == "" {
+		c.Trading.BinanceDemoBaseURL = "https://demo-fapi.binance.com"
 	}
 	c.Trading.DefaultMarginMode = strings.ToLower(strings.TrimSpace(c.Trading.DefaultMarginMode))
 	if c.Trading.DefaultMarginMode == "" {
@@ -429,6 +441,13 @@ func (c Config) OKXBaseURL() string {
 	return c.Trading.BaseURL
 }
 
+func (c Config) BinanceBaseURL() string {
+	if c.Trading.Env == EnvLive {
+		return c.Trading.BinanceBaseURL
+	}
+	return c.Trading.BinanceDemoBaseURL
+}
+
 func (c Config) MarginMode() string {
 	return c.Trading.DefaultMarginMode
 }
@@ -464,6 +483,15 @@ func (c Config) LiveTradingAllowedByEnvironment() bool {
 		return true
 	}
 	return strings.EqualFold(os.Getenv("OKX_ENV"), EnvLive) &&
+		strings.EqualFold(os.Getenv("ALLOW_LIVE_TRADING"), "true") &&
+		c.Trading.AllowLiveTrading
+}
+
+func (c Config) BinanceLiveTradingAllowedByEnvironment() bool {
+	if c.Trading.Env != EnvLive {
+		return true
+	}
+	return strings.EqualFold(os.Getenv("BINANCE_ENV"), EnvLive) &&
 		strings.EqualFold(os.Getenv("ALLOW_LIVE_TRADING"), "true") &&
 		c.Trading.AllowLiveTrading
 }
