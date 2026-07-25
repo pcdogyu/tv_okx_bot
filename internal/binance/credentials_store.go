@@ -304,9 +304,9 @@ func (s *CredentialStore) statusLocked() CredentialStatus {
 }
 
 func (s *CredentialStore) resolveIDLocked(apiID string) string {
-	id := normalizeCredentialID(apiID)
+	id := strings.TrimSpace(apiID)
 	if id != "" {
-		return id
+		return normalizeCredentialID(id)
 	}
 	if s.activeID != "" {
 		return s.activeID

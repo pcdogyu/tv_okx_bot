@@ -1582,6 +1582,8 @@ const tvbotHTML = `<!doctype html>
 
     async function loadPositionExchange(exchange) {
       const qs = new URLSearchParams({ inst_type: "SWAP", exchange });
+      const apiID = activeAPIID(exchange);
+      if (apiID) qs.set("api_id", apiID);
       try {
         const result = await api("/tvbot/positions?" + qs.toString());
         result.exchange = normalizeExchange(result.exchange || exchange);
@@ -1593,6 +1595,8 @@ const tvbotHTML = `<!doctype html>
 
     async function loadPendingOrdersExchange(exchange) {
       const qs = new URLSearchParams({ inst_type: "SWAP", exchange });
+      const apiID = activeAPIID(exchange);
+      if (apiID) qs.set("api_id", apiID);
       try {
         const result = await api("/tvbot/pending-orders?" + qs.toString());
         result.exchange = normalizeExchange(result.exchange || exchange);
@@ -1938,6 +1942,11 @@ const tvbotHTML = `<!doctype html>
     function apiMetricText(exchange) {
       const status = apiKeyStatus(exchange);
       return status && status.configured ? (status.active_id || "已配置") : "未配置";
+    }
+
+    function activeAPIID(exchange) {
+      const status = apiKeyStatus(exchange);
+      return status && status.configured && status.active_id ? status.active_id : "";
     }
 
     function apiAccounts(exchange) {

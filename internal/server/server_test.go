@@ -1172,7 +1172,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	positionsReq := httptest.NewRequest(http.MethodGet, "/tvbot/positions?exchange=binance&api_id=main", nil)
+	positionsReq := httptest.NewRequest(http.MethodGet, "/tvbot/positions?exchange=binance", nil)
 	positionsReq.SetBasicAuth("admin", "Admin123")
 	positionsRR := httptest.NewRecorder()
 	srv.ServeHTTP(positionsRR, positionsReq)
@@ -1187,7 +1187,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 		t.Fatalf("bad Binance positions response: %#v", positions)
 	}
 
-	pendingReq := httptest.NewRequest(http.MethodGet, "/tvbot/pending-orders?exchange=binance&api_id=main", nil)
+	pendingReq := httptest.NewRequest(http.MethodGet, "/tvbot/pending-orders?exchange=binance", nil)
 	pendingReq.SetBasicAuth("admin", "Admin123")
 	pendingRR := httptest.NewRecorder()
 	srv.ServeHTTP(pendingRR, pendingReq)
@@ -1198,7 +1198,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if err := json.Unmarshal(pendingRR.Body.Bytes(), &pending); err != nil {
 		t.Fatal(err)
 	}
-	if pending.Exchange != trading.ExchangeBinance || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].PriceError == "" {
+	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].PriceError == "" {
 		t.Fatalf("bad Binance pending response: %#v", pending)
 	}
 
