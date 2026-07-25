@@ -270,27 +270,49 @@ func okxSide(action trading.Side) string {
 }
 
 func attachAlgoOrders(signal trading.Signal, clOrdID string) []map[string]string {
-	signal.Risk.Normalize()
-	switch signal.Risk.Type {
+	return AttachAlgoOrders(signal.Action, signal.Risk, clOrdID)
+}
+
+func AttachAlgoOrders(action trading.Side, risk trading.Risk, clOrdID string) []map[string]string {
+	risk.Normalize()
+	switch risk.Type {
 	case trading.RiskTPSL:
+		if risk.TPPct == nil || risk.SLPct == nil {
+			return nil
+		}
 		return []map[string]string{{
-			"attachAlgoClOrdId": clOrdID + "A",
-			"tpTriggerRatio":    signedTPRatio(signal.Action, signal.Risk.TPPct.Value),
+			"attachAlgoClOrdId": attachAlgoClOrdID(clOrdID, "A"),
+			"tpTriggerRatio":    signedTPRatio(action, risk.TPPct.Value),
 			"tpOrdPx":           "-1",
 			"tpTriggerPxType":   "mark",
-			"slTriggerRatio":    pctRatio(signal.Risk.SLPct.Value),
+			"slTriggerRatio":    pctRatio(risk.SLPct.Value),
 			"slOrdPx":           "-1",
 			"slTriggerPxType":   "mark",
 		}}
 	case trading.RiskTrailing:
+		if risk.TrailingPct == nil {
+			return nil
+		}
 		return []map[string]string{{
-			"attachAlgoClOrdId": clOrdID + "T",
+			"attachAlgoClOrdId": attachAlgoClOrdID(clOrdID, "T"),
 			"ordType":           "move_order_stop",
-			"callbackRatio":     pctRatio(signal.Risk.TrailingPct.Value),
+			"callbackRatio":     pctRatio(risk.TrailingPct.Value),
 		}}
 	default:
 		return nil
 	}
+}
+
+func attachAlgoClOrdID(clOrdID, suffix string) string {
+	clOrdID = strings.TrimSpace(clOrdID)
+	limit := 32 - len(suffix)
+	if limit < 0 {
+		limit = 0
+	}
+	if len(clOrdID) > limit {
+		clOrdID = clOrdID[:limit]
+	}
+	return clOrdID + suffix
 }
 
 func signedTPRatio(action trading.Side, pct float64) string {

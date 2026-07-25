@@ -17,6 +17,7 @@ import (
 
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/okx"
+	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
 var (
@@ -293,7 +294,7 @@ func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	result, closed, err := chasePendingOrderOnce(ctx, client, req)
+	req, result, closed, err := preparePendingOrderChase(ctx, cfg, client, req)
 	cancel()
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "pending_order_chase_failed", err.Error())
@@ -311,6 +312,7 @@ func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Re
 		})
 		return
 	}
+	key = pendingOrderChaseKey(req)
 	chaseCtx, chaseCancel := context.WithCancel(context.Background())
 	if !pendingOrderChaseJobs.start(key, chaseCancel) {
 		chaseCancel()
@@ -604,7 +606,7 @@ func (s *Server) watchPendingOrderChase(ctx context.Context, cfg config.Config, 
 			return
 		case <-ticker.C:
 			stepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			_, closed, err := chasePendingOrderOnce(stepCtx, client, req)
+			_, closed, err := chasePendingOrderOnce(stepCtx, cfg, client, req, false)
 			cancel()
 			if err != nil {
 				if s.Logger != nil {
@@ -627,7 +629,73 @@ func (s *Server) watchPendingOrderChase(ctx context.Context, cfg config.Config, 
 	}
 }
 
-func chasePendingOrderOnce(ctx context.Context, client okx.Client, req pendingOrderChaseRequest) (pendingOrderChaseResponse, bool, error) {
+func preparePendingOrderChase(ctx context.Context, cfg config.Config, client okx.Client, req pendingOrderChaseRequest) (pendingOrderChaseRequest, pendingOrderChaseResponse, bool, error) {
+	order, found, err := currentPendingOrder(ctx, client, req)
+	if err != nil {
+		return req, pendingOrderChaseResponse{}, false, err
+	}
+	resp := pendingOrderChaseResponse{
+		OK:      true,
+		APIID:   req.APIID,
+		InstID:  req.InstID,
+		OrdID:   req.OrdID,
+		ClOrdID: req.ClOrdID,
+	}
+	if !found {
+		resp.Status = "finished"
+		resp.Message = "pending order is no longer open"
+		return req, resp, true, nil
+	}
+	resp.OrdID = order.OrdID
+	resp.ClOrdID = order.ClOrdID
+	midPx, chasePx, err := pendingOrderMidAndChasePrice(ctx, client, order, nil, nil)
+	if err != nil {
+		return req, resp, false, err
+	}
+	resp.MidPx = midPx
+	resp.Px = chasePx
+	if shouldRebuildPendingOrderWithProtection(cfg, order) {
+		remaining, err := pendingOrderRemainingSize(order)
+		if err != nil {
+			if errors.Is(err, errPendingOrderNoRemaining) {
+				resp.Status = "finished"
+				resp.Message = "pending order has no remaining size"
+				return req, resp, true, nil
+			}
+			return req, resp, false, err
+		}
+		if err := cancelPendingOrder(ctx, client, order); err != nil {
+			if _, stillOpen, checkErr := currentPendingOrder(ctx, client, req); checkErr == nil && !stillOpen {
+				resp.Status = "finished"
+				resp.Message = "pending order is no longer open"
+				return req, resp, true, nil
+			}
+			return req, resp, false, err
+		}
+		limitReq, err := pendingOrderLimitRequest(cfg, order, remaining, chasePx)
+		if err != nil {
+			return req, resp, false, err
+		}
+		ack, _, err := client.PlaceOrder(ctx, limitReq)
+		if err != nil {
+			return req, resp, false, err
+		}
+		req.OrdID = strings.TrimSpace(ack.OrdID)
+		req.ClOrdID = strings.TrimSpace(ack.ClOrdID)
+		if req.ClOrdID == "" {
+			req.ClOrdID = limitReq.ClOrdID
+		}
+		resp.Status = "rebuilt"
+		resp.Message = "pending order rebuilt with risk controls"
+		resp.OrdID = req.OrdID
+		resp.ClOrdID = req.ClOrdID
+		return req, resp, false, nil
+	}
+	result, closed, err := chasePendingOrderFromOrder(ctx, cfg, client, req, order, true)
+	return req, result, closed, err
+}
+
+func chasePendingOrderOnce(ctx context.Context, cfg config.Config, client okx.Client, req pendingOrderChaseRequest, forceAttach bool) (pendingOrderChaseResponse, bool, error) {
 	order, found, err := currentPendingOrder(ctx, client, req)
 	if err != nil {
 		return pendingOrderChaseResponse{}, false, err
@@ -644,6 +712,17 @@ func chasePendingOrderOnce(ctx context.Context, client okx.Client, req pendingOr
 		resp.Message = "pending order is no longer open"
 		return resp, true, nil
 	}
+	return chasePendingOrderFromOrder(ctx, cfg, client, req, order, forceAttach)
+}
+
+func chasePendingOrderFromOrder(ctx context.Context, cfg config.Config, client okx.Client, req pendingOrderChaseRequest, order okx.PendingOrder, forceAttach bool) (pendingOrderChaseResponse, bool, error) {
+	resp := pendingOrderChaseResponse{
+		OK:      true,
+		APIID:   req.APIID,
+		InstID:  req.InstID,
+		OrdID:   req.OrdID,
+		ClOrdID: req.ClOrdID,
+	}
 	resp.OrdID = order.OrdID
 	resp.ClOrdID = order.ClOrdID
 	midPx, chasePx, err := pendingOrderMidAndChasePrice(ctx, client, order, nil, nil)
@@ -652,14 +731,16 @@ func chasePendingOrderOnce(ctx context.Context, client okx.Client, req pendingOr
 	}
 	resp.MidPx = midPx
 	resp.Px = chasePx
-	if strings.TrimSpace(order.Px) == chasePx {
+	attachAlgoOrds := pendingOrderAmendAttachAlgoOrders(cfg, order, req)
+	if strings.TrimSpace(order.Px) == chasePx && !(forceAttach && len(attachAlgoOrds) > 0) {
 		resp.Status = "unchanged"
 		resp.Message = "pending order price is already at chase price"
 		return resp, false, nil
 	}
 	amendReq := okx.AmendOrderRequest{
-		InstID: order.InstID,
-		NewPx:  chasePx,
+		InstID:         order.InstID,
+		NewPx:          chasePx,
+		AttachAlgoOrds: attachAlgoOrds,
 	}
 	if strings.TrimSpace(order.OrdID) != "" {
 		amendReq.OrdID = order.OrdID
@@ -763,7 +844,25 @@ func cancelPendingOrder(ctx context.Context, client okx.Client, order okx.Pendin
 	return err
 }
 
+func pendingOrderLimitRequest(cfg config.Config, order okx.PendingOrder, remaining, px string) (okx.PlaceOrderRequest, error) {
+	req, err := pendingOrderOrderRequest(cfg, order, remaining, "limit", px, nextPendingOrderLimitClOrdID())
+	if err != nil {
+		return okx.PlaceOrderRequest{}, err
+	}
+	req.AttachAlgoOrds = pendingOrderAttachAlgoOrders(cfg, order, req.ClOrdID)
+	return req, nil
+}
+
 func pendingOrderMarketRequest(cfg config.Config, order okx.PendingOrder, remaining string) (okx.PlaceOrderRequest, error) {
+	req, err := pendingOrderOrderRequest(cfg, order, remaining, "market", "", nextPendingOrderMarketClOrdID())
+	if err != nil {
+		return okx.PlaceOrderRequest{}, err
+	}
+	req.AttachAlgoOrds = pendingOrderAttachAlgoOrders(cfg, order, req.ClOrdID)
+	return req, nil
+}
+
+func pendingOrderOrderRequest(cfg config.Config, order okx.PendingOrder, remaining, ordType, px, clOrdID string) (okx.PlaceOrderRequest, error) {
 	instID := strings.ToUpper(strings.TrimSpace(order.InstID))
 	if instID == "" {
 		return okx.PlaceOrderRequest{}, errors.New("inst_id is required")
@@ -779,9 +878,10 @@ func pendingOrderMarketRequest(cfg config.Config, order okx.PendingOrder, remain
 	req := okx.PlaceOrderRequest{
 		InstID:  instID,
 		TDMode:  tdMode,
-		ClOrdID: nextPendingOrderMarketClOrdID(),
+		ClOrdID: clOrdID,
 		Side:    side,
-		OrdType: "market",
+		OrdType: ordType,
+		Px:      px,
 		Sz:      remaining,
 	}
 	posSide := normalizePosSide(order.PosSide)
@@ -792,6 +892,52 @@ func pendingOrderMarketRequest(cfg config.Config, order okx.PendingOrder, remain
 		req.ReduceOnly = true
 	}
 	return req, nil
+}
+
+func shouldRebuildPendingOrderWithProtection(cfg config.Config, order okx.PendingOrder) bool {
+	return len(order.AttachAlgoOrds) == 0 && len(pendingOrderAttachAlgoOrders(cfg, order, "PENDINGRISK")) > 0
+}
+
+func pendingOrderAmendAttachAlgoOrders(cfg config.Config, order okx.PendingOrder, req pendingOrderChaseRequest) []map[string]string {
+	if len(order.AttachAlgoOrds) == 0 {
+		return nil
+	}
+	clOrdID := strings.TrimSpace(order.ClOrdID)
+	if clOrdID == "" {
+		clOrdID = strings.TrimSpace(req.ClOrdID)
+	}
+	if clOrdID == "" {
+		clOrdID = nextPendingOrderLimitClOrdID()
+	}
+	return pendingOrderAttachAlgoOrders(cfg, order, clOrdID)
+}
+
+func pendingOrderAttachAlgoOrders(cfg config.Config, order okx.PendingOrder, clOrdID string) []map[string]string {
+	if okxRawBool(order.ReduceOnly) {
+		return nil
+	}
+	settings := cfg.OrderSettings()
+	risk := settings.Risk
+	risk.Normalize()
+	if risk.Type == trading.RiskNone {
+		return nil
+	}
+	action, ok := pendingOrderTradingAction(order.Side)
+	if !ok {
+		return nil
+	}
+	return okx.AttachAlgoOrders(action, risk, clOrdID)
+}
+
+func pendingOrderTradingAction(side string) (trading.Side, bool) {
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "buy":
+		return trading.ActionLong, true
+	case "sell":
+		return trading.ActionShort, true
+	default:
+		return "", false
+	}
 }
 
 func pendingOrderRemainingSize(order okx.PendingOrder) (string, error) {
@@ -1274,6 +1420,11 @@ func positionCloseKey(apiID, instID, posSide string) string {
 func nextPositionCloseClOrdID() string {
 	seq := atomic.AddUint64(&positionCloseSeq, 1) % 1000000
 	return fmt.Sprintf("PC%d%06d", time.Now().UTC().UnixMilli(), seq)
+}
+
+func nextPendingOrderLimitClOrdID() string {
+	seq := atomic.AddUint64(&pendingOrderMarketSeq, 1) % 1000000
+	return fmt.Sprintf("PCL%d%06d", time.Now().UTC().UnixMilli(), seq)
 }
 
 func nextPendingOrderMarketClOrdID() string {

@@ -18,6 +18,27 @@ func (f credentialProviderFunc) OKXCredentials(apiID string) (Credentials, strin
 	return f(apiID)
 }
 
+func TestAttachAlgoOrdersBuildsTPSLAndTrailing(t *testing.T) {
+	tp := trading.NewFlexibleFloat(2)
+	sl := trading.NewFlexibleFloat(1)
+	tpsl := AttachAlgoOrders(trading.ActionShort, trading.Risk{Type: trading.RiskTPSL, TPPct: &tp, SLPct: &sl}, "CLIENT100")
+	if len(tpsl) != 1 {
+		t.Fatalf("tp/sl attach length = %d", len(tpsl))
+	}
+	if tpsl[0]["attachAlgoClOrdId"] != "CLIENT100A" || tpsl[0]["tpTriggerRatio"] != "-0.02" || tpsl[0]["slTriggerRatio"] != "0.01" || tpsl[0]["tpOrdPx"] != "-1" || tpsl[0]["slOrdPx"] != "-1" {
+		t.Fatalf("bad tp/sl attach: %#v", tpsl[0])
+	}
+
+	trailingPct := trading.NewFlexibleFloat(1.5)
+	trailing := AttachAlgoOrders(trading.ActionLong, trading.Risk{Type: trading.RiskTrailing, TrailingPct: &trailingPct}, "CLIENT200")
+	if len(trailing) != 1 {
+		t.Fatalf("trailing attach length = %d", len(trailing))
+	}
+	if trailing[0]["attachAlgoClOrdId"] != "CLIENT200T" || trailing[0]["ordType"] != "move_order_stop" || trailing[0]["callbackRatio"] != "0.015" {
+		t.Fatalf("bad trailing attach: %#v", trailing[0])
+	}
+}
+
 func TestTraderExecuteSignalPlacesDefaultMarketOrderWithTPSL(t *testing.T) {
 	var leverageSeen bool
 	var orderReq PlaceOrderRequest

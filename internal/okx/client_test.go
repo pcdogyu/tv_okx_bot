@@ -373,12 +373,25 @@ func TestClientCancelOrderSignsPrivateRequest(t *testing.T) {
 func TestClientAmendOrderSignsPrivateRequest(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
 	secret := "secret"
-	reqBody := AmendOrderRequest{InstID: "BTC-USDT-SWAP", OrdID: "100", NewPx: "63999.9"}
+	reqBody := AmendOrderRequest{
+		InstID: "BTC-USDT-SWAP",
+		OrdID:  "100",
+		NewPx:  "63999.9",
+		AttachAlgoOrds: []map[string]string{{
+			"attachAlgoClOrdId": "client-100A",
+			"tpTriggerRatio":    "0.02",
+			"tpOrdPx":           "-1",
+			"tpTriggerPxType":   "mark",
+			"slTriggerRatio":    "0.01",
+			"slOrdPx":           "-1",
+			"slTriggerPxType":   "mark",
+		}},
+	}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v5/trade/amend-order" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
-		var body map[string]string
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
@@ -390,6 +403,14 @@ func TestClientAmendOrderSignsPrivateRequest(t *testing.T) {
 		}
 		if body["instId"] != "BTC-USDT-SWAP" || body["ordId"] != "100" || body["newPx"] != "63999.9" {
 			t.Fatalf("unexpected amend body: %#v", body)
+		}
+		attach, ok := body["attachAlgoOrds"].([]any)
+		if !ok || len(attach) != 1 {
+			t.Fatalf("bad attach algo body: %#v", body)
+		}
+		first, ok := attach[0].(map[string]any)
+		if !ok || first["tpTriggerRatio"] != "0.02" || first["slTriggerRatio"] != "0.01" || first["tpOrdPx"] != "-1" || first["slOrdPx"] != "-1" {
+			t.Fatalf("bad attach algo fields: %#v", attach)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"100","clOrdId":"client-100","reqId":"req-1","sCode":"0","sMsg":""}]}`))
