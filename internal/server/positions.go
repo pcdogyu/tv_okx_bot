@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"net/http"
 	"sort"
 	"strconv"
@@ -20,14 +21,17 @@ import (
 
 var (
 	errPositionNotOpen             = errors.New("position is not open")
+	errPendingOrderNoRemaining     = errors.New("pending order has no remaining size")
 	positionClosePollInterval      = 5 * time.Second
 	positionCloseLimitTimeout      = 300 * time.Second
 	lowMarginPositionCheckInterval = time.Minute
 	lowMarginPositionThresholdUSDT = 10.0
 	positionCloseJobs              = newPositionCloseRegistry()
 	pendingOrderChaseInterval      = 5 * time.Second
+	pendingOrderChaseTimeout       = 60 * time.Second
 	pendingOrderChaseJobs          = newPendingOrderChaseRegistry()
 	positionCloseSeq               uint64
+	pendingOrderMarketSeq          uint64
 )
 
 type positionsResponse struct {
@@ -315,9 +319,9 @@ func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
-	go s.watchPendingOrderChase(chaseCtx, client, req)
+	go s.watchPendingOrderChase(chaseCtx, cfg, client, req)
 	result.Status = "running"
-	result.Message = "pending order chase started"
+	result.Message = "pending order chase started; market fallback after timeout"
 	writeJSON(w, http.StatusAccepted, result)
 }
 
@@ -579,15 +583,21 @@ func (s *Server) pendingOrderViews(ctx context.Context, client okx.Client, apiID
 	return views
 }
 
-func (s *Server) watchPendingOrderChase(ctx context.Context, client okx.Client, req pendingOrderChaseRequest) {
+func (s *Server) watchPendingOrderChase(ctx context.Context, cfg config.Config, client okx.Client, req pendingOrderChaseRequest) {
 	key := pendingOrderChaseKey(req)
 	defer pendingOrderChaseJobs.done(key)
 	interval := pendingOrderChaseInterval
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
+	timeout := pendingOrderChaseTimeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -605,6 +615,14 @@ func (s *Server) watchPendingOrderChase(ctx context.Context, client okx.Client, 
 			if closed {
 				return
 			}
+		case <-timeoutTimer.C:
+			stepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			_, _, err := fallbackPendingOrderMarket(stepCtx, cfg, client, req)
+			cancel()
+			if err != nil && s.Logger != nil {
+				s.Logger.Warn("pending order chase market fallback failed", "api_id", req.APIID, "inst_id", req.InstID, "ord_id", req.OrdID, "cl_ord_id", req.ClOrdID, "error", err)
+			}
+			return
 		}
 	}
 }
@@ -656,6 +674,62 @@ func chasePendingOrderOnce(ctx context.Context, client okx.Client, req pendingOr
 	return resp, false, nil
 }
 
+func fallbackPendingOrderMarket(ctx context.Context, cfg config.Config, client okx.Client, req pendingOrderChaseRequest) (pendingOrderChaseResponse, bool, error) {
+	order, found, err := currentPendingOrder(ctx, client, req)
+	if err != nil {
+		return pendingOrderChaseResponse{}, false, err
+	}
+	resp := pendingOrderChaseResponse{
+		OK:      true,
+		APIID:   req.APIID,
+		InstID:  req.InstID,
+		OrdID:   req.OrdID,
+		ClOrdID: req.ClOrdID,
+	}
+	if !found {
+		resp.Status = "finished"
+		resp.Message = "pending order is no longer open"
+		return resp, true, nil
+	}
+	resp.OrdID = order.OrdID
+	resp.ClOrdID = order.ClOrdID
+	remaining, err := pendingOrderRemainingSize(order)
+	if err != nil {
+		if errors.Is(err, errPendingOrderNoRemaining) {
+			resp.Status = "finished"
+			resp.Message = "pending order has no remaining size"
+			return resp, true, nil
+		}
+		return resp, false, err
+	}
+	if err := cancelPendingOrder(ctx, client, order); err != nil {
+		if _, stillOpen, checkErr := currentPendingOrder(ctx, client, req); checkErr == nil && !stillOpen {
+			resp.Status = "finished"
+			resp.Message = "pending order is no longer open"
+			return resp, true, nil
+		}
+		return resp, false, err
+	}
+	marketReq, err := pendingOrderMarketRequest(cfg, order, remaining)
+	if err != nil {
+		return resp, false, err
+	}
+	ack, _, err := client.PlaceOrder(ctx, marketReq)
+	if err != nil {
+		return resp, false, err
+	}
+	resp.Status = "market_submitted"
+	resp.Message = "pending order canceled and market order submitted"
+	resp.Px = ""
+	if strings.TrimSpace(ack.OrdID) != "" {
+		resp.OrdID = ack.OrdID
+	}
+	if strings.TrimSpace(ack.ClOrdID) != "" {
+		resp.ClOrdID = ack.ClOrdID
+	}
+	return resp, false, nil
+}
+
 func currentPendingOrder(ctx context.Context, client okx.Client, req pendingOrderChaseRequest) (okx.PendingOrder, bool, error) {
 	orders, _, err := client.PendingOrders(ctx, "SWAP")
 	if err != nil {
@@ -673,6 +747,96 @@ func currentPendingOrder(ctx context.Context, client okx.Client, req pendingOrde
 		}
 	}
 	return okx.PendingOrder{}, false, nil
+}
+
+func cancelPendingOrder(ctx context.Context, client okx.Client, order okx.PendingOrder) error {
+	if strings.TrimSpace(order.OrdID) == "" && strings.TrimSpace(order.ClOrdID) == "" {
+		return errors.New("pending order has no ord_id or cl_ord_id")
+	}
+	req := okx.CancelOrderRequest{InstID: strings.ToUpper(strings.TrimSpace(order.InstID))}
+	if strings.TrimSpace(order.OrdID) != "" {
+		req.OrdID = strings.TrimSpace(order.OrdID)
+	} else {
+		req.ClOrdID = strings.TrimSpace(order.ClOrdID)
+	}
+	_, _, err := client.CancelOrder(ctx, req)
+	return err
+}
+
+func pendingOrderMarketRequest(cfg config.Config, order okx.PendingOrder, remaining string) (okx.PlaceOrderRequest, error) {
+	instID := strings.ToUpper(strings.TrimSpace(order.InstID))
+	if instID == "" {
+		return okx.PlaceOrderRequest{}, errors.New("inst_id is required")
+	}
+	side := strings.ToLower(strings.TrimSpace(order.Side))
+	if side != "buy" && side != "sell" {
+		return okx.PlaceOrderRequest{}, fmt.Errorf("unsupported order side %q", order.Side)
+	}
+	tdMode := strings.ToLower(strings.TrimSpace(order.TDMode))
+	if tdMode == "" {
+		tdMode = cfg.MarginMode()
+	}
+	req := okx.PlaceOrderRequest{
+		InstID:  instID,
+		TDMode:  tdMode,
+		ClOrdID: nextPendingOrderMarketClOrdID(),
+		Side:    side,
+		OrdType: "market",
+		Sz:      remaining,
+	}
+	posSide := normalizePosSide(order.PosSide)
+	if posSide != "" && posSide != "net" {
+		req.PosSide = posSide
+	}
+	if okxRawBool(order.ReduceOnly) {
+		req.ReduceOnly = true
+	}
+	return req, nil
+}
+
+func pendingOrderRemainingSize(order okx.PendingOrder) (string, error) {
+	totalRaw := strings.TrimSpace(order.Sz)
+	total, ok := new(big.Rat).SetString(totalRaw)
+	if !ok || total.Sign() <= 0 {
+		return "", fmt.Errorf("invalid pending order size %q", order.Sz)
+	}
+	filledRaw := strings.TrimSpace(order.AccFillSz)
+	if filledRaw == "" {
+		filledRaw = "0"
+	}
+	filled, ok := new(big.Rat).SetString(filledRaw)
+	if !ok || filled.Sign() < 0 {
+		return "", fmt.Errorf("invalid pending order filled size %q", order.AccFillSz)
+	}
+	remaining := new(big.Rat).Sub(total, filled)
+	if remaining.Sign() <= 0 {
+		return "", errPendingOrderNoRemaining
+	}
+	decimals := decimalsFromDecimalString(totalRaw)
+	if filledDecimals := decimalsFromDecimalString(filledRaw); filledDecimals > decimals {
+		decimals = filledDecimals
+	}
+	out := trimDecimalZeros(remaining.FloatString(decimals))
+	if out == "" || out == "0" {
+		return "", errPendingOrderNoRemaining
+	}
+	return out, nil
+}
+
+func okxRawBool(raw []byte) bool {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return false
+	}
+	if parsed, err := strconv.ParseBool(value); err == nil {
+		return parsed
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		parsed, _ := strconv.ParseBool(strings.TrimSpace(text))
+		return parsed
+	}
+	return false
 }
 
 func pendingOrderMidAndChasePrice(ctx context.Context, client okx.Client, order okx.PendingOrder, tickers map[string]okx.Ticker, instruments map[string]okx.Instrument) (string, string, error) {
@@ -1110,6 +1274,11 @@ func positionCloseKey(apiID, instID, posSide string) string {
 func nextPositionCloseClOrdID() string {
 	seq := atomic.AddUint64(&positionCloseSeq, 1) % 1000000
 	return fmt.Sprintf("PC%d%06d", time.Now().UTC().UnixMilli(), seq)
+}
+
+func nextPendingOrderMarketClOrdID() string {
+	seq := atomic.AddUint64(&pendingOrderMarketSeq, 1) % 1000000
+	return fmt.Sprintf("PCM%d%06d", time.Now().UTC().UnixMilli(), seq)
 }
 
 func decimalsFromDecimalString(raw string) int {

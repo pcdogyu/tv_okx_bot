@@ -2150,7 +2150,7 @@ const tvbotHTML = `<!doctype html>
       try {
         const path = mode === "stop" ? "/tvbot/pending-orders/chase/stop" : "/tvbot/pending-orders/chase";
         const result = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        toast(mode === "stop" ? "追单已停止" : ("追单已启动 " + asText(result.px)));
+        toast(mode === "stop" ? "追单已停止" : ("追单已启动，60秒未成交将转市价 " + asText(result.px)));
         await loadPendingOrders();
       } finally {
         delete state.pendingOrderActions[key];

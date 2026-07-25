@@ -323,23 +323,24 @@ type Fill struct {
 }
 
 type PendingOrder struct {
-	InstType  string `json:"instType"`
-	InstID    string `json:"instId"`
-	OrdID     string `json:"ordId"`
-	ClOrdID   string `json:"clOrdId"`
-	TDMode    string `json:"tdMode"`
-	Side      string `json:"side"`
-	PosSide   string `json:"posSide"`
-	OrdType   string `json:"ordType"`
-	Px        string `json:"px"`
-	Sz        string `json:"sz"`
-	AccFillSz string `json:"accFillSz"`
-	AvgPx     string `json:"avgPx"`
-	State     string `json:"state"`
-	Lever     string `json:"lever"`
-	CTime     string `json:"cTime"`
-	UTime     string `json:"uTime"`
-	RawJSON   string `json:"-"`
+	InstType   string          `json:"instType"`
+	InstID     string          `json:"instId"`
+	OrdID      string          `json:"ordId"`
+	ClOrdID    string          `json:"clOrdId"`
+	TDMode     string          `json:"tdMode"`
+	Side       string          `json:"side"`
+	PosSide    string          `json:"posSide"`
+	OrdType    string          `json:"ordType"`
+	Px         string          `json:"px"`
+	Sz         string          `json:"sz"`
+	AccFillSz  string          `json:"accFillSz"`
+	AvgPx      string          `json:"avgPx"`
+	State      string          `json:"state"`
+	Lever      string          `json:"lever"`
+	ReduceOnly json.RawMessage `json:"reduceOnly,omitempty"`
+	CTime      string          `json:"cTime"`
+	UTime      string          `json:"uTime"`
+	RawJSON    string          `json:"-"`
 }
 
 type Position struct {
