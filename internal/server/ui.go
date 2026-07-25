@@ -491,6 +491,22 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: wrap;
     }
     .symbol-controls label { min-width: 220px; }
+    .menu-hidden-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      min-height: 28px;
+    }
+    .menu-hidden-check input {
+      width: 16px;
+      min-height: 16px;
+    }
+    .menu-sort-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
     .analysis-metrics {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -619,6 +635,7 @@ const tvbotHTML = `<!doctype html>
         <button type="button" data-tab="orderSettings">下单设置</button>
         <button type="button" data-tab="template">告警模板</button>
         <button type="button" data-tab="orders">订单</button>
+        <button type="button" data-tab="menuSettings">菜单设置</button>
         <button type="button" data-tab="upgrade">升级</button>
       </nav>
     </div>
@@ -857,6 +874,19 @@ const tvbotHTML = `<!doctype html>
       </table>
     </section>
 
+    <section id="menuSettings">
+      <div class="section-head">
+        <h2>菜单设置</h2>
+        <button class="btn primary" type="button" id="save-menu-settings">保存菜单设置</button>
+      </div>
+      <table>
+        <thead>
+          <tr><th>菜单</th><th>是否隐藏</th><th>排序</th></tr>
+        </thead>
+        <tbody id="menu-settings-rows"></tbody>
+      </table>
+    </section>
+
     <section id="upgrade">
       <div class="section-head">
         <h2>升级</h2>
@@ -874,6 +904,19 @@ const tvbotHTML = `<!doctype html>
   <script>
     const activeTabStorageKey = "tvbot.active_tab";
     const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, positionClosing: {}, analysis: null, analysisError: "", positions: null, positionsError: "", symbols: null, symbolsError: "", upgrade: null };
+    const defaultMenuItems = [
+      { tab: "dashboard", label: "总览" },
+      { tab: "positions", label: "持仓" },
+      { tab: "analysis", label: "订单分析" },
+      { tab: "symbols", label: "币对配置" },
+      { tab: "config", label: "订单配置" },
+      { tab: "apiKeys", label: "API Key" },
+      { tab: "orderSettings", label: "下单设置" },
+      { tab: "template", label: "告警模板" },
+      { tab: "orders", label: "订单" },
+      { tab: "menuSettings", label: "菜单设置", locked: true },
+      { tab: "upgrade", label: "升级" }
+    ];
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -1068,16 +1111,104 @@ const tvbotHTML = `<!doctype html>
       return String(v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
     }
 
+    function menuDefinition(tabID) {
+      return defaultMenuItems.find((item) => item.tab === tabID) || null;
+    }
+
+    function normalizeMenuItems(items) {
+      const seen = {};
+      const normalized = [];
+      (Array.isArray(items) ? items : []).forEach((item) => {
+        const tab = item && item.tab ? String(item.tab) : "";
+        const def = menuDefinition(tab);
+        if (!def || seen[tab]) return;
+        normalized.push({ tab: tab, hidden: def.locked ? false : !!item.hidden });
+        seen[tab] = true;
+      });
+      defaultMenuItems.forEach((def) => {
+        if (!seen[def.tab]) normalized.push({ tab: def.tab, hidden: false });
+      });
+      return normalized;
+    }
+
+    function currentMenuItems() {
+      const ui = state.config && state.config.ui ? state.config.ui : {};
+      return normalizeMenuItems(ui.menu_items);
+    }
+
+    function setCurrentMenuItems(items) {
+      if (!state.config) state.config = {};
+      if (!state.config.ui) state.config.ui = {};
+      state.config.ui.menu_items = normalizeMenuItems(items);
+    }
+
     function tabButton(tabID) {
       return Array.from(document.querySelectorAll("nav button")).find((button) => button.dataset.tab === tabID) || null;
+    }
+
+    function firstVisibleTab() {
+      const button = Array.from(document.querySelectorAll("nav button")).find((item) => !item.hidden && $(item.dataset.tab));
+      return button ? button.dataset.tab : "menuSettings";
+    }
+
+    function applyMenuSettings() {
+      const nav = document.querySelector("nav");
+      if (!nav) return;
+      const known = {};
+      currentMenuItems().forEach((item) => {
+        const button = tabButton(item.tab);
+        const def = menuDefinition(item.tab);
+        if (!button || !def) return;
+        button.textContent = def.label;
+        button.hidden = !!item.hidden;
+        nav.appendChild(button);
+        known[item.tab] = true;
+      });
+      document.querySelectorAll("nav button").forEach((button) => {
+        if (!known[button.dataset.tab]) button.hidden = true;
+      });
+      const activeButton = document.querySelector('nav button[aria-selected="true"]');
+      if (!activeButton || activeButton.hidden) {
+        activateTab(firstVisibleTab(), true);
+      }
+    }
+
+    function renderMenuSettings() {
+      const items = currentMenuItems();
+      $("menu-settings-rows").innerHTML = items.map((item, index) => {
+        const def = menuDefinition(item.tab) || { label: item.tab };
+        const hiddenCell = def.locked
+          ? '<span class="muted">固定显示</span>'
+          : '<label class="menu-hidden-check"><input type="checkbox" data-menu-hidden="' + escapeHTML(item.tab) + '"' + (item.hidden ? " checked" : "") + '>隐藏</label>';
+        return "<tr>" +
+          "<td>" + escapeHTML(def.label) + "</td>" +
+          "<td>" + hiddenCell + "</td>" +
+          '<td><div class="menu-sort-actions">' +
+            '<button class="btn small" type="button" data-menu-index="' + index + '" data-menu-move="-1"' + (index === 0 ? " disabled" : "") + ">上移</button>" +
+            '<button class="btn small" type="button" data-menu-index="' + index + '" data-menu-move="1"' + (index === items.length - 1 ? " disabled" : "") + ">下移</button>" +
+          "</div></td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    function moveMenuItem(index, direction) {
+      const items = currentMenuItems();
+      const next = index + direction;
+      if (index < 0 || next < 0 || index >= items.length || next >= items.length) return;
+      const current = items[index];
+      items[index] = items[next];
+      items[next] = current;
+      setCurrentMenuItems(items);
+      renderMenuSettings();
+      applyMenuSettings();
     }
 
     function activateTab(tabID, persist) {
       let target = tabID || "dashboard";
       let button = tabButton(target);
       let section = $(target);
-      if (!button || !section) {
-        target = "dashboard";
+      if (!button || button.hidden || !section) {
+        target = firstVisibleTab();
         button = tabButton(target);
         section = $(target);
       }
@@ -1106,12 +1237,14 @@ const tvbotHTML = `<!doctype html>
 
     function initialTab() {
       const fromHash = location.hash ? location.hash.slice(1) : "";
-      if (fromHash && tabButton(fromHash) && $(fromHash)) return fromHash;
+      const hashButton = tabButton(fromHash);
+      if (fromHash && hashButton && !hashButton.hidden && $(fromHash)) return fromHash;
       try {
         const stored = localStorage.getItem(activeTabStorageKey);
-        if (stored && tabButton(stored) && $(stored)) return stored;
+        const storedButton = tabButton(stored);
+        if (stored && storedButton && !storedButton.hidden && $(stored)) return stored;
       } catch (_) {}
-      return "dashboard";
+      return firstVisibleTab();
     }
 
     async function loadAll() {
@@ -1122,8 +1255,10 @@ const tvbotHTML = `<!doctype html>
 
     async function loadConfig() {
       state.config = await api("/tvbot/config");
+      applyMenuSettings();
       renderConfig();
       renderOrderSettings();
+      renderMenuSettings();
       updateMetrics();
     }
 
@@ -1712,8 +1847,10 @@ const tvbotHTML = `<!doctype html>
         }
       };
       state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+      applyMenuSettings();
       renderConfig();
       renderDashboard();
+      renderMenuSettings();
       updateMetrics();
       toast("订单配置已保存");
     }
@@ -1733,10 +1870,20 @@ const tvbotHTML = `<!doctype html>
         }
       };
       state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+      applyMenuSettings();
       renderOrderSettings();
       renderDashboard();
+      renderMenuSettings();
       updateMetrics();
       toast("下单设置已保存");
+    }
+
+    async function saveMenuSettings() {
+      const patch = { ui: { menu_items: currentMenuItems() } };
+      state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+      applyMenuSettings();
+      renderMenuSettings();
+      toast("菜单设置已保存");
     }
 
     async function saveAPIKeys() {
@@ -1895,6 +2042,23 @@ const tvbotHTML = `<!doctype html>
     ["order-amount", "order-leverage", "order-type", "order-risk-type", "order-tp", "order-sl", "order-trailing", "order-long-multiplier", "order-short-multiplier"].forEach((id) => {
       $(id).addEventListener("input", () => renderOrderSettingsPreview());
       $(id).addEventListener("change", () => renderOrderSettingsPreview());
+    });
+    $("save-menu-settings").addEventListener("click", () => saveMenuSettings().catch((err) => toast(err.message)));
+    $("menu-settings-rows").addEventListener("change", (event) => {
+      const input = event.target.closest("input[data-menu-hidden]");
+      if (!input) return;
+      const items = currentMenuItems();
+      const item = items.find((entry) => entry.tab === input.dataset.menuHidden);
+      if (!item) return;
+      item.hidden = input.checked;
+      setCurrentMenuItems(items);
+      renderMenuSettings();
+      applyMenuSettings();
+    });
+    $("menu-settings-rows").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-menu-move]");
+      if (!button) return;
+      moveMenuItem(Number(button.dataset.menuIndex), Number(button.dataset.menuMove));
     });
     $("save-api-keys").addEventListener("click", () => saveAPIKeys().catch((err) => toast(err.message)));
     $("test-api-keys").addEventListener("click", () => testAPIKeys().catch((err) => {

@@ -28,6 +28,7 @@ type Config struct {
 	DatabaseFile string                  `json:"database_file"`
 	Trading      TradingConfig           `json:"trading"`
 	Symbols      map[string]SymbolConfig `json:"symbols"`
+	UI           UIConfig                `json:"ui"`
 }
 
 type ServerConfig struct {
@@ -58,6 +59,31 @@ type SymbolConfig struct {
 	CtVal    float64 `json:"ct_val"`
 	LotSz    float64 `json:"lot_sz"`
 	MinSz    float64 `json:"min_sz"`
+}
+
+type UIConfig struct {
+	MenuItems []MenuItemConfig `json:"menu_items"`
+}
+
+type MenuItemConfig struct {
+	Tab    string `json:"tab"`
+	Hidden bool   `json:"hidden"`
+}
+
+const MenuSettingsTab = "menuSettings"
+
+var DefaultMenuTabs = []string{
+	"dashboard",
+	"positions",
+	"analysis",
+	"symbols",
+	"config",
+	"apiKeys",
+	"orderSettings",
+	"template",
+	"orders",
+	MenuSettingsTab,
+	"upgrade",
 }
 
 func Default() Config {
@@ -98,6 +124,7 @@ func Default() Config {
 				MinSz:    0.01,
 			},
 		},
+		UI: UIConfig{MenuItems: defaultMenuItems()},
 	}
 }
 
@@ -213,6 +240,7 @@ func (c *Config) Normalize() {
 		normalized[coin] = sym
 	}
 	c.Symbols = normalized
+	c.UI.MenuItems = normalizeMenuItems(c.UI.MenuItems)
 }
 
 func (c Config) Validate() error {
@@ -264,7 +292,54 @@ func (c Config) Validate() error {
 			return fmt.Errorf("symbol %q requires positive ct_val, lot_sz and min_sz", key)
 		}
 	}
+	if !hasVisibleMenuSettings(c.UI.MenuItems) {
+		return errors.New("menuSettings must be visible")
+	}
 	return nil
+}
+
+func defaultMenuItems() []MenuItemConfig {
+	items := make([]MenuItemConfig, 0, len(DefaultMenuTabs))
+	for _, tab := range DefaultMenuTabs {
+		items = append(items, MenuItemConfig{Tab: tab})
+	}
+	return items
+}
+
+func normalizeMenuItems(items []MenuItemConfig) []MenuItemConfig {
+	known := make(map[string]bool, len(DefaultMenuTabs))
+	for _, tab := range DefaultMenuTabs {
+		known[tab] = true
+	}
+	seen := make(map[string]bool, len(DefaultMenuTabs))
+	normalized := make([]MenuItemConfig, 0, len(DefaultMenuTabs))
+	for _, item := range items {
+		tab := strings.TrimSpace(item.Tab)
+		if !known[tab] || seen[tab] {
+			continue
+		}
+		if tab == MenuSettingsTab {
+			item.Hidden = false
+		}
+		normalized = append(normalized, MenuItemConfig{Tab: tab, Hidden: item.Hidden})
+		seen[tab] = true
+	}
+	for _, tab := range DefaultMenuTabs {
+		if seen[tab] {
+			continue
+		}
+		normalized = append(normalized, MenuItemConfig{Tab: tab})
+	}
+	return normalized
+}
+
+func hasVisibleMenuSettings(items []MenuItemConfig) bool {
+	for _, item := range items {
+		if item.Tab == MenuSettingsTab && !item.Hidden {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Config) Symbol(coinpair string) (SymbolConfig, bool) {

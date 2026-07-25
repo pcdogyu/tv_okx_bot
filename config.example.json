@@ -36,5 +36,20 @@
       "lot_sz": 0.01,
       "min_sz": 0.01
     }
+  },
+  "ui": {
+    "menu_items": [
+      { "tab": "dashboard", "hidden": false },
+      { "tab": "positions", "hidden": false },
+      { "tab": "analysis", "hidden": false },
+      { "tab": "symbols", "hidden": false },
+      { "tab": "config", "hidden": false },
+      { "tab": "apiKeys", "hidden": false },
+      { "tab": "orderSettings", "hidden": false },
+      { "tab": "template", "hidden": false },
+      { "tab": "orders", "hidden": false },
+      { "tab": "menuSettings", "hidden": false },
+      { "tab": "upgrade", "hidden": false }
+    ]
   }
 }

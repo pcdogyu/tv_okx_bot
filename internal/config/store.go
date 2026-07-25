@@ -18,6 +18,7 @@ func (s *Store) Get() Config {
 	defer s.mu.RUnlock()
 	cfg := s.cfg
 	cfg.Symbols = cloneSymbols(s.cfg.Symbols)
+	cfg.UI.MenuItems = cloneMenuItems(s.cfg.UI.MenuItems)
 	return cfg
 }
 
@@ -26,6 +27,7 @@ func (s *Store) Update(fn func(*Config) error) (Config, error) {
 	defer s.mu.Unlock()
 	next := s.cfg
 	next.Symbols = cloneSymbols(s.cfg.Symbols)
+	next.UI.MenuItems = cloneMenuItems(s.cfg.UI.MenuItems)
 	if err := fn(&next); err != nil {
 		return Config{}, err
 	}
@@ -47,5 +49,14 @@ func cloneSymbols(in map[string]SymbolConfig) map[string]SymbolConfig {
 	for k, v := range in {
 		out[k] = v
 	}
+	return out
+}
+
+func cloneMenuItems(in []MenuItemConfig) []MenuItemConfig {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]MenuItemConfig, len(in))
+	copy(out, in)
 	return out
 }

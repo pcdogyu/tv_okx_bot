@@ -952,6 +952,7 @@ type configPatch struct {
 	DataFile     *string       `json:"data_file"`
 	DatabaseFile *string       `json:"database_file"`
 	Trading      *tradingPatch `json:"trading"`
+	UI           *uiPatch      `json:"ui"`
 }
 
 type serverPatch struct {
@@ -976,6 +977,10 @@ type tradingPatch struct {
 	ShortLimitPriceMultiplier *float64 `json:"short_limit_price_multiplier"`
 }
 
+type uiPatch struct {
+	MenuItems *[]config.MenuItemConfig `json:"menu_items"`
+}
+
 func applyConfigPatch(c *config.Config, patch configPatch) {
 	if patch.Server != nil && patch.Server.Addr != nil {
 		c.Server.Addr = *patch.Server.Addr
@@ -985,6 +990,9 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.DatabaseFile != nil {
 		c.DatabaseFile = *patch.DatabaseFile
+	}
+	if patch.UI != nil && patch.UI.MenuItems != nil {
+		c.UI.MenuItems = *patch.UI.MenuItems
 	}
 	if patch.Trading == nil {
 		return

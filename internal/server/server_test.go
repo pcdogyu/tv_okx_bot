@@ -156,6 +156,14 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) {
 		t.Fatalf("tvbot ui should include symbol and order config tabs")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("菜单设置")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("menu-settings-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("saveMenuSettings")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("applyMenuSettings")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-hidden")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-move")) {
+		t.Fatalf("tvbot ui should include menu settings tab")
+	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("订单类型")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`id="order-type"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("市价单")) ||
@@ -224,6 +232,47 @@ func TestTVBotConfigSavesOrderType(t *testing.T) {
 	srv.ServeHTTP(bad, badReq)
 	if bad.Code != http.StatusBadRequest || !bytes.Contains(bad.Body.Bytes(), []byte("unsupported order_type")) {
 		t.Fatalf("bad order type status=%d body=%s", bad.Code, bad.Body.String())
+	}
+}
+
+func TestTVBotConfigSavesMenuSettings(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{
+		"ui": {
+			"menu_items": [
+				{"tab":"orders","hidden":true},
+				{"tab":"dashboard","hidden":false},
+				{"tab":"menuSettings","hidden":true},
+				{"tab":"unknown","hidden":false}
+			]
+		}
+	}`)))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(rr.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.UI.MenuItems) != len(config.DefaultMenuTabs) {
+		t.Fatalf("menu items should be normalized to defaults: %#v", cfg.UI.MenuItems)
+	}
+	if cfg.UI.MenuItems[0].Tab != "orders" || !cfg.UI.MenuItems[0].Hidden {
+		t.Fatalf("first menu item should preserve hidden orders: %#v", cfg.UI.MenuItems[0])
+	}
+	if cfg.UI.MenuItems[1].Tab != "dashboard" || cfg.UI.MenuItems[1].Hidden {
+		t.Fatalf("second menu item should preserve visible dashboard: %#v", cfg.UI.MenuItems[1])
+	}
+	if cfg.UI.MenuItems[2].Tab != config.MenuSettingsTab || cfg.UI.MenuItems[2].Hidden {
+		t.Fatalf("menu settings should be forced visible: %#v", cfg.UI.MenuItems[2])
+	}
+	for _, item := range cfg.UI.MenuItems {
+		if item.Tab == "unknown" {
+			t.Fatalf("unknown menu item should be removed: %#v", cfg.UI.MenuItems)
+		}
 	}
 }
 
