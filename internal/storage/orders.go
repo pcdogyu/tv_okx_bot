@@ -380,6 +380,9 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 			return err
 		}
 	}
+	if _, err := s.db.Exec(`UPDATE orders SET source_exchange = '' WHERE source_exchange IS NULL`); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`UPDATE orders SET target_exchange = 'okx' WHERE target_exchange IS NULL OR target_exchange = ''`); err != nil {
 		return err
 	}
@@ -700,31 +703,43 @@ type orderScanner interface {
 
 func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	var rec OrderRecord
-	var status, action, acceptedAt, updatedAt, resultJSON string
+	var status, acceptedAt, updatedAt string
+	var action sql.NullString
+	var apiID, sourceExchange, targetExchange, coinpair, ticker, price, amount, tokenHash, resultJSON, errorCode, errorText sql.NullString
 	if err := scanner.Scan(
 		&rec.SignalID,
 		&rec.DedupeKey,
 		&status,
 		&action,
-		&rec.APIID,
-		&rec.SourceExchange,
-		&rec.TargetExchange,
-		&rec.Coinpair,
-		&rec.Ticker,
-		&rec.Price,
+		&apiID,
+		&sourceExchange,
+		&targetExchange,
+		&coinpair,
+		&ticker,
+		&price,
 		&rec.Leverage,
-		&rec.Amount,
-		&rec.TokenHash,
+		&amount,
+		&tokenHash,
 		&acceptedAt,
 		&updatedAt,
 		&resultJSON,
-		&rec.ErrorCode,
-		&rec.Error,
+		&errorCode,
+		&errorText,
 	); err != nil {
 		return OrderRecord{}, err
 	}
 	rec.Status = OrderStatus(status)
-	rec.Action = trading.Side(action)
+	rec.Action = trading.Side(nullableString(action))
+	rec.APIID = nullableString(apiID)
+	rec.SourceExchange = nullableString(sourceExchange)
+	rec.TargetExchange = nullableString(targetExchange)
+	rec.Coinpair = nullableString(coinpair)
+	rec.Ticker = nullableString(ticker)
+	rec.Price = nullableString(price)
+	rec.Amount = nullableString(amount)
+	rec.TokenHash = nullableString(tokenHash)
+	rec.ErrorCode = nullableString(errorCode)
+	rec.Error = nullableString(errorText)
 	rec.TargetExchange = trading.NormalizeExchange(rec.TargetExchange)
 	if acceptedAt != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, acceptedAt)
@@ -740,12 +755,19 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 		}
 		rec.UpdatedAt = parsed
 	}
-	if resultJSON != "" {
-		if err := json.Unmarshal([]byte(resultJSON), &rec.Result); err != nil {
+	if nullableString(resultJSON) != "" {
+		if err := json.Unmarshal([]byte(nullableString(resultJSON)), &rec.Result); err != nil {
 			return OrderRecord{}, err
 		}
 	}
 	return rec, nil
+}
+
+func nullableString(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
 }
 
 func (s *OrderStore) load() error {

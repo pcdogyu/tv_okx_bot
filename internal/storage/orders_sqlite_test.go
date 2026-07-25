@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -103,6 +104,76 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	records := store.List(10)
 	if len(records) != 2 || records[0].Status != StatusDuplicate || records[1].Status != StatusSubmitted || records[1].Result.OrdID != "okx-1" {
 		t.Fatalf("bad records: %#v", records)
+	}
+}
+
+func TestSQLiteOrderStoreReadsLegacyRowsWithNullExchangeColumns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "tvbot.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE orders (
+		signal_id TEXT PRIMARY KEY,
+		dedupe_key TEXT NOT NULL,
+		status TEXT NOT NULL,
+		action TEXT,
+		api_id TEXT,
+		coinpair TEXT,
+		ticker TEXT,
+		price TEXT,
+		leverage INTEGER,
+		amount TEXT,
+		token_hash TEXT,
+		accepted_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		result_json TEXT,
+		error_code TEXT,
+		error TEXT
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+	_, err = db.Exec(`INSERT INTO orders
+		(signal_id, dedupe_key, status, action, api_id, coinpair, ticker, price, leverage, amount, token_hash, accepted_at, updated_at, result_json, error_code, error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
+		"sig-old",
+		"dedupe-old",
+		string(StatusAccepted),
+		string(trading.ActionLong),
+		"default",
+		"BTC",
+		"BTCUSDT",
+		"50000",
+		5,
+		"100",
+		"tokenhash",
+		now.Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewSQLiteOrderStore(dbPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	records := store.List(10)
+	if len(records) != 1 || records[0].SignalID != "sig-old" || records[0].TargetExchange != trading.ExchangeOKX {
+		t.Fatalf("legacy order should remain readable after exchange migration: %#v", records)
+	}
+	var sourceExchange, targetExchange string
+	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange); err != nil {
+		t.Fatal(err)
+	}
+	if sourceExchange != "" || targetExchange != trading.ExchangeOKX {
+		t.Fatalf("legacy exchange columns not backfilled source=%q target=%q", sourceExchange, targetExchange)
 	}
 }
 
