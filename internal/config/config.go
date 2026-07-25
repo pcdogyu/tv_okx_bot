@@ -62,7 +62,8 @@ type SymbolConfig struct {
 }
 
 type UIConfig struct {
-	MenuItems []MenuItemConfig `json:"menu_items"`
+	DefaultTab string           `json:"default_tab"`
+	MenuItems  []MenuItemConfig `json:"menu_items"`
 }
 
 type MenuItemConfig struct {
@@ -71,7 +72,10 @@ type MenuItemConfig struct {
 	Label  string `json:"label,omitempty"`
 }
 
-const MenuSettingsTab = "menuSettings"
+const (
+	DefaultHomeTab  = "dashboard"
+	MenuSettingsTab = "menuSettings"
+)
 
 var DefaultMenuTabs = []string{
 	"dashboard",
@@ -139,7 +143,7 @@ func Default() Config {
 				MinSz:    0.01,
 			},
 		},
-		UI: UIConfig{MenuItems: defaultMenuItems()},
+		UI: UIConfig{DefaultTab: DefaultHomeTab, MenuItems: defaultMenuItems()},
 	}
 }
 
@@ -255,6 +259,7 @@ func (c *Config) Normalize() {
 		normalized[coin] = sym
 	}
 	c.Symbols = normalized
+	c.UI.DefaultTab = normalizeDefaultMenuTab(c.UI.DefaultTab)
 	c.UI.MenuItems = normalizeMenuItems(c.UI.MenuItems)
 }
 
@@ -352,6 +357,23 @@ func normalizeMenuItems(items []MenuItemConfig) []MenuItemConfig {
 		normalized = append(normalized, MenuItemConfig{Tab: tab, Label: defaultMenuLabel(tab)})
 	}
 	return normalized
+}
+
+func normalizeDefaultMenuTab(tab string) string {
+	tab = strings.TrimSpace(tab)
+	if menuTabKnown(tab) {
+		return tab
+	}
+	return DefaultHomeTab
+}
+
+func menuTabKnown(tab string) bool {
+	for _, known := range DefaultMenuTabs {
+		if tab == known {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultMenuLabel(tab string) string {

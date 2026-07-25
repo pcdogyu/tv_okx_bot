@@ -984,7 +984,8 @@ type tradingPatch struct {
 }
 
 type uiPatch struct {
-	MenuItems *[]config.MenuItemConfig `json:"menu_items"`
+	DefaultTab *string                  `json:"default_tab"`
+	MenuItems  *[]config.MenuItemConfig `json:"menu_items"`
 }
 
 func applyConfigPatch(c *config.Config, patch configPatch) {
@@ -997,8 +998,13 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	if patch.DatabaseFile != nil {
 		c.DatabaseFile = *patch.DatabaseFile
 	}
-	if patch.UI != nil && patch.UI.MenuItems != nil {
-		c.UI.MenuItems = *patch.UI.MenuItems
+	if patch.UI != nil {
+		if patch.UI.DefaultTab != nil {
+			c.UI.DefaultTab = *patch.UI.DefaultTab
+		}
+		if patch.UI.MenuItems != nil {
+			c.UI.MenuItems = *patch.UI.MenuItems
+		}
 	}
 	if patch.Trading == nil {
 		return

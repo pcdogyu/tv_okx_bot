@@ -172,6 +172,10 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("menu-settings-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("saveMenuSettings")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("applyMenuSettings")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("<th>首页</th>")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("menu-default-tab")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-home")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("default_tab")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-label")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-hidden")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-move")) {
@@ -204,10 +208,14 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("tvbot ui should render order API names and wider OKX return column")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("activateTab")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("localStorage")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("location.hash")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("tvbot.active_tab")) {
-		t.Fatalf("tvbot ui should remember active tab across refresh")
+		!bytes.Contains(ui.Body.Bytes(), []byte("history.replaceState")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("configuredDefaultTab")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("effectiveDefaultTab")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("syncActiveTabAfterMenuSettings")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("localStorage.getItem")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("tvbot.active_tab")) {
+		t.Fatalf("tvbot ui should use hash/default tab navigation without localStorage override")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("USDT 可用")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("usdt_balance")) {
@@ -252,6 +260,7 @@ func TestTVBotConfigSavesMenuSettings(t *testing.T) {
 	srv := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{
 		"ui": {
+			"default_tab": "orders",
 			"menu_items": [
 				{"tab":"orders","hidden":true},
 				{"tab":"dashboard","hidden":false,"label":"首页"},
@@ -275,6 +284,9 @@ func TestTVBotConfigSavesMenuSettings(t *testing.T) {
 	if len(cfg.UI.MenuItems) != len(config.DefaultMenuTabs) {
 		t.Fatalf("menu items should be normalized to defaults: %#v", cfg.UI.MenuItems)
 	}
+	if cfg.UI.DefaultTab != "orders" {
+		t.Fatalf("default tab should be saved: %#v", cfg.UI)
+	}
 	if cfg.UI.MenuItems[0].Tab != "orders" || !cfg.UI.MenuItems[0].Hidden {
 		t.Fatalf("first menu item should preserve hidden orders: %#v", cfg.UI.MenuItems[0])
 	}
@@ -297,6 +309,24 @@ func TestTVBotConfigSavesMenuSettings(t *testing.T) {
 		if item.Tab == "unknown" {
 			t.Fatalf("unknown menu item should be removed: %#v", cfg.UI.MenuItems)
 		}
+	}
+}
+
+func TestTVBotConfigRepairsInvalidDefaultTab(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{"ui":{"default_tab":"missing-tab"}}`)))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(rr.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UI.DefaultTab != config.DefaultHomeTab {
+		t.Fatalf("invalid default tab should fall back to %q: %#v", config.DefaultHomeTab, cfg.UI)
 	}
 }
 

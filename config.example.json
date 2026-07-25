@@ -38,6 +38,7 @@
     }
   },
   "ui": {
+    "default_tab": "dashboard",
     "menu_items": [
       { "tab": "dashboard", "hidden": false, "label": "总览" },
       { "tab": "positions", "hidden": false, "label": "持仓" },

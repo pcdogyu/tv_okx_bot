@@ -899,7 +899,7 @@ const tvbotHTML = `<!doctype html>
       </div>
       <table>
         <thead>
-          <tr><th>默认菜单</th><th>菜单名称</th><th>是否隐藏</th><th>排序</th></tr>
+          <tr><th>首页</th><th>默认菜单</th><th>菜单名称</th><th>是否隐藏</th><th>排序</th></tr>
         </thead>
         <tbody id="menu-settings-rows"></tbody>
       </table>
@@ -920,10 +920,10 @@ const tvbotHTML = `<!doctype html>
   <div class="toast" id="toast"></div>
 
   <script>
-    const activeTabStorageKey = "tvbot.active_tab";
     const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, positionClosing: {}, pendingOrderActions: {}, analysis: null, analysisError: "", positions: null, positionsError: "", pendingOrders: null, pendingOrdersError: "", symbols: null, symbolsError: "", upgrade: null };
     let positionViewPollTimer = null;
     let positionViewPollBusy = false;
+    let menuSettingsSynced = false;
     const defaultMenuItems = [
       { tab: "dashboard", label: "总览" },
       { tab: "positions", label: "持仓" },
@@ -1176,13 +1176,48 @@ const tvbotHTML = `<!doctype html>
       state.config.ui.menu_items = normalizeMenuItems(items);
     }
 
+    function configuredDefaultTab() {
+      const ui = state.config && state.config.ui ? state.config.ui : {};
+      const tab = ui.default_tab ? String(ui.default_tab) : "dashboard";
+      return menuDefinition(tab) && $(tab) ? tab : "dashboard";
+    }
+
     function tabButton(tabID) {
       return Array.from(document.querySelectorAll("nav button")).find((button) => button.dataset.tab === tabID) || null;
+    }
+
+    function tabVisible(tabID) {
+      const button = tabButton(tabID);
+      return !!button && !button.hidden && !!$(tabID);
     }
 
     function firstVisibleTab() {
       const button = Array.from(document.querySelectorAll("nav button")).find((item) => !item.hidden && $(item.dataset.tab));
       return button ? button.dataset.tab : "menuSettings";
+    }
+
+    function effectiveDefaultTab() {
+      const tab = configuredDefaultTab();
+      return tabVisible(tab) ? tab : firstVisibleTab();
+    }
+
+    function activeTabID() {
+      const active = document.querySelector('nav button[aria-selected="true"]');
+      return active ? active.dataset.tab : "";
+    }
+
+    function syncActiveTabAfterMenuSettings() {
+      const hash = location.hash ? location.hash.slice(1) : "";
+      const active = activeTabID();
+      if (!hash && !menuSettingsSynced) {
+        menuSettingsSynced = true;
+        activateTab(effectiveDefaultTab(), false);
+        return;
+      }
+      menuSettingsSynced = true;
+      if (!active || !tabVisible(active)) {
+        activateTab(effectiveDefaultTab(), false);
+      }
     }
 
     function applyMenuSettings() {
@@ -1203,18 +1238,20 @@ const tvbotHTML = `<!doctype html>
       });
       const activeButton = document.querySelector('nav button[aria-selected="true"]');
       if (!activeButton || activeButton.hidden) {
-        activateTab(firstVisibleTab(), true);
+        activateTab(effectiveDefaultTab(), false);
       }
     }
 
     function renderMenuSettings() {
       const items = currentMenuItems();
+      const defaultTab = configuredDefaultTab();
       $("menu-settings-rows").innerHTML = items.map((item, index) => {
         const def = menuDefinition(item.tab) || { label: item.tab };
         const hiddenCell = def.locked
           ? '<span class="muted">固定显示</span>'
           : '<label class="menu-hidden-check"><input type="checkbox" data-menu-hidden="' + escapeHTML(item.tab) + '"' + (item.hidden ? " checked" : "") + '>隐藏</label>';
         return "<tr>" +
+          '<td><input type="radio" name="menu-default-tab" data-menu-home="' + escapeHTML(item.tab) + '"' + (item.tab === defaultTab ? " checked" : "") + ' aria-label="设为首页"></td>' +
           "<td>" + escapeHTML(def.label) + "</td>" +
           '<td><input class="menu-label-input" data-menu-label="' + escapeHTML(item.tab) + '" value="' + escapeHTML(menuLabel(item, def)) + '" maxlength="24" autocomplete="off" spellcheck="false"></td>' +
           "<td>" + hiddenCell + "</td>" +
@@ -1276,7 +1313,6 @@ const tvbotHTML = `<!doctype html>
         section.classList.add("active");
       }
       if (persist) {
-        try { localStorage.setItem(activeTabStorageKey, target); } catch (_) {}
         if (window.history && location.hash !== "#" + target) {
           history.replaceState(null, "", "#" + target);
         }
@@ -1301,12 +1337,7 @@ const tvbotHTML = `<!doctype html>
       const fromHash = location.hash ? location.hash.slice(1) : "";
       const hashButton = tabButton(fromHash);
       if (fromHash && hashButton && !hashButton.hidden && $(fromHash)) return fromHash;
-      try {
-        const stored = localStorage.getItem(activeTabStorageKey);
-        const storedButton = tabButton(stored);
-        if (stored && storedButton && !storedButton.hidden && $(stored)) return stored;
-      } catch (_) {}
-      return firstVisibleTab();
+      return effectiveDefaultTab();
     }
 
     async function loadAll() {
@@ -1318,6 +1349,7 @@ const tvbotHTML = `<!doctype html>
     async function loadConfig() {
       state.config = await api("/tvbot/config");
       applyMenuSettings();
+      syncActiveTabAfterMenuSettings();
       renderConfig();
       renderOrderSettings();
       renderMenuSettings();
@@ -2022,9 +2054,10 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function saveMenuSettings() {
-      const patch = { ui: { menu_items: currentMenuItems() } };
+      const patch = { ui: { default_tab: configuredDefaultTab(), menu_items: currentMenuItems() } };
       state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
       applyMenuSettings();
+      syncActiveTabAfterMenuSettings();
       renderMenuSettings();
       toast("菜单设置已保存");
     }
@@ -2226,6 +2259,14 @@ const tvbotHTML = `<!doctype html>
       applyMenuSettings();
     });
     $("menu-settings-rows").addEventListener("change", (event) => {
+      const homeInput = event.target.closest("input[data-menu-home]");
+      if (homeInput) {
+        if (!state.config) state.config = {};
+        if (!state.config.ui) state.config.ui = {};
+        if (menuDefinition(homeInput.dataset.menuHome)) state.config.ui.default_tab = homeInput.dataset.menuHome;
+        renderMenuSettings();
+        return;
+      }
       const input = event.target.closest("input[data-menu-hidden]");
       if (!input) return;
       const items = currentMenuItems();
