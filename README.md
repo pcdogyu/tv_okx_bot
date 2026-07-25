@@ -44,6 +44,10 @@ go run ./cmd/tv-okx-bot serve --config config.example.json
 go run ./cmd/tv-okx-bot check-okx --config config.example.json
 ```
 
+## AI Agent Workflow
+
+Future AI agents should read `AGENTS.md` before making changes. It records the default delivery flow: verify, commit task-related files, push the current branch to `origin`, trigger `POST https://tvbot.lmitis.com/upgrade`, then check upgrade status.
+
 ## Routes
 
 - `GET /` returns `302` to `https://www.mext.go.jp/`.

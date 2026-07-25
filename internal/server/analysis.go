@@ -20,7 +20,7 @@ const (
 	defaultPriceDays    = 3
 	defaultPNLDays      = 30
 	analysisCacheTTL    = 60 * time.Second
-	usdtSampleInterval  = time.Hour
+	usdtSampleInterval  = time.Minute
 )
 
 type analysisResponse struct {
@@ -391,7 +391,6 @@ func (s *Server) recordUSDTBalanceSnapshot(apiID, envName string, balance okx.Ac
 		return s.Orders.UpsertUSDTBalanceSnapshot(storage.USDTBalanceSnapshot{
 			APIID:            apiID,
 			Env:              envName,
-			BucketTS:         observedAt.UTC().Truncate(time.Hour).UnixMilli(),
 			ObservedAt:       observedAt.UTC(),
 			TotalEq:          strings.TrimSpace(balance.TotalEq),
 			Eq:               strings.TrimSpace(detail.Eq),
@@ -476,6 +475,7 @@ func (s *Server) refreshFills(ctx context.Context, client okx.Client, apiID stri
 
 func (s *Server) analysisFromStore(apiID, envName string, priceDays, pnlDays int, now time.Time, source analysisSourceStatus) (analysisResponse, error) {
 	priceLimit := priceDays * 24
+	balanceLimit := priceDays*24*60 + 1
 	priceSince := now.AddDate(0, 0, -priceDays)
 	candles, err := s.Orders.ListMarketCandles(analysisPriceInstID, analysisPriceBar, priceSince, priceLimit)
 	if err != nil {
@@ -493,7 +493,7 @@ func (s *Server) analysisFromStore(apiID, envName string, priceDays, pnlDays int
 			Confirm: candle.Confirm,
 		})
 	}
-	snapshots, err := s.Orders.ListUSDTBalanceSnapshots(apiID, envName, priceSince, priceLimit)
+	snapshots, err := s.Orders.ListUSDTBalanceSnapshots(apiID, envName, priceSince, balanceLimit)
 	if err != nil {
 		return analysisResponse{}, err
 	}

@@ -844,6 +844,11 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 
 func TestUSDTBalanceSamplerStoresConfiguredAccounts(t *testing.T) {
 	srv := newTestServer(t)
+	if usdtSampleInterval != time.Minute {
+		t.Fatalf("USDT balance sampler interval = %s, want 1m", usdtSampleInterval)
+	}
+	observedAt := time.Date(2026, 7, 24, 3, 4, 45, 0, time.UTC)
+	srv.Now = func() time.Time { return observedAt }
 	seen := map[string]bool{}
 	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v5/account/balance" {
@@ -897,7 +902,7 @@ func TestUSDTBalanceSamplerStoresConfiguredAccounts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(snapshots) != 1 || snapshots[0].EqUsd != eqUSD {
+		if len(snapshots) != 1 || snapshots[0].EqUsd != eqUSD || snapshots[0].BucketTS != observedAt.Truncate(time.Minute).UnixMilli() {
 			t.Fatalf("bad %s snapshots: %#v", apiID, snapshots)
 		}
 	}

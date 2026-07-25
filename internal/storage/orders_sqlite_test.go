@@ -182,4 +182,21 @@ func TestSQLiteAnalysisTables(t *testing.T) {
 	if len(snapshots) != 1 || snapshots[0].EqUsd != "1001.5" || !snapshots[0].ObservedAt.Equal(now.Add(10*time.Minute)) {
 		t.Fatalf("bad USDT balance snapshots: %#v", snapshots)
 	}
+	minuteObservedAt := now.Add(14*time.Minute + 45*time.Second)
+	if err := store.UpsertUSDTBalanceSnapshot(USDTBalanceSnapshot{
+		APIID:      "default",
+		Env:        "demo",
+		ObservedAt: minuteObservedAt,
+		Eq:         "1003",
+		EqUsd:      "1002.5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err = store.ListUSDTBalanceSnapshots("default", "demo", now.Add(-time.Hour), 72)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 2 || snapshots[1].BucketTS != minuteObservedAt.UTC().Truncate(time.Minute).UnixMilli() || snapshots[1].EqUsd != "1002.5" {
+		t.Fatalf("USDT balance snapshots should bucket by minute: %#v", snapshots)
+	}
 }

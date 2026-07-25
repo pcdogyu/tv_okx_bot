@@ -59,6 +59,8 @@ type CachedPayload struct {
 	RefreshedAt time.Time
 }
 
+const usdtBalanceSnapshotBucket = time.Minute
+
 func (s *OrderStore) UpsertMarketCandles(candles []MarketCandle, fetchedAt time.Time) error {
 	if s.db == nil {
 		return errors.New("sqlite database is not configured")
@@ -240,7 +242,7 @@ func (s *OrderStore) UpsertUSDTBalanceSnapshot(snapshot USDTBalanceSnapshot) err
 	}
 	snapshot.ObservedAt = snapshot.ObservedAt.UTC()
 	if snapshot.BucketTS <= 0 {
-		snapshot.BucketTS = snapshot.ObservedAt.Truncate(time.Hour).UnixMilli()
+		snapshot.BucketTS = snapshot.ObservedAt.Truncate(usdtBalanceSnapshotBucket).UnixMilli()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
