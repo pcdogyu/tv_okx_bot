@@ -2058,7 +2058,7 @@ const tvbotHTML = `<!doctype html>
       const disabled = busy;
       const label = busy ? "处理中" : (chasing ? "停止追单" : "追单");
       const mode = chasing ? "stop" : "start";
-      return '<td><button class="btn small' + (unavailable ? " is-disabled" : "") + '" type="button" data-pending-chase="' + mode + '"' +
+      const chaseButton = '<button class="btn small' + (unavailable ? " is-disabled" : "") + '" type="button" data-pending-chase="' + mode + '"' +
         ' data-exchange="' + exchange + '"' +
         ' data-api-id="' + escapeHTML(row._api_id || "") + '"' +
         ' data-inst-id="' + escapeHTML(asText(row.instId)) + '"' +
@@ -2067,7 +2067,16 @@ const tvbotHTML = `<!doctype html>
         ' data-price-error="' + escapeHTML(row.price_error || "") + '"' +
         (unavailable ? ' aria-disabled="true"' : "") +
         ' title="' + escapeHTML(row.price_error || label) + '"' +
-        (disabled ? " disabled" : "") + ">" + label + "</button></td>";
+        (disabled ? " disabled" : "") + ">" + label + "</button>";
+      const cancelButton = exchange === "binance" ? '<button class="btn small danger" type="button" data-pending-cancel="true"' +
+        ' data-exchange="' + exchange + '"' +
+        ' data-api-id="' + escapeHTML(row._api_id || "") + '"' +
+        ' data-inst-id="' + escapeHTML(asText(row.instId)) + '"' +
+        ' data-ord-id="' + escapeHTML(row.ordId || "") + '"' +
+        ' data-cl-ord-id="' + escapeHTML(row.clOrdId || "") + '"' +
+        ' title="取消 Binance 挂单"' +
+        (disabled ? " disabled" : "") + ">取消</button>" : "";
+      return '<td><div class="position-actions">' + chaseButton + cancelButton + "</div></td>";
     }
 
     function positionPercent(v) {
@@ -2558,6 +2567,33 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
+    async function cancelPendingOrder(button) {
+      const exchange = normalizeExchange(button.dataset.exchange || "okx");
+      if (exchange !== "binance") {
+        toast("仅支持取消 Binance 挂单");
+        return;
+      }
+      const body = {
+        exchange: exchange,
+        api_id: button.dataset.apiId || "",
+        inst_id: button.dataset.instId || "",
+        ord_id: button.dataset.ordId || "",
+        cl_ord_id: button.dataset.clOrdId || ""
+      };
+      const key = [exchange, body.api_id, String(body.inst_id || "").toUpperCase(), body.ord_id || ("cl:" + body.cl_ord_id)].join("|");
+      if (!body.inst_id || (!body.ord_id && !body.cl_ord_id) || state.pendingOrderActions[key]) return;
+      state.pendingOrderActions[key] = true;
+      renderPendingOrders();
+      try {
+        const result = await api("/tvbot/pending-orders/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        toast(result.status === "finished" ? "挂单已不存在" : "Binance 挂单已取消");
+        await loadPendingOrders();
+      } finally {
+        delete state.pendingOrderActions[key];
+        renderPendingOrders();
+      }
+    }
+
     async function checkOKX() {
       $("okx-output").textContent = "checking...";
       try {
@@ -2711,8 +2747,13 @@ const tvbotHTML = `<!doctype html>
     });
     $("pending-order-rows").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-pending-chase]");
-      if (!button) return;
-      chasePendingOrder(button).catch((err) => toast(err.message));
+      if (button) {
+        chasePendingOrder(button).catch((err) => toast(err.message));
+        return;
+      }
+      const cancelButton = event.target.closest("button[data-pending-cancel]");
+      if (!cancelButton) return;
+      cancelPendingOrder(cancelButton).catch((err) => toast(err.message));
     });
     $("refresh-orders").addEventListener("click", () => loadOrders().then(() => toast("订单已刷新")).catch((err) => toast(err.message)));
     $("refresh-upgrade").addEventListener("click", () => loadUpgrade().then(() => toast("升级状态已刷新")).catch((err) => toast(err.message)));

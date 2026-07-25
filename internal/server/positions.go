@@ -264,6 +264,74 @@ func (s *Server) handlePendingOrderChaseStop(w http.ResponseWriter, r *http.Requ
 	s.handlePendingOrderChaseAction(w, r, false)
 }
 
+func (s *Server) handlePendingOrderCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
+		return
+	}
+	var req pendingOrderChaseRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	req.normalize()
+	if err := req.validate(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pending_order_cancel", err.Error())
+		return
+	}
+	if req.Exchange != trading.ExchangeBinance {
+		writeError(w, http.StatusBadRequest, "unsupported_exchange", "only Binance pending order cancel is supported")
+		return
+	}
+	if s.BinanceCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+		return
+	}
+	cfg := s.ConfigStore.Get()
+	if !cfg.BinanceLiveTradingAllowedByEnvironment() {
+		writeError(w, http.StatusForbidden, "live_trading_disabled", "Binance live trading is not allowed by environment")
+		return
+	}
+	client, apiID, err := s.binanceClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	req.APIID = apiID
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	order, found, err := currentBinancePendingOrder(ctx, client, req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_cancel_failed", err.Error())
+		return
+	}
+	resp := pendingOrderChaseResponse{
+		OK:      true,
+		APIID:   apiID,
+		InstID:  req.InstID,
+		OrdID:   req.OrdID,
+		ClOrdID: req.ClOrdID,
+	}
+	if !found {
+		pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+		resp.Status = "finished"
+		resp.Message = "pending order is no longer open"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.OrdID = order.OrdID
+	resp.ClOrdID = order.ClOrdID
+	if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_cancel_failed", err.Error())
+		return
+	}
+	pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+	resp.Status = "canceled"
+	resp.Message = "pending order canceled"
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Request, start bool) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")

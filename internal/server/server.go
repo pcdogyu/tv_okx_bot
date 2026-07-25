@@ -277,6 +277,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handlePendingOrderChase(w, r)
 	case path == "/pending-orders/chase/stop":
 		s.handlePendingOrderChaseStop(w, r)
+	case path == "/pending-orders/cancel":
+		s.handlePendingOrderCancel(w, r)
 	case path == "/positions/close":
 		s.handlePositionClose(w, r)
 	case path == "/api-keys":
