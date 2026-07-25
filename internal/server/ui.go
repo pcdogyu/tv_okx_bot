@@ -947,9 +947,11 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="split">
         <div class="grid two">
+          <label>Webhook URL<input id="template-webhook-url" readonly></label>
           <label>下单去向<select id="tpl-target-exchange"><option value="okx">OKX</option><option value="binance">Binance USDⓈ-M</option></select></label>
           <label>交易 API<select id="tpl-api-id"></select></label>
           <label>价格源<select id="tpl-price-source"><option value="close">close</option><option value="high">high</option><option value="low">low</option></select></label>
+          <div class="actions" style="margin-top:0"><button class="btn" type="button" id="copy-webhook-url">复制 URL</button></div>
         </div>
         <div>
           <textarea id="template-output" readonly></textarea>
@@ -1891,6 +1893,16 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
+    function templateWebhookURL() {
+      return new URL("/tvorder", window.location.origin).toString();
+    }
+
+    function renderTemplateWebhookURL() {
+      if ($("template-webhook-url")) {
+        $("template-webhook-url").value = templateWebhookURL();
+      }
+    }
+
     function renderAnalysisAPIs() {
       const select = $("analysis-api-id");
       const current = select.value;
@@ -2587,6 +2599,11 @@ const tvbotHTML = `<!doctype html>
     $("refresh-positions").addEventListener("click", () => loadPositionView().then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
     $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
+    $("copy-webhook-url").addEventListener("click", async () => {
+      renderTemplateWebhookURL();
+      await navigator.clipboard.writeText($("template-webhook-url").value);
+      toast("Webhook URL 已复制");
+    });
     $("copy-template").addEventListener("click", async () => {
       await navigator.clipboard.writeText($("template-output").value);
       toast("已复制");
@@ -2610,6 +2627,7 @@ const tvbotHTML = `<!doctype html>
     $("refresh-upgrade").addEventListener("click", () => loadUpgrade().then(() => toast("升级状态已刷新")).catch((err) => toast(err.message)));
     $("start-upgrade").addEventListener("click", () => startUpgrade().catch((err) => toast(err.message)));
 
+    renderTemplateWebhookURL();
     activateTab(initialTab(), false);
     loadAll().catch((err) => toast(err.message));
   </script>

@@ -214,6 +214,10 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("交易所 / 返回")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("信号来源")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("下单去向")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("Webhook URL")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("template-webhook-url")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("copy-webhook-url")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`new URL("/tvorder"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("target_exchange")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-target-exchange")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-exchange")) ||
