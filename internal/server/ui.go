@@ -506,6 +506,17 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: wrap;
     }
     .analysis-controls label { min-width: 260px; }
+    .exchange-summary {
+      display: inline-flex;
+      align-items: center;
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--muted);
+      background: #f8fafc;
+      font-weight: 650;
+    }
     .symbol-controls {
       display: flex;
       gap: 10px;
@@ -750,8 +761,7 @@ const tvbotHTML = `<!doctype html>
       <div class="section-head">
         <h2>当前持仓</h2>
         <div class="analysis-controls">
-          <label>交易所<select id="position-exchange"><option value="okx">OKX</option><option value="binance">Binance USDⓈ-M</option></select></label>
-          <label>交易 API<select id="position-api-id"></select></label>
+          <span class="exchange-summary" id="position-exchange-summary">OKX / Binance USDⓈ-M</span>
           <button class="btn primary" type="button" id="refresh-positions">刷新持仓</button>
         </div>
       </div>
@@ -1043,6 +1053,7 @@ const tvbotHTML = `<!doctype html>
       { tab: "menuSettings", label: "菜单设置", locked: true },
       { tab: "upgrade", label: "升级" }
     ];
+    const positionExchanges = ["okx", "binance"];
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options) {
@@ -1528,35 +1539,107 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadPositions() {
-      const qs = new URLSearchParams({ inst_type: "SWAP" });
-      const selected = $("position-api-id") ? $("position-api-id").value : "";
-      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
-      qs.set("exchange", exchange);
-      if (selected) qs.set("api_id", selected);
-      try {
-        state.positions = await api("/tvbot/positions?" + qs.toString());
-        state.positionsError = "";
-      } catch (err) {
-        state.positions = null;
-        state.positionsError = err.message;
-      }
+      const results = await Promise.all(positionExchanges.map((exchange) => loadPositionExchange(exchange)));
+      const rows = [];
+      results.forEach((result) => {
+        const exchange = normalizeExchange(result.exchange);
+        const apiID = result.api_id || "";
+        (Array.isArray(result.positions) ? result.positions : []).forEach((row) => {
+          rows.push(Object.assign({}, row, { _exchange: exchange, _api_id: apiID }));
+        });
+      });
+      state.positions = {
+        ok: results.some((result) => result.ok),
+        count: rows.length,
+        refreshed_at: combinedRefreshedAt(results),
+        exchanges: results,
+        positions: rows
+      };
+      state.positionsError = combinedErrors(results);
       renderPositions();
     }
 
     async function loadPendingOrders() {
-      const qs = new URLSearchParams({ inst_type: "SWAP" });
-      const selected = $("position-api-id") ? $("position-api-id").value : "";
-      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
-      qs.set("exchange", exchange);
-      if (selected) qs.set("api_id", selected);
-      try {
-        state.pendingOrders = await api("/tvbot/pending-orders?" + qs.toString());
-        state.pendingOrdersError = "";
-      } catch (err) {
-        state.pendingOrders = null;
-        state.pendingOrdersError = err.message;
-      }
+      const results = await Promise.all(positionExchanges.map((exchange) => loadPendingOrdersExchange(exchange)));
+      const rows = [];
+      results.forEach((result) => {
+        const exchange = normalizeExchange(result.exchange);
+        const apiID = result.api_id || "";
+        (Array.isArray(result.orders) ? result.orders : []).forEach((row) => {
+          rows.push(Object.assign({}, row, { _exchange: exchange, _api_id: apiID }));
+        });
+      });
+      state.pendingOrders = {
+        ok: results.some((result) => result.ok),
+        count: rows.length,
+        refreshed_at: combinedRefreshedAt(results),
+        exchanges: results,
+        orders: rows
+      };
+      state.pendingOrdersError = combinedErrors(results);
       renderPendingOrders();
+    }
+
+    async function loadPositionExchange(exchange) {
+      const qs = new URLSearchParams({ inst_type: "SWAP", exchange });
+      try {
+        const result = await api("/tvbot/positions?" + qs.toString());
+        result.exchange = normalizeExchange(result.exchange || exchange);
+        return result;
+      } catch (err) {
+        return positionExchangeError(exchange, err);
+      }
+    }
+
+    async function loadPendingOrdersExchange(exchange) {
+      const qs = new URLSearchParams({ inst_type: "SWAP", exchange });
+      try {
+        const result = await api("/tvbot/pending-orders?" + qs.toString());
+        result.exchange = normalizeExchange(result.exchange || exchange);
+        return result;
+      } catch (err) {
+        const result = positionExchangeError(exchange, err);
+        result.orders = [];
+        return result;
+      }
+    }
+
+    function positionExchangeError(exchange, err) {
+      return {
+        ok: false,
+        exchange: normalizeExchange(exchange),
+        api_id: "",
+        count: 0,
+        refreshed_at: "",
+        positions: [],
+        error: err && err.message ? err.message : String(err || "读取失败")
+      };
+    }
+
+    function combinedErrors(results) {
+      return results
+        .filter((result) => result && result.error)
+        .map((result) => exchangeLabel(result.exchange) + ": " + result.error)
+        .join(" / ");
+    }
+
+    function combinedRefreshedAt(results) {
+      return results.reduce((latest, result) => {
+        const value = result && result.refreshed_at ? new Date(result.refreshed_at).getTime() : 0;
+        if (!Number.isFinite(value) || value <= 0) return latest;
+        return value > latest ? value : latest;
+      }, 0);
+    }
+
+    function combinedStatusText(response) {
+      const exchanges = response && Array.isArray(response.exchanges) ? response.exchanges : [];
+      if (exchanges.length === 0) return "-";
+      return exchanges.map((result) => {
+        const label = exchangeLabel(result.exchange);
+        if (result && result.refreshed_at) return label + " " + shanghaiTime(result.refreshed_at);
+        if (result && result.error) return label + " 失败";
+        return label + " -";
+      }).join(" / ");
     }
 
     async function loadPositionView() {
@@ -1913,13 +1996,14 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderPositionAPIs() {
-      const select = $("position-api-id");
-      const current = select.value;
-      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
-      const status = apiKeyStatus(exchange);
-      const options = apiAccounts(exchange).map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
-      select.innerHTML = '<option value="">默认交易 API</option>' + options.join("");
-      select.value = current || (status && status.active_id ? status.active_id : "");
+      const summary = $("position-exchange-summary");
+      if (!summary) return;
+      summary.textContent = positionExchanges.map((exchange) => {
+        const status = apiKeyStatus(exchange);
+        if (!status || !status.configured) return exchangeLabel(exchange) + " 未配置";
+        const apiID = status && status.active_id ? status.active_id : "default";
+        return exchangeLabel(exchange) + " " + apiDisplayName(apiID, exchange);
+      }).join(" / ");
     }
 
     function positionSideText(posSide, pos) {
@@ -1950,14 +2034,14 @@ const tvbotHTML = `<!doctype html>
     }
 
     function pendingOrderRowKey(row) {
-      const apiID = state.pendingOrders && state.pendingOrders.api_id ? state.pendingOrders.api_id : ($("position-api-id") ? $("position-api-id").value : "");
-      const exchange = state.pendingOrders && state.pendingOrders.exchange ? state.pendingOrders.exchange : ($("position-exchange") ? $("position-exchange").value : "okx");
+      const apiID = row._api_id || "";
+      const exchange = row._exchange || "okx";
       const orderID = row.ordId || ("cl:" + (row.clOrdId || ""));
       return [normalizeExchange(exchange), apiID, String(row.instId || "").toUpperCase(), orderID].join("|");
     }
 
     function pendingOrderActionCell(row) {
-      const exchange = state.pendingOrders && state.pendingOrders.exchange ? normalizeExchange(state.pendingOrders.exchange) : ($("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx");
+      const exchange = normalizeExchange(row._exchange || "okx");
       if (exchange === "binance") {
         return '<td><span class="muted">不支持</span></td>';
       }
@@ -1969,6 +2053,8 @@ const tvbotHTML = `<!doctype html>
       const label = busy ? "处理中" : (chasing ? "停止追单" : "追单");
       const mode = chasing ? "stop" : "start";
       return '<td><button class="btn small' + (unavailable ? " is-disabled" : "") + '" type="button" data-pending-chase="' + mode + '"' +
+        ' data-exchange="' + exchange + '"' +
+        ' data-api-id="' + escapeHTML(row._api_id || "") + '"' +
         ' data-inst-id="' + escapeHTML(asText(row.instId)) + '"' +
         ' data-ord-id="' + escapeHTML(row.ordId || "") + '"' +
         ' data-cl-ord-id="' + escapeHTML(row.clOrdId || "") + '"' +
@@ -2003,11 +2089,11 @@ const tvbotHTML = `<!doctype html>
     }
 
     function positionCloseRowKey(row) {
-      return String(row.instId || "").toUpperCase() + "|" + String(row.posSide || "net").toLowerCase();
+      return [normalizeExchange(row._exchange || "okx"), row._api_id || "", String(row.instId || "").toUpperCase(), String(row.posSide || "net").toLowerCase()].join("|");
     }
 
     function positionActionCell(row) {
-      const exchange = state.positions && state.positions.exchange ? normalizeExchange(state.positions.exchange) : ($("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx");
+      const exchange = normalizeExchange(row._exchange || "okx");
       if (exchange === "binance") {
         return '<td><span class="muted">不支持</span></td>';
       }
@@ -2015,26 +2101,28 @@ const tvbotHTML = `<!doctype html>
       const closing = !!state.positionClosing[key];
       const instID = escapeHTML(asText(row.instId));
       const posSide = escapeHTML(String(row.posSide || ""));
+      const apiID = escapeHTML(row._api_id || "");
       return '<td><div class="position-actions">' +
-        '<button class="btn small danger" type="button" data-position-close="market" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"' + (closing ? " disabled" : "") + '>市价平仓</button>' +
-        '<button class="btn small" type="button" data-position-close="limit" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"' + (closing ? " disabled" : "") + '>限价平仓</button>' +
+        '<button class="btn small danger" type="button" data-position-close="market" data-exchange="' + exchange + '" data-api-id="' + apiID + '" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"' + (closing ? " disabled" : "") + '>市价平仓</button>' +
+        '<button class="btn small" type="button" data-position-close="limit" data-exchange="' + exchange + '" data-api-id="' + apiID + '" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"' + (closing ? " disabled" : "") + '>限价平仓</button>' +
         '</div></td>';
     }
 
     function renderPositions() {
       const rows = state.positions && Array.isArray(state.positions.positions) ? state.positions.positions : [];
       const totalUpl = positionSum(rows, "upl");
-      $("positions-count").textContent = state.positions ? asText(state.positions.count || rows.length) : "-";
-      $("positions-upl").textContent = state.positions ? formatNumber(totalUpl) + " USDT" : "-";
-      $("positions-upl").className = ["value", state.positions ? signedToneClass(totalUpl) : ""].filter(Boolean).join(" ");
-      $("positions-notional").textContent = state.positions ? formatUSD(positionSum(rows, "notionalUsd")) : "-";
-      $("positions-updated").textContent = state.positions && state.positions.refreshed_at ? shanghaiTime(state.positions.refreshed_at) : "-";
+      const positionsReady = state.positions && state.positions.ok;
+      $("positions-count").textContent = positionsReady ? asText(state.positions.count || rows.length) : "-";
+      $("positions-upl").textContent = positionsReady ? formatNumber(totalUpl) + " USDT" : "-";
+      $("positions-upl").className = ["value", positionsReady ? signedToneClass(totalUpl) : ""].filter(Boolean).join(" ");
+      $("positions-notional").textContent = positionsReady ? formatUSD(positionSum(rows, "notionalUsd")) : "-";
+      $("positions-updated").textContent = state.positions ? combinedStatusText(state.positions) : "-";
       if (!state.positions) {
         $("position-rows").innerHTML = '<tr><td colspan="14" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
         return;
       }
-      const exchange = normalizeExchange(state.positions.exchange || ($("position-exchange") ? $("position-exchange").value : "okx"));
-      $("position-rows").innerHTML = rows.map((row) => {
+      const positionRows = rows.map((row) => {
+        const exchange = normalizeExchange(row._exchange || "okx");
         return "<tr>" +
           "<td>" + escapeHTML(exchangeLabel(exchange)) + "</td>" +
           "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
@@ -2051,7 +2139,9 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(formatNumber(row.liqPx)) + "</td>" +
           positionActionCell(row) +
           "</tr>";
-      }).join("") || '<tr><td colspan="14" class="muted">暂无当前持仓</td></tr>';
+      }).join("");
+      const warningRow = state.positionsError ? '<tr><td colspan="14" class="muted">' + escapeHTML(state.positionsError) + '</td></tr>' : "";
+      $("position-rows").innerHTML = positionRows + warningRow || '<tr><td colspan="14" class="muted">暂无当前持仓</td></tr>';
     }
 
     function renderPendingOrders() {
@@ -2061,9 +2151,10 @@ const tvbotHTML = `<!doctype html>
         $("pending-order-rows").innerHTML = '<tr><td colspan="12" class="muted">' + escapeHTML(state.pendingOrdersError || "-") + '</td></tr>';
         return;
       }
-      const exchange = normalizeExchange(state.pendingOrders.exchange || ($("position-exchange") ? $("position-exchange").value : "okx"));
-      $("pending-orders-updated").textContent = "挂单数 " + asText(state.pendingOrders.count || rows.length) + " / 更新时间 " + (state.pendingOrders.refreshed_at ? shanghaiTime(state.pendingOrders.refreshed_at) : "-");
-      $("pending-order-rows").innerHTML = rows.map((row) => {
+      const pendingReady = state.pendingOrders && state.pendingOrders.ok;
+      $("pending-orders-updated").textContent = "挂单数 " + (pendingReady ? asText(state.pendingOrders.count || rows.length) : "-") + " / " + combinedStatusText(state.pendingOrders);
+      const orderRows = rows.map((row) => {
+        const exchange = normalizeExchange(row._exchange || "okx");
         return "<tr>" +
           "<td>" + escapeHTML(exchangeLabel(exchange)) + "</td>" +
           '<td class="time">' + escapeHTML(shanghaiTimeFromOKX(row.cTime || row.uTime)) + "</td>" +
@@ -2078,7 +2169,9 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(pendingOrderStateText(row.state)) + "</td>" +
           pendingOrderActionCell(row) +
           "</tr>";
-      }).join("") || '<tr><td colspan="12" class="muted">暂无当前挂单</td></tr>';
+      }).join("");
+      const warningRow = state.pendingOrdersError ? '<tr><td colspan="12" class="muted">' + escapeHTML(state.pendingOrdersError) + '</td></tr>' : "";
+      $("pending-order-rows").innerHTML = orderRows + warningRow || '<tr><td colspan="12" class="muted">暂无当前挂单</td></tr>';
     }
 
     function renderAnalysis() {
@@ -2395,7 +2488,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function closePosition(button) {
-      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
+      const exchange = normalizeExchange(button.dataset.exchange || "okx");
       if (exchange !== "okx") {
         toast("Binance 暂不支持页面平仓");
         return;
@@ -2403,7 +2496,8 @@ const tvbotHTML = `<!doctype html>
       const mode = button.dataset.positionClose;
       const instID = button.dataset.instId || "";
       const posSide = button.dataset.posSide || "";
-      const key = instID.toUpperCase() + "|" + (posSide || "net").toLowerCase();
+      const apiID = button.dataset.apiId || "";
+      const key = [exchange, apiID, instID.toUpperCase(), (posSide || "net").toLowerCase()].join("|");
       if (!instID || !mode || state.positionClosing[key]) return;
       state.positionClosing[key] = true;
       renderPositions();
@@ -2412,7 +2506,7 @@ const tvbotHTML = `<!doctype html>
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            api_id: $("position-api-id").value,
+            api_id: apiID,
             inst_id: instID,
             pos_side: posSide,
             mode
@@ -2428,7 +2522,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function chasePendingOrder(button) {
-      const exchange = $("position-exchange") ? normalizeExchange($("position-exchange").value) : "okx";
+      const exchange = normalizeExchange(button.dataset.exchange || "okx");
       if (exchange !== "okx") {
         toast("Binance 暂不支持追单");
         return;
@@ -2439,13 +2533,14 @@ const tvbotHTML = `<!doctype html>
         toast(priceError);
         return;
       }
+      const apiID = button.dataset.apiId || "";
       const body = {
-        api_id: state.pendingOrders && state.pendingOrders.api_id ? state.pendingOrders.api_id : ($("position-api-id").value || ""),
+        api_id: apiID,
         inst_id: button.dataset.instId || "",
         ord_id: button.dataset.ordId || "",
         cl_ord_id: button.dataset.clOrdId || ""
       };
-      const key = [body.api_id, String(body.inst_id || "").toUpperCase(), body.ord_id || ("cl:" + body.cl_ord_id)].join("|");
+      const key = [exchange, body.api_id, String(body.inst_id || "").toUpperCase(), body.ord_id || ("cl:" + body.cl_ord_id)].join("|");
       if (!body.inst_id || (!body.ord_id && !body.cl_ord_id) || state.pendingOrderActions[key]) return;
       state.pendingOrderActions[key] = true;
       renderPendingOrders();
@@ -2589,13 +2684,6 @@ const tvbotHTML = `<!doctype html>
     });
     $("analysis-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
     $("refresh-analysis").addEventListener("click", () => loadAnalysis(true).then(() => toast("分析已刷新")).catch((err) => toast(err.message)));
-    $("position-exchange").addEventListener("change", () => {
-      renderPositionAPIs();
-      state.positions = null;
-      state.pendingOrders = null;
-      loadPositionView().catch((err) => toast(err.message));
-    });
-    $("position-api-id").addEventListener("change", () => loadPositionView().catch((err) => toast(err.message)));
     $("refresh-positions").addEventListener("click", () => loadPositionView().then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
     $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));

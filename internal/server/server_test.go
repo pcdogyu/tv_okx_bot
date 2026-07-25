@@ -140,7 +140,8 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("持仓")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/pending-orders")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("position-api-id")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("position-exchange-summary")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("positionExchanges")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("当前挂单")) ||
@@ -220,7 +221,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(`new URL("/tvorder"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("target_exchange")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-target-exchange")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("position-exchange")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("position-exchange\"><option")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("position-api-id")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("order-okx")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("apiDisplayName")) {
 		t.Fatalf("tvbot ui should render exchange-aware API, template and order history controls")
