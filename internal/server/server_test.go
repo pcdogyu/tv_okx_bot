@@ -144,6 +144,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("当前挂单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("renderPendingOrders")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("委托价格")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("中间价")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("追单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("停止追单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/pending-orders/chase")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/pending-orders/chase/stop")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-profit")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-loss")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signedCell")) ||
@@ -152,6 +158,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions/close")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-position-close")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("<th>操作</th>")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("<th>订单 ID</th>")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("<th>客户端 ID</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>更新时间</th>")) {
 		t.Fatalf("tvbot ui should include current positions tab")
 	}
@@ -988,21 +996,39 @@ func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
 	srv := newTestServer(t)
 	var sawPendingOrders bool
 	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v5/trade/orders-pending" {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			sawPendingOrders = true
+			if r.URL.Query().Get("instType") != "SWAP" {
+				t.Fatalf("bad pending orders query: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
+				t.Fatalf("missing private OKX headers")
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"ETH-USDT-SWAP","ordId":"200","clOrdId":"client-200","tdMode":"cross","side":"sell","posSide":"short","ordType":"limit","px":"2500","sz":"1","accFillSz":"0","state":"live","lever":"5","cTime":"1784880060000","uTime":"1784880060000"},
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"buy","posSide":"long","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0.1","avgPx":"63950","state":"partially_filled","lever":"5","cTime":"1784880000000","uTime":"1784880060000"}
+			]}`))
+		case "/api/v5/public/instruments":
+			instID := r.URL.Query().Get("instId")
+			tick := "0.1"
+			if instID == "ETH-USDT-SWAP" {
+				tick = "0.01"
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"` + instID + `","tickSz":"` + tick + `","ctVal":"1","lotSz":"1","minSz":"1"}]}`))
+		case "/api/v5/market/ticker":
+			switch r.URL.Query().Get("instId") {
+			case "BTC-USDT-SWAP":
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","bidPx":"63999","askPx":"64001","last":"64000"}]}`))
+			case "ETH-USDT-SWAP":
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"ETH-USDT-SWAP","bidPx":"2500","askPx":"2500.1","last":"2500.05"}]}`))
+			default:
+				t.Fatalf("unexpected ticker instId %s", r.URL.Query().Get("instId"))
+			}
+		default:
 			t.Fatalf("unexpected OKX path %s", r.URL.Path)
 		}
-		sawPendingOrders = true
-		if r.URL.Query().Get("instType") != "SWAP" {
-			t.Fatalf("bad pending orders query: %s", r.URL.RawQuery)
-		}
-		if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
-			t.Fatalf("missing private OKX headers")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
-			{"instType":"SWAP","instId":"ETH-USDT-SWAP","ordId":"200","clOrdId":"client-200","tdMode":"cross","side":"sell","posSide":"short","ordType":"limit","px":"2500","sz":"1","accFillSz":"0","state":"live","lever":"5","cTime":"1784880060000","uTime":"1784880060000"},
-			{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"buy","posSide":"long","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0.1","avgPx":"63950","state":"partially_filled","lever":"5","cTime":"1784880000000","uTime":"1784880060000"}
-		]}`))
 	}))
 	defer okxServer.Close()
 	cfg := srv.ConfigStore.Get()
@@ -1043,8 +1069,173 @@ func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
 	if !resp.OK || resp.APIID != "default" || resp.Count != 2 || len(resp.Orders) != 2 {
 		t.Fatalf("bad pending orders response: %#v", resp)
 	}
-	if resp.Orders[0].InstID != "BTC-USDT-SWAP" || resp.Orders[0].OrdID != "100" || resp.Orders[0].AccFillSz != "0.1" {
+	if resp.Orders[0].InstID != "BTC-USDT-SWAP" || resp.Orders[0].OrdID != "100" || resp.Orders[0].AccFillSz != "0.1" || resp.Orders[0].MidPx != "64000" || resp.Orders[0].ChasePx != "63999.9" {
 		t.Fatalf("bad pending order sorting/data: %#v", resp.Orders)
+	}
+}
+
+func TestTVBotPendingOrderChaseAmendsPassiveBuyAndStopsWhenOrderDisappears(t *testing.T) {
+	oldInterval := pendingOrderChaseInterval
+	oldJobs := pendingOrderChaseJobs
+	pendingOrderChaseInterval = 10 * time.Millisecond
+	pendingOrderChaseJobs = newPendingOrderChaseRegistry()
+	defer func() {
+		pendingOrderChaseInterval = oldInterval
+		pendingOrderChaseJobs = oldJobs
+	}()
+
+	srv := newTestServer(t)
+	var mu sync.Mutex
+	pendingCalls := 0
+	var amendBodies []map[string]string
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			mu.Lock()
+			pendingCalls++
+			call := pendingCalls
+			mu.Unlock()
+			if r.Header.Get("OK-ACCESS-KEY") != "key" {
+				t.Fatalf("missing private OKX headers")
+			}
+			if call == 1 {
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"buy","posSide":"long","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0","state":"live","cTime":"1784880000000"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/public/instruments":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","tickSz":"0.1","ctVal":"1","lotSz":"1","minSz":"1"}]}`))
+		case "/api/v5/market/ticker":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","bidPx":"63999","askPx":"64001","last":"64000"}]}`))
+		case "/api/v5/trade/amend-order":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			amendBodies = append(amendBodies, body)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"100","clOrdId":"client-100","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/trade/cancel-order":
+			t.Fatal("追单不应调用撤单接口")
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:          "default",
+		Active:      true,
+		Credentials: okx.Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/chase", strings.NewReader(`{"api_id":"default","inst_id":"BTC-USDT-SWAP","ord_id":"100","cl_ord_id":"client-100"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("chase code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp pendingOrderChaseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Px != "63999.9" || resp.MidPx != "64000" || resp.Status != "running" {
+		t.Fatalf("bad chase response: %#v", resp)
+	}
+	key := pendingOrderChaseKey(pendingOrderChaseRequest{APIID: "default", InstID: "BTC-USDT-SWAP", OrdID: "100", ClOrdID: "client-100"})
+	for i := 0; i < 100 && pendingOrderChaseJobs.activeKey(key); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pendingOrderChaseJobs.activeKey(key) {
+		t.Fatal("chase job should stop when pending order disappears")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(amendBodies) != 1 || amendBodies[0]["instId"] != "BTC-USDT-SWAP" || amendBodies[0]["ordId"] != "100" || amendBodies[0]["newPx"] != "63999.9" {
+		t.Fatalf("bad amend bodies: %#v", amendBodies)
+	}
+}
+
+func TestTVBotPendingOrderChaseStopDoesNotCancelOrder(t *testing.T) {
+	oldInterval := pendingOrderChaseInterval
+	oldJobs := pendingOrderChaseJobs
+	pendingOrderChaseInterval = time.Hour
+	pendingOrderChaseJobs = newPendingOrderChaseRegistry()
+	defer func() {
+		pendingOrderChaseInterval = oldInterval
+		pendingOrderChaseJobs = oldJobs
+	}()
+
+	srv := newTestServer(t)
+	var amendCount int
+	var cancelCalled bool
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"sell","posSide":"short","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0","state":"live","cTime":"1784880000000"}]}`))
+		case "/api/v5/public/instruments":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","tickSz":"0.1","ctVal":"1","lotSz":"1","minSz":"1"}]}`))
+		case "/api/v5/market/ticker":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","bidPx":"63999","askPx":"64001","last":"64000"}]}`))
+		case "/api/v5/trade/amend-order":
+			amendCount++
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"100","clOrdId":"client-100","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/trade/cancel-order":
+			cancelCalled = true
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:          "default",
+		Active:      true,
+		Credentials: okx.Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"api_id":"default","inst_id":"BTC-USDT-SWAP","ord_id":"100","cl_ord_id":"client-100"}`
+	start := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/chase", strings.NewReader(body))
+	start.Header.Set("Content-Type", "application/json")
+	start.SetBasicAuth("admin", "Admin123")
+	startRR := httptest.NewRecorder()
+	srv.ServeHTTP(startRR, start)
+	if startRR.Code != http.StatusAccepted {
+		t.Fatalf("start chase code=%d body=%s", startRR.Code, startRR.Body.String())
+	}
+	stop := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/chase/stop", strings.NewReader(body))
+	stop.Header.Set("Content-Type", "application/json")
+	stop.SetBasicAuth("admin", "Admin123")
+	stopRR := httptest.NewRecorder()
+	srv.ServeHTTP(stopRR, stop)
+	if stopRR.Code != http.StatusOK {
+		t.Fatalf("stop chase code=%d body=%s", stopRR.Code, stopRR.Body.String())
+	}
+	var resp pendingOrderChaseResponse
+	if err := json.Unmarshal(stopRR.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "stopped" {
+		t.Fatalf("bad stop response: %#v", resp)
+	}
+	if amendCount != 1 || cancelCalled {
+		t.Fatalf("stop should only cancel background job: amendCount=%d cancelCalled=%v", amendCount, cancelCalled)
 	}
 }
 

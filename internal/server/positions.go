@@ -25,6 +25,8 @@ var (
 	lowMarginPositionCheckInterval = time.Minute
 	lowMarginPositionThresholdUSDT = 10.0
 	positionCloseJobs              = newPositionCloseRegistry()
+	pendingOrderChaseInterval      = 5 * time.Second
+	pendingOrderChaseJobs          = newPendingOrderChaseRegistry()
 	positionCloseSeq               uint64
 )
 
@@ -43,7 +45,15 @@ type pendingOrdersResponse struct {
 	InstType    string             `json:"inst_type"`
 	Count       int                `json:"count"`
 	RefreshedAt time.Time          `json:"refreshed_at"`
-	Orders      []okx.PendingOrder `json:"orders"`
+	Orders      []pendingOrderView `json:"orders"`
+}
+
+type pendingOrderView struct {
+	okx.PendingOrder
+	MidPx      string `json:"mid_px,omitempty"`
+	ChasePx    string `json:"chase_px,omitempty"`
+	PriceError string `json:"price_error,omitempty"`
+	Chasing    bool   `json:"chasing"`
 }
 
 type positionCloseRequest struct {
@@ -51,6 +61,25 @@ type positionCloseRequest struct {
 	InstID  string `json:"inst_id"`
 	PosSide string `json:"pos_side"`
 	Mode    string `json:"mode"`
+}
+
+type pendingOrderChaseRequest struct {
+	APIID   string `json:"api_id"`
+	InstID  string `json:"inst_id"`
+	OrdID   string `json:"ord_id"`
+	ClOrdID string `json:"cl_ord_id"`
+}
+
+type pendingOrderChaseResponse struct {
+	OK      bool   `json:"ok"`
+	Status  string `json:"status"`
+	APIID   string `json:"api_id"`
+	InstID  string `json:"inst_id"`
+	OrdID   string `json:"ord_id,omitempty"`
+	ClOrdID string `json:"cl_ord_id,omitempty"`
+	MidPx   string `json:"mid_px,omitempty"`
+	Px      string `json:"px,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type positionCloseResponse struct {
@@ -77,8 +106,17 @@ type positionCloseRegistry struct {
 	active map[string]struct{}
 }
 
+type pendingOrderChaseRegistry struct {
+	mu     sync.Mutex
+	active map[string]context.CancelFunc
+}
+
 func newPositionCloseRegistry() *positionCloseRegistry {
 	return &positionCloseRegistry{active: map[string]struct{}{}}
+}
+
+func newPendingOrderChaseRegistry() *pendingOrderChaseRegistry {
+	return &pendingOrderChaseRegistry{active: map[string]context.CancelFunc{}}
 }
 
 func (r *positionCloseRegistry) start(key string) bool {
@@ -95,6 +133,42 @@ func (r *positionCloseRegistry) done(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.active, key)
+}
+
+func (r *pendingOrderChaseRegistry) start(key string, cancel context.CancelFunc) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.active[key]; ok {
+		return false
+	}
+	r.active[key] = cancel
+	return true
+}
+
+func (r *pendingOrderChaseRegistry) stop(key string) bool {
+	r.mu.Lock()
+	cancel, ok := r.active[key]
+	if ok {
+		delete(r.active, key)
+	}
+	r.mu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
+}
+
+func (r *pendingOrderChaseRegistry) done(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.active, key)
+}
+
+func (r *pendingOrderChaseRegistry) activeKey(key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.active[key]
+	return ok
 }
 
 func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +219,106 @@ func (s *Server) handlePendingOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handlePendingOrderChase(w http.ResponseWriter, r *http.Request) {
+	s.handlePendingOrderChaseAction(w, r, true)
+}
+
+func (s *Server) handlePendingOrderChaseStop(w http.ResponseWriter, r *http.Request) {
+	s.handlePendingOrderChaseAction(w, r, false)
+}
+
+func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Request, start bool) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
+		return
+	}
+	if s.OKXCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+		return
+	}
+	var req pendingOrderChaseRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	req.normalize()
+	if err := req.validate(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pending_order_chase", err.Error())
+		return
+	}
+	cfg := s.ConfigStore.Get()
+	client, apiID, err := s.okxClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	req.APIID = apiID
+	key := pendingOrderChaseKey(req)
+	if !start {
+		stopped := pendingOrderChaseJobs.stop(key)
+		status := "not_running"
+		message := "pending order chase was not running"
+		if stopped {
+			status = "stopped"
+			message = "pending order chase stopped"
+		}
+		writeJSON(w, http.StatusOK, pendingOrderChaseResponse{
+			OK:      true,
+			Status:  status,
+			APIID:   apiID,
+			InstID:  req.InstID,
+			OrdID:   req.OrdID,
+			ClOrdID: req.ClOrdID,
+			Message: message,
+		})
+		return
+	}
+	if pendingOrderChaseJobs.activeKey(key) {
+		writeJSON(w, http.StatusOK, pendingOrderChaseResponse{
+			OK:      true,
+			Status:  "running",
+			APIID:   apiID,
+			InstID:  req.InstID,
+			OrdID:   req.OrdID,
+			ClOrdID: req.ClOrdID,
+			Message: "pending order chase is already running",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	result, closed, err := chasePendingOrderOnce(ctx, client, req)
+	cancel()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_chase_failed", err.Error())
+		return
+	}
+	if closed {
+		writeJSON(w, http.StatusConflict, pendingOrderChaseResponse{
+			OK:      false,
+			Status:  "finished",
+			APIID:   apiID,
+			InstID:  req.InstID,
+			OrdID:   req.OrdID,
+			ClOrdID: req.ClOrdID,
+			Message: "pending order is no longer open",
+		})
+		return
+	}
+	chaseCtx, chaseCancel := context.WithCancel(context.Background())
+	if !pendingOrderChaseJobs.start(key, chaseCancel) {
+		chaseCancel()
+		result.Status = "running"
+		result.Message = "pending order chase is already running"
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	go s.watchPendingOrderChase(chaseCtx, client, req)
+	result.Status = "running"
+	result.Message = "pending order chase started"
+	writeJSON(w, http.StatusAccepted, result)
 }
 
 func (s *Server) StartLowMarginPositionMonitor(ctx context.Context) {
@@ -368,14 +542,217 @@ func (s *Server) fetchPendingOrders(ctx context.Context, cfg config.Config, requ
 		}
 		return orders[i].InstID < orders[j].InstID
 	})
+	views := s.pendingOrderViews(ctx, client, apiID, orders)
 	return pendingOrdersResponse{
 		OK:          true,
 		APIID:       apiID,
 		InstType:    instType,
 		Count:       len(orders),
 		RefreshedAt: s.now(),
-		Orders:      orders,
+		Orders:      views,
 	}, nil
+}
+
+func (s *Server) pendingOrderViews(ctx context.Context, client okx.Client, apiID string, orders []okx.PendingOrder) []pendingOrderView {
+	views := make([]pendingOrderView, 0, len(orders))
+	tickers := map[string]okx.Ticker{}
+	instruments := map[string]okx.Instrument{}
+	for _, order := range orders {
+		view := pendingOrderView{
+			PendingOrder: order,
+			Chasing: pendingOrderChaseJobs.activeKey(pendingOrderChaseKey(pendingOrderChaseRequest{
+				APIID:   apiID,
+				InstID:  order.InstID,
+				OrdID:   order.OrdID,
+				ClOrdID: order.ClOrdID,
+			})),
+		}
+		midPx, chasePx, err := pendingOrderMidAndChasePrice(ctx, client, order, tickers, instruments)
+		if err != nil {
+			view.PriceError = err.Error()
+		} else {
+			view.MidPx = midPx
+			view.ChasePx = chasePx
+		}
+		views = append(views, view)
+	}
+	return views
+}
+
+func (s *Server) watchPendingOrderChase(ctx context.Context, client okx.Client, req pendingOrderChaseRequest) {
+	key := pendingOrderChaseKey(req)
+	defer pendingOrderChaseJobs.done(key)
+	interval := pendingOrderChaseInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			_, closed, err := chasePendingOrderOnce(stepCtx, client, req)
+			cancel()
+			if err != nil {
+				if s.Logger != nil {
+					s.Logger.Warn("pending order chase failed", "api_id", req.APIID, "inst_id", req.InstID, "ord_id", req.OrdID, "cl_ord_id", req.ClOrdID, "error", err)
+				}
+				continue
+			}
+			if closed {
+				return
+			}
+		}
+	}
+}
+
+func chasePendingOrderOnce(ctx context.Context, client okx.Client, req pendingOrderChaseRequest) (pendingOrderChaseResponse, bool, error) {
+	order, found, err := currentPendingOrder(ctx, client, req)
+	if err != nil {
+		return pendingOrderChaseResponse{}, false, err
+	}
+	resp := pendingOrderChaseResponse{
+		OK:      true,
+		APIID:   req.APIID,
+		InstID:  req.InstID,
+		OrdID:   req.OrdID,
+		ClOrdID: req.ClOrdID,
+	}
+	if !found {
+		resp.Status = "finished"
+		resp.Message = "pending order is no longer open"
+		return resp, true, nil
+	}
+	resp.OrdID = order.OrdID
+	resp.ClOrdID = order.ClOrdID
+	midPx, chasePx, err := pendingOrderMidAndChasePrice(ctx, client, order, nil, nil)
+	if err != nil {
+		return resp, false, err
+	}
+	resp.MidPx = midPx
+	resp.Px = chasePx
+	if strings.TrimSpace(order.Px) == chasePx {
+		resp.Status = "unchanged"
+		resp.Message = "pending order price is already at chase price"
+		return resp, false, nil
+	}
+	amendReq := okx.AmendOrderRequest{
+		InstID: order.InstID,
+		NewPx:  chasePx,
+	}
+	if strings.TrimSpace(order.OrdID) != "" {
+		amendReq.OrdID = order.OrdID
+	} else {
+		amendReq.ClOrdID = order.ClOrdID
+	}
+	if _, _, err := client.AmendOrder(ctx, amendReq); err != nil {
+		return resp, false, err
+	}
+	resp.Status = "amended"
+	resp.Message = "pending order price amended"
+	return resp, false, nil
+}
+
+func currentPendingOrder(ctx context.Context, client okx.Client, req pendingOrderChaseRequest) (okx.PendingOrder, bool, error) {
+	orders, _, err := client.PendingOrders(ctx, "SWAP")
+	if err != nil {
+		return okx.PendingOrder{}, false, err
+	}
+	for _, order := range orders {
+		if !strings.EqualFold(order.InstID, req.InstID) {
+			continue
+		}
+		if req.OrdID != "" && order.OrdID == req.OrdID {
+			return order, true, nil
+		}
+		if req.OrdID == "" && req.ClOrdID != "" && order.ClOrdID == req.ClOrdID {
+			return order, true, nil
+		}
+	}
+	return okx.PendingOrder{}, false, nil
+}
+
+func pendingOrderMidAndChasePrice(ctx context.Context, client okx.Client, order okx.PendingOrder, tickers map[string]okx.Ticker, instruments map[string]okx.Instrument) (string, string, error) {
+	instID := strings.ToUpper(strings.TrimSpace(order.InstID))
+	if instID == "" {
+		return "", "", errors.New("inst_id is required")
+	}
+	var inst okx.Instrument
+	var ok bool
+	if instruments != nil {
+		inst, ok = instruments[instID]
+	}
+	if !ok {
+		var err error
+		inst, err = client.SwapInstrument(ctx, instID)
+		if err != nil {
+			return "", "", err
+		}
+		if instruments != nil {
+			instruments[instID] = inst
+		}
+	}
+	var ticker okx.Ticker
+	if tickers != nil {
+		ticker, ok = tickers[instID]
+	} else {
+		ok = false
+	}
+	if !ok {
+		var err error
+		ticker, _, err = client.MarketTicker(ctx, instID)
+		if err != nil {
+			return "", "", err
+		}
+		if tickers != nil {
+			tickers[instID] = ticker
+		}
+	}
+	mid, err := tickerMidPrice(ticker)
+	if err != nil {
+		return "", "", err
+	}
+	chasePx, err := passivePendingOrderPrice(mid, inst.TickSz, order.Side)
+	if err != nil {
+		return "", "", err
+	}
+	return formatMidPrice(mid, inst.TickSz), chasePx, nil
+}
+
+func tickerMidPrice(ticker okx.Ticker) (float64, error) {
+	bid, bidErr := strconv.ParseFloat(strings.TrimSpace(ticker.BidPx), 64)
+	ask, askErr := strconv.ParseFloat(strings.TrimSpace(ticker.AskPx), 64)
+	if bidErr == nil && askErr == nil && bid > 0 && ask > 0 {
+		return (bid + ask) / 2, nil
+	}
+	last, lastErr := strconv.ParseFloat(strings.TrimSpace(ticker.Last), 64)
+	if lastErr != nil || last <= 0 {
+		return 0, fmt.Errorf("invalid ticker bid/ask for %s", ticker.InstID)
+	}
+	return last, nil
+}
+
+func passivePendingOrderPrice(mid float64, tickRaw, side string) (string, error) {
+	tick, err := strconv.ParseFloat(strings.TrimSpace(tickRaw), 64)
+	if err != nil || tick <= 0 {
+		return "", fmt.Errorf("invalid tick size %q", tickRaw)
+	}
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "buy":
+		return formatPriceToTick(mid-tick, tick, tickRaw, false)
+	case "sell":
+		return formatPriceToTick(mid+tick, tick, tickRaw, true)
+	default:
+		return "", fmt.Errorf("unsupported order side %q", side)
+	}
+}
+
+func formatMidPrice(mid float64, tickRaw string) string {
+	decimals := decimalsFromDecimalString(tickRaw)
+	return trimDecimalZeros(strconv.FormatFloat(mid, 'f', decimals, 64))
 }
 
 func (s *Server) okxClientForCredentials(cfg config.Config, requestedAPIID string) (okx.Client, string, error) {
@@ -695,6 +1072,31 @@ func normalizePosSide(raw string) string {
 		return ""
 	}
 	return raw
+}
+
+func (r *pendingOrderChaseRequest) normalize() {
+	r.APIID = strings.TrimSpace(r.APIID)
+	r.InstID = strings.ToUpper(strings.TrimSpace(r.InstID))
+	r.OrdID = strings.TrimSpace(r.OrdID)
+	r.ClOrdID = strings.TrimSpace(r.ClOrdID)
+}
+
+func (r pendingOrderChaseRequest) validate() error {
+	if r.InstID == "" {
+		return errors.New("inst_id is required")
+	}
+	if r.OrdID == "" && r.ClOrdID == "" {
+		return errors.New("ord_id or cl_ord_id is required")
+	}
+	return nil
+}
+
+func pendingOrderChaseKey(req pendingOrderChaseRequest) string {
+	id := strings.TrimSpace(req.OrdID)
+	if id == "" {
+		id = "cl:" + strings.TrimSpace(req.ClOrdID)
+	}
+	return strings.TrimSpace(req.APIID) + "|" + strings.ToUpper(strings.TrimSpace(req.InstID)) + "|" + id
 }
 
 func positionCloseKey(apiID, instID, posSide string) string {

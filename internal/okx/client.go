@@ -240,6 +240,22 @@ type CancelOrderAck struct {
 	SMsg    string `json:"sMsg"`
 }
 
+type AmendOrderRequest struct {
+	InstID  string `json:"instId"`
+	OrdID   string `json:"ordId,omitempty"`
+	ClOrdID string `json:"clOrdId,omitempty"`
+	NewPx   string `json:"newPx,omitempty"`
+	NewSz   string `json:"newSz,omitempty"`
+}
+
+type AmendOrderAck struct {
+	ClOrdID string `json:"clOrdId"`
+	OrdID   string `json:"ordId"`
+	ReqID   string `json:"reqId,omitempty"`
+	SCode   string `json:"sCode"`
+	SMsg    string `json:"sMsg"`
+}
+
 type Instrument struct {
 	InstType   string `json:"instType,omitempty"`
 	InstID     string `json:"instId"`
@@ -386,6 +402,24 @@ func (c Client) CancelOrder(ctx context.Context, req CancelOrderRequest) (Cancel
 	}
 	if data[0].SCode != "" && data[0].SCode != "0" {
 		return data[0], env, fmt.Errorf("okx cancel order rejected %s: %s", data[0].SCode, data[0].SMsg)
+	}
+	return data[0], env, nil
+}
+
+func (c Client) AmendOrder(ctx context.Context, req AmendOrderRequest) (AmendOrderAck, Envelope, error) {
+	env, err := c.Do(ctx, http.MethodPost, "/api/v5/trade/amend-order", nil, req, true)
+	if err != nil {
+		return AmendOrderAck{}, env, err
+	}
+	var data []AmendOrderAck
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return AmendOrderAck{}, env, err
+	}
+	if len(data) == 0 {
+		return AmendOrderAck{}, env, errors.New("okx amend order response data is empty")
+	}
+	if data[0].SCode != "" && data[0].SCode != "0" {
+		return data[0], env, fmt.Errorf("okx amend order rejected %s: %s", data[0].SCode, data[0].SMsg)
 	}
 	return data[0], env, nil
 }

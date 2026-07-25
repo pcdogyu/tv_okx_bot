@@ -463,7 +463,7 @@ const tvbotHTML = `<!doctype html>
       padding: 4px 8px;
       font-size: 12px;
     }
-    .btn:disabled {
+    .btn:disabled, .btn.is-disabled {
       opacity: 0.58;
       cursor: not-allowed;
     }
@@ -706,7 +706,7 @@ const tvbotHTML = `<!doctype html>
       <div class="symbol-table-wrap">
         <table class="symbol-table pending-order-table">
           <thead>
-            <tr><th>时间</th><th>币对</th><th>方向</th><th>持仓方向</th><th>类型</th><th>价格</th><th>委托量</th><th>已成交</th><th>状态</th><th>订单 ID</th><th>客户端 ID</th></tr>
+            <tr><th>时间</th><th>币对</th><th>方向</th><th>持仓方向</th><th>类型</th><th>委托价格</th><th>中间价</th><th>委托量</th><th>已成交</th><th>状态</th><th>操作</th></tr>
           </thead>
           <tbody id="pending-order-rows"></tbody>
         </table>
@@ -921,7 +921,9 @@ const tvbotHTML = `<!doctype html>
 
   <script>
     const activeTabStorageKey = "tvbot.active_tab";
-    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, positionClosing: {}, analysis: null, analysisError: "", positions: null, positionsError: "", pendingOrders: null, pendingOrdersError: "", symbols: null, symbolsError: "", upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, positionClosing: {}, pendingOrderActions: {}, analysis: null, analysisError: "", positions: null, positionsError: "", pendingOrders: null, pendingOrdersError: "", symbols: null, symbolsError: "", upgrade: null };
+    let positionViewPollTimer = null;
+    let positionViewPollBusy = false;
     const defaultMenuItems = [
       { tab: "dashboard", label: "总览" },
       { tab: "positions", label: "持仓" },
@@ -1227,6 +1229,28 @@ const tvbotHTML = `<!doctype html>
       applyMenuSettings();
     }
 
+    function startPositionViewPolling() {
+      if (positionViewPollTimer) return;
+      positionViewPollTimer = window.setInterval(async () => {
+        if (positionViewPollBusy) return;
+        positionViewPollBusy = true;
+        try {
+          await loadPositionView();
+        } catch (err) {
+          toast(err.message);
+        } finally {
+          positionViewPollBusy = false;
+        }
+      }, 5000);
+    }
+
+    function stopPositionViewPolling() {
+      if (!positionViewPollTimer) return;
+      window.clearInterval(positionViewPollTimer);
+      positionViewPollTimer = null;
+      positionViewPollBusy = false;
+    }
+
     function activateTab(tabID, persist) {
       let target = tabID || "dashboard";
       let button = tabButton(target);
@@ -1247,6 +1271,11 @@ const tvbotHTML = `<!doctype html>
         if (window.history && location.hash !== "#" + target) {
           history.replaceState(null, "", "#" + target);
         }
+      }
+      if (target === "positions") {
+        startPositionViewPolling();
+      } else {
+        stopPositionViewPolling();
       }
       if (target === "analysis" && !state.analysis) {
         loadAnalysis(false).catch((err) => toast(err.message));
@@ -1665,6 +1694,30 @@ const tvbotHTML = `<!doctype html>
       return asText(value);
     }
 
+    function pendingOrderRowKey(row) {
+      const apiID = state.pendingOrders && state.pendingOrders.api_id ? state.pendingOrders.api_id : ($("position-api-id") ? $("position-api-id").value : "");
+      const orderID = row.ordId || ("cl:" + (row.clOrdId || ""));
+      return [apiID, String(row.instId || "").toUpperCase(), orderID].join("|");
+    }
+
+    function pendingOrderActionCell(row) {
+      const key = pendingOrderRowKey(row);
+      const busy = !!state.pendingOrderActions[key];
+      const chasing = !!row.chasing;
+      const unavailable = !chasing && !!row.price_error;
+      const disabled = busy;
+      const label = busy ? "处理中" : (chasing ? "停止追单" : "追单");
+      const mode = chasing ? "stop" : "start";
+      return '<td><button class="btn small' + (unavailable ? " is-disabled" : "") + '" type="button" data-pending-chase="' + mode + '"' +
+        ' data-inst-id="' + escapeHTML(asText(row.instId)) + '"' +
+        ' data-ord-id="' + escapeHTML(row.ordId || "") + '"' +
+        ' data-cl-ord-id="' + escapeHTML(row.clOrdId || "") + '"' +
+        ' data-price-error="' + escapeHTML(row.price_error || "") + '"' +
+        (unavailable ? ' aria-disabled="true"' : "") +
+        ' title="' + escapeHTML(row.price_error || label) + '"' +
+        (disabled ? " disabled" : "") + ">" + label + "</button></td>";
+    }
+
     function positionPercent(v) {
       if (v === null || v === undefined || v === "") return "-";
       const formatted = formatPct(v);
@@ -1751,11 +1804,11 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(positionSideText(row.posSide, "")) + "</td>" +
           "<td>" + escapeHTML(orderTypeText(row.ordType)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.px)) + "</td>" +
+          "<td>" + escapeHTML(row.price_error ? row.price_error : formatNumber(row.mid_px)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.sz)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.accFillSz)) + "</td>" +
           "<td>" + escapeHTML(pendingOrderStateText(row.state)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.ordId)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.clOrdId)) + "</td>" +
+          pendingOrderActionCell(row) +
           "</tr>";
       }).join("") || '<tr><td colspan="11" class="muted">暂无当前挂单</td></tr>';
     }
@@ -2077,6 +2130,34 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
+    async function chasePendingOrder(button) {
+      const mode = button.dataset.pendingChase;
+      const priceError = button.dataset.priceError || "";
+      if (mode === "start" && priceError) {
+        toast(priceError);
+        return;
+      }
+      const body = {
+        api_id: state.pendingOrders && state.pendingOrders.api_id ? state.pendingOrders.api_id : ($("position-api-id").value || ""),
+        inst_id: button.dataset.instId || "",
+        ord_id: button.dataset.ordId || "",
+        cl_ord_id: button.dataset.clOrdId || ""
+      };
+      const key = [body.api_id, String(body.inst_id || "").toUpperCase(), body.ord_id || ("cl:" + body.cl_ord_id)].join("|");
+      if (!body.inst_id || (!body.ord_id && !body.cl_ord_id) || state.pendingOrderActions[key]) return;
+      state.pendingOrderActions[key] = true;
+      renderPendingOrders();
+      try {
+        const path = mode === "stop" ? "/tvbot/pending-orders/chase/stop" : "/tvbot/pending-orders/chase";
+        const result = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        toast(mode === "stop" ? "追单已停止" : ("追单已启动 " + asText(result.px)));
+        await loadPendingOrders();
+      } finally {
+        delete state.pendingOrderActions[key];
+        renderPendingOrders();
+      }
+    }
+
     async function checkOKX() {
       $("okx-output").textContent = "checking...";
       try {
@@ -2194,6 +2275,11 @@ const tvbotHTML = `<!doctype html>
       const button = event.target.closest("button[data-position-close]");
       if (!button) return;
       closePosition(button).catch((err) => toast(err.message));
+    });
+    $("pending-order-rows").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-pending-chase]");
+      if (!button) return;
+      chasePendingOrder(button).catch((err) => toast(err.message));
     });
     $("refresh-orders").addEventListener("click", () => loadOrders().then(() => toast("订单已刷新")).catch((err) => toast(err.message)));
     $("refresh-upgrade").addEventListener("click", () => loadUpgrade().then(() => toast("升级状态已刷新")).catch((err) => toast(err.message)));

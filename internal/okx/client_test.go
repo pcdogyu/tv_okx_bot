@@ -370,6 +370,47 @@ func TestClientCancelOrderSignsPrivateRequest(t *testing.T) {
 	}
 }
 
+func TestClientAmendOrderSignsPrivateRequest(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
+	secret := "secret"
+	reqBody := AmendOrderRequest{InstID: "BTC-USDT-SWAP", OrdID: "100", NewPx: "63999.9"}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/trade/amend-order" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+		timestamp := fixedNow.UTC().Format("2006-01-02T15:04:05.000Z")
+		wantSign := sign(timestamp, http.MethodPost, "/api/v5/trade/amend-order", string(bodyBytes), secret)
+		if r.Header.Get("OK-ACCESS-TIMESTAMP") != timestamp || r.Header.Get("OK-ACCESS-SIGN") != wantSign {
+			t.Fatal("invalid OKX signature headers")
+		}
+		if body["instId"] != "BTC-USDT-SWAP" || body["ordId"] != "100" || body["newPx"] != "63999.9" {
+			t.Fatalf("unexpected amend body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"100","clOrdId":"client-100","reqId":"req-1","sCode":"0","sMsg":""}]}`))
+	}))
+	defer ts.Close()
+
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "key", SecretKey: secret, Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return fixedNow },
+	}
+	ack, _, err := client.AmendOrder(context.Background(), reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.OrdID != "100" || ack.ClOrdID != "client-100" || ack.ReqID != "req-1" {
+		t.Fatalf("bad amend ack: %#v", ack)
+	}
+}
+
 func TestClientMarketTickerParsesBidAsk(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v5/market/ticker" {
