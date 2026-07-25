@@ -631,9 +631,37 @@ const tvbotHTML = `<!doctype html>
     .symbol-table {
       min-width: 980px;
     }
-    .pending-order-table {
-      min-width: 1120px;
+    .positions-table {
+      min-width: 1360px;
     }
+    .positions-table .pos-exchange-col { width: 5.5%; }
+    .positions-table .pos-symbol-col { width: 8.5%; }
+    .positions-table .pos-side-col { width: 6%; }
+    .positions-table .pos-size-col { width: 7%; }
+    .positions-table .pos-available-col { width: 6%; }
+    .positions-table .pos-price-col { width: 6.5%; }
+    .positions-table .pos-pnl-col { width: 8%; }
+    .positions-table .pos-rate-col { width: 6.5%; }
+    .positions-table .pos-leverage-col { width: 5%; }
+    .positions-table .pos-margin-mode-col { width: 7%; }
+    .positions-table .pos-margin-col { width: 7.5%; }
+    .positions-table .pos-liquidation-col { width: 7.5%; }
+    .positions-table .pos-actions-col { width: 12%; }
+    .pending-order-table {
+      min-width: 1180px;
+    }
+    .pending-order-table .pending-exchange-col { width: 6%; }
+    .pending-order-table .pending-time-col { width: 10%; }
+    .pending-order-table .pending-symbol-col { width: 11%; }
+    .pending-order-table .pending-side-col { width: 6%; }
+    .pending-order-table .pending-pos-side-col { width: 7%; }
+    .pending-order-table .pending-type-col { width: 7%; }
+    .pending-order-table .pending-price-col { width: 9%; }
+    .pending-order-table .pending-mid-col { width: 9%; }
+    .pending-order-table .pending-size-col { width: 9%; }
+    .pending-order-table .pending-filled-col { width: 7%; }
+    .pending-order-table .pending-state-col { width: 7%; }
+    .pending-order-table .pending-actions-col { width: 12%; }
     pre {
       margin: 0;
       white-space: pre-wrap;
@@ -772,7 +800,23 @@ const tvbotHTML = `<!doctype html>
         <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="positions-updated">-</div></div>
       </div>
       <div class="symbol-table-wrap">
-        <table class="symbol-table">
+        <table class="symbol-table positions-table">
+          <colgroup>
+            <col class="pos-exchange-col">
+            <col class="pos-symbol-col">
+            <col class="pos-side-col">
+            <col class="pos-size-col">
+            <col class="pos-available-col">
+            <col class="pos-price-col">
+            <col class="pos-price-col">
+            <col class="pos-pnl-col">
+            <col class="pos-rate-col">
+            <col class="pos-leverage-col">
+            <col class="pos-margin-mode-col">
+            <col class="pos-margin-col">
+            <col class="pos-liquidation-col">
+            <col class="pos-actions-col">
+          </colgroup>
           <thead>
             <tr><th>交易所</th><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>杠杆</th><th>保证金模式</th><th>保证金</th><th>强平价</th><th>操作</th></tr>
           </thead>
@@ -785,6 +829,20 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="symbol-table-wrap">
         <table class="symbol-table pending-order-table">
+          <colgroup>
+            <col class="pending-exchange-col">
+            <col class="pending-time-col">
+            <col class="pending-symbol-col">
+            <col class="pending-side-col">
+            <col class="pending-pos-side-col">
+            <col class="pending-type-col">
+            <col class="pending-price-col">
+            <col class="pending-mid-col">
+            <col class="pending-size-col">
+            <col class="pending-filled-col">
+            <col class="pending-state-col">
+            <col class="pending-actions-col">
+          </colgroup>
           <thead>
             <tr><th>交易所</th><th>时间</th><th>币对</th><th>方向</th><th>持仓方向</th><th>类型</th><th>委托价格</th><th>中间价</th><th>委托量</th><th>已成交</th><th>状态</th><th>操作</th></tr>
           </thead>
