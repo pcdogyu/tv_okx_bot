@@ -199,25 +199,27 @@ func (c Client) Do(ctx context.Context, method, path string, values url.Values, 
 	if values == nil {
 		values = url.Values{}
 	}
+	params := cloneURLValues(values)
 	base := strings.TrimRight(c.BaseURL, "/")
 	if base == "" {
 		base = "https://fapi.binance.com"
 	}
+	encodedParams := params.Encode()
 	if private {
 		if err := c.Credentials.Validate(); err != nil {
 			return nil, err
 		}
-		values.Set("timestamp", strconv.FormatInt(c.Now().UTC().UnixMilli(), 10))
-		values.Set("signature", sign(values.Encode(), c.Credentials.SecretKey))
+		params.Set("timestamp", strconv.FormatInt(c.Now().UTC().UnixMilli(), 10))
+		encodedParams = signedParams(params, c.Credentials.SecretKey)
 	}
 	var body io.Reader
 	requestURL := base + path
 	if method == http.MethodGet || method == http.MethodDelete {
-		if encoded := values.Encode(); encoded != "" {
-			requestURL += "?" + encoded
+		if encodedParams != "" {
+			requestURL += "?" + encodedParams
 		}
 	} else {
-		body = strings.NewReader(values.Encode())
+		body = strings.NewReader(encodedParams)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
@@ -261,6 +263,24 @@ func sign(payload, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(payload))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func signedParams(values url.Values, secret string) string {
+	values.Del("signature")
+	payload := values.Encode()
+	signature := sign(payload, secret)
+	if payload == "" {
+		return "signature=" + signature
+	}
+	return payload + "&signature=" + signature
+}
+
+func cloneURLValues(values url.Values) url.Values {
+	out := make(url.Values, len(values))
+	for key, vals := range values {
+		out[key] = append([]string(nil), vals...)
+	}
+	return out
 }
 
 func (c Client) AccountBalance(ctx context.Context) ([]Balance, error) {

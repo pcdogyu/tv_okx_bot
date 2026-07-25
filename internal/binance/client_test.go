@@ -3,10 +3,12 @@ package binance
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,10 +27,12 @@ func TestClientSignsPrivateBalanceRequest(t *testing.T) {
 		if q.Get("timestamp") != strconv.FormatInt(now.UnixMilli(), 10) {
 			t.Fatalf("bad timestamp: %s", r.URL.RawQuery)
 		}
-		gotSig := q.Get("signature")
-		q.Del("signature")
-		if gotSig != sign(q.Encode(), secret) {
-			t.Fatalf("bad signature got=%s query=%s", gotSig, q.Encode())
+		payload, gotSig := splitSignatureTail(t, r.URL.RawQuery)
+		if payload != qWithoutSignature(q).Encode() {
+			t.Fatalf("signature payload does not match request query got=%s query=%s", payload, qWithoutSignature(q).Encode())
+		}
+		if gotSig != sign(payload, secret) {
+			t.Fatalf("bad signature got=%s payload=%s", gotSig, payload)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[{"asset":"USDT","balance":"123.45","availableBalance":"120.00","crossWalletBalance":"122.00","updateTime":1784880000000}]`))
@@ -73,8 +77,21 @@ func TestClientParsesAPIError(t *testing.T) {
 }
 
 func TestClientTradingEndpoints(t *testing.T) {
+	const secret = "secret"
 	seen := map[string]url.Values{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rawBody := string(body)
+			payload, gotSig := splitSignatureTail(t, rawBody)
+			if gotSig != sign(payload, secret) {
+				t.Fatalf("bad post signature got=%s payload=%s", gotSig, payload)
+			}
+			r.Body = io.NopCloser(strings.NewReader(rawBody))
+		}
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
@@ -98,7 +115,7 @@ func TestClientTradingEndpoints(t *testing.T) {
 		}
 	}))
 	defer ts.Close()
-	client := Client{BaseURL: ts.URL, Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client(), Now: func() time.Time {
+	client := Client{BaseURL: ts.URL, Credentials: Credentials{APIKey: "key", SecretKey: secret}, HTTPClient: ts.Client(), Now: func() time.Time {
 		return time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
 	}}
 
@@ -147,6 +164,32 @@ func TestClientTradingEndpoints(t *testing.T) {
 	if seen["/fapi/v1/algoOrder"].Get("algoType") != "CONDITIONAL" || seen["/fapi/v1/algoOrder"].Get("reduceOnly") != "true" {
 		t.Fatalf("bad algo form: %#v", seen["/fapi/v1/algoOrder"])
 	}
+}
+
+func splitSignatureTail(t *testing.T, raw string) (string, string) {
+	t.Helper()
+	const marker = "&signature="
+	idx := strings.LastIndex(raw, marker)
+	if idx < 0 || idx+len(marker) >= len(raw) {
+		t.Fatalf("signature must be appended at the end of request params: %s", raw)
+	}
+	payload := raw[:idx]
+	signature := raw[idx+len(marker):]
+	if strings.Contains(payload, "signature=") || strings.Contains(signature, "&") {
+		t.Fatalf("signature must appear exactly once at the end of request params: %s", raw)
+	}
+	return payload, signature
+}
+
+func qWithoutSignature(values url.Values) url.Values {
+	out := make(url.Values, len(values))
+	for key, vals := range values {
+		if key == "signature" {
+			continue
+		}
+		out[key] = append([]string(nil), vals...)
+	}
+	return out
 }
 
 func TestExchangeInfoFiltersAndSymbolDerivation(t *testing.T) {
