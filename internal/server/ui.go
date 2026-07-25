@@ -580,6 +580,9 @@ const tvbotHTML = `<!doctype html>
     .symbol-table {
       min-width: 980px;
     }
+    .pending-order-table {
+      min-width: 1120px;
+    }
     pre {
       margin: 0;
       white-space: pre-wrap;
@@ -694,6 +697,18 @@ const tvbotHTML = `<!doctype html>
             <tr><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>杠杆</th><th>保证金模式</th><th>保证金</th><th>强平价</th><th>操作</th></tr>
           </thead>
           <tbody id="position-rows"></tbody>
+        </table>
+      </div>
+      <div class="section-head" style="margin:18px 0 10px">
+        <h3>当前挂单</h3>
+        <span class="muted" id="pending-orders-updated">-</span>
+      </div>
+      <div class="symbol-table-wrap">
+        <table class="symbol-table pending-order-table">
+          <thead>
+            <tr><th>时间</th><th>币对</th><th>方向</th><th>持仓方向</th><th>类型</th><th>价格</th><th>委托量</th><th>已成交</th><th>状态</th><th>订单 ID</th><th>客户端 ID</th></tr>
+          </thead>
+          <tbody id="pending-order-rows"></tbody>
         </table>
       </div>
     </section>
@@ -906,7 +921,7 @@ const tvbotHTML = `<!doctype html>
 
   <script>
     const activeTabStorageKey = "tvbot.active_tab";
-    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, positionClosing: {}, analysis: null, analysisError: "", positions: null, positionsError: "", symbols: null, symbolsError: "", upgrade: null };
+    const state = { config: null, apiKeys: null, selectedAPIID: "", apiKeyTest: null, apiKeyTestID: "", orders: [], retrying: {}, positionClosing: {}, analysis: null, analysisError: "", positions: null, positionsError: "", pendingOrders: null, pendingOrdersError: "", symbols: null, symbolsError: "", upgrade: null };
     const defaultMenuItems = [
       { tab: "dashboard", label: "总览" },
       { tab: "positions", label: "持仓" },
@@ -1236,8 +1251,8 @@ const tvbotHTML = `<!doctype html>
       if (target === "analysis" && !state.analysis) {
         loadAnalysis(false).catch((err) => toast(err.message));
       }
-      if (target === "positions" && !state.positions) {
-        loadPositions().catch((err) => toast(err.message));
+      if (target === "positions" && (!state.positions || !state.pendingOrders)) {
+        loadPositionView().catch((err) => toast(err.message));
       }
       if (target === "symbols" && !state.symbols) {
         loadSymbols(true).catch((err) => toast(err.message));
@@ -1321,6 +1336,24 @@ const tvbotHTML = `<!doctype html>
         state.positionsError = err.message;
       }
       renderPositions();
+    }
+
+    async function loadPendingOrders() {
+      const qs = new URLSearchParams({ inst_type: "SWAP" });
+      const selected = $("position-api-id") ? $("position-api-id").value : "";
+      if (selected) qs.set("api_id", selected);
+      try {
+        state.pendingOrders = await api("/tvbot/pending-orders?" + qs.toString());
+        state.pendingOrdersError = "";
+      } catch (err) {
+        state.pendingOrders = null;
+        state.pendingOrdersError = err.message;
+      }
+      renderPendingOrders();
+    }
+
+    async function loadPositionView() {
+      await Promise.all([loadPositions(), loadPendingOrders()]);
     }
 
     async function loadSymbols(showLoading) {
@@ -1618,6 +1651,20 @@ const tvbotHTML = `<!doctype html>
       return asText(posSide);
     }
 
+    function tradeSideText(side) {
+      const value = String(side || "").toLowerCase();
+      if (value === "buy") return "买入";
+      if (value === "sell") return "卖出";
+      return asText(side);
+    }
+
+    function pendingOrderStateText(value) {
+      const stateText = String(value || "").toLowerCase();
+      if (stateText === "live") return "等待成交";
+      if (stateText === "partially_filled") return "部分成交";
+      return asText(value);
+    }
+
     function positionPercent(v) {
       if (v === null || v === undefined || v === "") return "-";
       const formatted = formatPct(v);
@@ -1686,6 +1733,31 @@ const tvbotHTML = `<!doctype html>
           positionActionCell(row) +
           "</tr>";
       }).join("") || '<tr><td colspan="13" class="muted">暂无当前持仓</td></tr>';
+    }
+
+    function renderPendingOrders() {
+      const rows = state.pendingOrders && Array.isArray(state.pendingOrders.orders) ? state.pendingOrders.orders : [];
+      if (!state.pendingOrders) {
+        $("pending-orders-updated").textContent = state.pendingOrdersError || "-";
+        $("pending-order-rows").innerHTML = '<tr><td colspan="11" class="muted">' + escapeHTML(state.pendingOrdersError || "-") + '</td></tr>';
+        return;
+      }
+      $("pending-orders-updated").textContent = "挂单数 " + asText(state.pendingOrders.count || rows.length) + " / 更新时间 " + (state.pendingOrders.refreshed_at ? shanghaiTime(state.pendingOrders.refreshed_at) : "-");
+      $("pending-order-rows").innerHTML = rows.map((row) => {
+        return "<tr>" +
+          '<td class="time">' + escapeHTML(shanghaiTimeFromOKX(row.cTime || row.uTime)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
+          "<td>" + escapeHTML(tradeSideText(row.side)) + "</td>" +
+          "<td>" + escapeHTML(positionSideText(row.posSide, "")) + "</td>" +
+          "<td>" + escapeHTML(orderTypeText(row.ordType)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.px)) + "</td>" +
+          "<td>" + escapeHTML(formatAssetAmount(row.sz)) + "</td>" +
+          "<td>" + escapeHTML(formatAssetAmount(row.accFillSz)) + "</td>" +
+          "<td>" + escapeHTML(pendingOrderStateText(row.state)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.ordId)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.clOrdId)) + "</td>" +
+          "</tr>";
+      }).join("") || '<tr><td colspan="11" class="muted">暂无当前挂单</td></tr>';
     }
 
     function renderAnalysis() {
@@ -1997,8 +2069,8 @@ const tvbotHTML = `<!doctype html>
           })
         });
         toast(mode === "market" ? "市价平仓已提交" : "限价平仓已启动 " + asText(result.px));
-        await loadPositions();
-        window.setTimeout(() => loadPositions().catch((err) => toast(err.message)), mode === "market" ? 1600 : 5200);
+        await loadPositionView();
+        window.setTimeout(() => loadPositionView().catch((err) => toast(err.message)), mode === "market" ? 1600 : 5200);
       } finally {
         delete state.positionClosing[key];
         renderPositions();
@@ -2106,8 +2178,8 @@ const tvbotHTML = `<!doctype html>
     });
     $("analysis-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
     $("refresh-analysis").addEventListener("click", () => loadAnalysis(true).then(() => toast("分析已刷新")).catch((err) => toast(err.message)));
-    $("position-api-id").addEventListener("change", () => loadPositions().catch((err) => toast(err.message)));
-    $("refresh-positions").addEventListener("click", () => loadPositions().then(() => toast("持仓已刷新")).catch((err) => toast(err.message)));
+    $("position-api-id").addEventListener("change", () => loadPositionView().catch((err) => toast(err.message)));
+    $("refresh-positions").addEventListener("click", () => loadPositionView().then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
     $("copy-template").addEventListener("click", async () => {
       await navigator.clipboard.writeText($("template-output").value);

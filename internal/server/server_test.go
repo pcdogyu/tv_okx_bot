@@ -138,8 +138,12 @@ func TestRoutes(t *testing.T) {
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("持仓")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/pending-orders")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-api-id")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("当前挂单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("renderPendingOrders")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-profit")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-loss")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signedCell")) ||
@@ -977,6 +981,70 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	}
 	if resp.Positions[0].InstID != "BTC-USDT-SWAP" || resp.Positions[0].Upl != "500" {
 		t.Fatalf("bad position data: %#v", resp.Positions[0])
+	}
+}
+
+func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
+	srv := newTestServer(t)
+	var sawPendingOrders bool
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/trade/orders-pending" {
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+		sawPendingOrders = true
+		if r.URL.Query().Get("instType") != "SWAP" {
+			t.Fatalf("bad pending orders query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
+			t.Fatalf("missing private OKX headers")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+			{"instType":"SWAP","instId":"ETH-USDT-SWAP","ordId":"200","clOrdId":"client-200","tdMode":"cross","side":"sell","posSide":"short","ordType":"limit","px":"2500","sz":"1","accFillSz":"0","state":"live","lever":"5","cTime":"1784880060000","uTime":"1784880060000"},
+			{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"buy","posSide":"long","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0.1","avgPx":"63950","state":"partially_filled","lever":"5","cTime":"1784880000000","uTime":"1784880060000"}
+		]}`))
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	unauth := httptest.NewRecorder()
+	srv.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/tvbot/pending-orders", nil))
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("pending orders without auth code=%d", unauth.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/pending-orders?api_id=default", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("pending orders code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !sawPendingOrders {
+		t.Fatal("expected OKX pending orders call")
+	}
+	var resp pendingOrdersResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.APIID != "default" || resp.Count != 2 || len(resp.Orders) != 2 {
+		t.Fatalf("bad pending orders response: %#v", resp)
+	}
+	if resp.Orders[0].InstID != "BTC-USDT-SWAP" || resp.Orders[0].OrdID != "100" || resp.Orders[0].AccFillSz != "0.1" {
+		t.Fatalf("bad pending order sorting/data: %#v", resp.Orders)
 	}
 }
 

@@ -306,6 +306,26 @@ type Fill struct {
 	RawJSON  string `json:"-"`
 }
 
+type PendingOrder struct {
+	InstType  string `json:"instType"`
+	InstID    string `json:"instId"`
+	OrdID     string `json:"ordId"`
+	ClOrdID   string `json:"clOrdId"`
+	TDMode    string `json:"tdMode"`
+	Side      string `json:"side"`
+	PosSide   string `json:"posSide"`
+	OrdType   string `json:"ordType"`
+	Px        string `json:"px"`
+	Sz        string `json:"sz"`
+	AccFillSz string `json:"accFillSz"`
+	AvgPx     string `json:"avgPx"`
+	State     string `json:"state"`
+	Lever     string `json:"lever"`
+	CTime     string `json:"cTime"`
+	UTime     string `json:"uTime"`
+	RawJSON   string `json:"-"`
+}
+
 type Position struct {
 	InstType    string `json:"instType"`
 	InstID      string `json:"instId"`
@@ -511,6 +531,31 @@ func (c Client) FillsHistory(ctx context.Context, instType, after string, limit 
 		}
 		fill.RawJSON = string(item)
 		out = append(out, fill)
+	}
+	return out, env, nil
+}
+
+func (c Client) PendingOrders(ctx context.Context, instType string) ([]PendingOrder, Envelope, error) {
+	q := url.Values{}
+	if strings.TrimSpace(instType) != "" {
+		q.Set("instType", strings.ToUpper(strings.TrimSpace(instType)))
+	}
+	env, err := c.Do(ctx, http.MethodGet, "/api/v5/trade/orders-pending", q, nil, true)
+	if err != nil {
+		return nil, env, err
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(env.Data, &raw); err != nil {
+		return nil, env, err
+	}
+	out := make([]PendingOrder, 0, len(raw))
+	for _, item := range raw {
+		var order PendingOrder
+		if err := json.Unmarshal(item, &order); err != nil {
+			return nil, env, err
+		}
+		order.RawJSON = string(item)
+		out = append(out, order)
 	}
 	return out, env, nil
 }

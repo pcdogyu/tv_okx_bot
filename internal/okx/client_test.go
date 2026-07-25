@@ -236,6 +236,48 @@ func TestClientPositionsSignsPrivateDemoRequest(t *testing.T) {
 	}
 }
 
+func TestClientPendingOrdersSignsPrivateDemoRequest(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
+	secret := "secret"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/trade/orders-pending" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("instType") != "SWAP" {
+			t.Fatalf("bad query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("x-simulated-trading") != "1" {
+			t.Fatal("missing demo trading header")
+		}
+		timestamp := fixedNow.UTC().Format("2006-01-02T15:04:05.000Z")
+		wantSign := sign(timestamp, http.MethodGet, "/api/v5/trade/orders-pending?"+r.URL.Query().Encode(), "", secret)
+		if r.Header.Get("OK-ACCESS-TIMESTAMP") != timestamp || r.Header.Get("OK-ACCESS-SIGN") != wantSign {
+			t.Fatal("invalid OKX signature headers")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"buy","posSide":"long","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0.1","avgPx":"63950","state":"partially_filled","lever":"5","cTime":"1784880000000","uTime":"1784880060000"}]}`))
+	}))
+	defer ts.Close()
+	client := Client{
+		BaseURL: ts.URL,
+		Credentials: Credentials{
+			APIKey:     "key",
+			SecretKey:  secret,
+			Passphrase: "pass",
+		},
+		Demo:       true,
+		HTTPClient: ts.Client(),
+		Now:        func() time.Time { return fixedNow },
+	}
+	orders, _, err := client.PendingOrders(context.Background(), "SWAP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orders) != 1 || orders[0].InstID != "BTC-USDT-SWAP" || orders[0].OrdID != "100" || orders[0].AccFillSz != "0.1" {
+		t.Fatalf("bad pending orders: %#v", orders)
+	}
+}
+
 func TestClientPlaceOrderSendsReduceOnly(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
 	secret := "secret"
