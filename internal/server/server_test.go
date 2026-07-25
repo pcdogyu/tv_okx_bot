@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1138,7 +1139,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	seen := map[string]bool{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+		if r.URL.Path != "/fapi/v1/exchangeInfo" && r.URL.Path != "/fapi/v1/ticker/bookTicker" && r.Header.Get("X-MBX-APIKEY") != "binance-key" {
 			t.Fatalf("missing Binance API key for %s", r.URL.Path)
 		}
 		seen[r.URL.Path] = true
@@ -1150,6 +1151,13 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 			]`))
 		case "/fapi/v1/openOrders":
 			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":123456,"clientOrderId":"client-1","price":"49900","origQty":"0.2","executedQty":"0.1","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880005000}]`))
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.10"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v1/ticker/bookTicker":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" {
+				t.Fatalf("bad book ticker query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","bidPrice":"49999.9","bidQty":"1","askPrice":"50000.1","askQty":"2","time":1784880000000}`))
 		case "/fapi/v3/balance":
 			_, _ = w.Write([]byte(`[{"asset":"USDT","balance":"2000.5","availableBalance":"1500.25","crossWalletBalance":"1800.25","updateTime":1784886000000}]`))
 		default:
@@ -1198,7 +1206,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if err := json.Unmarshal(pendingRR.Body.Bytes(), &pending); err != nil {
 		t.Fatal(err)
 	}
-	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].PriceError == "" {
+	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].MidPx != "50000" || pending.Orders[0].ChasePx != "49999.9" || pending.Orders[0].PriceError != "" {
 		t.Fatalf("bad Binance pending response: %#v", pending)
 	}
 
@@ -1222,7 +1230,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if binanceOverview.Status != "ok" || binanceOverview.APIID != "main" || len(binanceOverview.BalancePoints) != 1 || binanceOverview.Balance.Details[0].Eq != "2000.5" {
 		t.Fatalf("bad Binance overview: %#v", overview)
 	}
-	for _, path := range []string{"/fapi/v3/positionRisk", "/fapi/v1/openOrders", "/fapi/v3/balance"} {
+	for _, path := range []string{"/fapi/v3/positionRisk", "/fapi/v1/openOrders", "/fapi/v1/exchangeInfo", "/fapi/v1/ticker/bookTicker", "/fapi/v3/balance"} {
 		if !seen[path] {
 			t.Fatalf("expected %s to be called, seen=%#v", path, seen)
 		}
@@ -1400,6 +1408,219 @@ func TestTVBotPendingOrderChaseAmendsPassiveBuyAndStopsWhenOrderDisappears(t *te
 	defer mu.Unlock()
 	if len(amendBodies) != 1 || amendBodies[0]["instId"] != "BTC-USDT-SWAP" || amendBodies[0]["ordId"] != "100" || amendBodies[0]["newPx"] != "63999.9" {
 		t.Fatalf("bad amend bodies: %#v", amendBodies)
+	}
+}
+
+func TestTVBotBinancePendingOrderChaseAmendsPassiveBuyAndStops(t *testing.T) {
+	oldInterval := pendingOrderChaseInterval
+	oldTimeout := pendingOrderChaseTimeout
+	oldJobs := pendingOrderChaseJobs
+	pendingOrderChaseInterval = time.Hour
+	pendingOrderChaseTimeout = time.Hour
+	pendingOrderChaseJobs = newPendingOrderChaseRegistry()
+	defer func() {
+		pendingOrderChaseInterval = oldInterval
+		pendingOrderChaseTimeout = oldTimeout
+		pendingOrderChaseJobs = oldJobs
+	}()
+
+	srv := newTestServer(t)
+	var modifyForms []url.Values
+	var cancelCalled bool
+	var marketCalled bool
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/fapi/v1/exchangeInfo" && r.URL.Path != "/fapi/v1/ticker/bookTicker" && r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key for %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/fapi/v1/openOrders":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" {
+				t.Fatalf("bad open orders query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":123456,"clientOrderId":"client-1","price":"50000","origQty":"0.2","executedQty":"0","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880005000}]`))
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.10"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v1/ticker/bookTicker":
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","bidPrice":"49999.9","bidQty":"1","askPrice":"50000.1","askQty":"2","time":1784880000000}`))
+		case "/fapi/v1/order":
+			switch r.Method {
+			case http.MethodPut:
+				if err := r.ParseForm(); err != nil {
+					t.Fatal(err)
+				}
+				modifyForms = append(modifyForms, cloneValues(r.Form))
+				_, _ = w.Write([]byte(`{"orderId":123456,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"client-1","price":"49999.9","origQty":"0.2","executedQty":"0","type":"LIMIT","side":"BUY","positionSide":"BOTH"}`))
+			case http.MethodDelete:
+				cancelCalled = true
+				_, _ = w.Write([]byte(`{"orderId":123456,"symbol":"BTCUSDT","status":"CANCELED","clientOrderId":"client-1","price":"49999.9","origQty":"0.2","executedQty":"0","type":"LIMIT","side":"BUY","positionSide":"BOTH"}`))
+			case http.MethodPost:
+				marketCalled = true
+				_, _ = w.Write([]byte(`{"orderId":999,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"market-1","price":"0","origQty":"0.2","executedQty":"0","type":"MARKET","side":"BUY","positionSide":"BOTH"}`))
+			default:
+				t.Fatalf("unexpected order method %s", r.Method)
+			}
+		default:
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+	}))
+	defer binanceServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.BinanceHTTPClient = binanceServer.Client()
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:          "main",
+		Active:      true,
+		Credentials: binance.Credentials{APIKey: "binance-key", SecretKey: "binance-secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"exchange":"binance","api_id":"main","inst_id":"BTCUSDT","ord_id":"123456","cl_ord_id":"client-1"}`
+	start := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/chase", strings.NewReader(body))
+	start.Header.Set("Content-Type", "application/json")
+	start.SetBasicAuth("admin", "Admin123")
+	startRR := httptest.NewRecorder()
+	srv.ServeHTTP(startRR, start)
+	if startRR.Code != http.StatusAccepted {
+		t.Fatalf("start chase code=%d body=%s", startRR.Code, startRR.Body.String())
+	}
+	var resp pendingOrderChaseResponse
+	if err := json.Unmarshal(startRR.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Px != "49999.9" || resp.MidPx != "50000" || resp.Status != "running" {
+		t.Fatalf("bad Binance chase response: %#v", resp)
+	}
+	key := pendingOrderChaseKey(pendingOrderChaseRequest{Exchange: trading.ExchangeBinance, APIID: "main", InstID: "BTCUSDT", OrdID: "123456", ClOrdID: "client-1"})
+	if !pendingOrderChaseJobs.activeKey(key) {
+		t.Fatal("Binance chase job should be active")
+	}
+	stop := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/chase/stop", strings.NewReader(body))
+	stop.Header.Set("Content-Type", "application/json")
+	stop.SetBasicAuth("admin", "Admin123")
+	stopRR := httptest.NewRecorder()
+	srv.ServeHTTP(stopRR, stop)
+	if stopRR.Code != http.StatusOK {
+		t.Fatalf("stop chase code=%d body=%s", stopRR.Code, stopRR.Body.String())
+	}
+	if len(modifyForms) != 1 {
+		t.Fatalf("expected one modify request, got %#v", modifyForms)
+	}
+	modify := modifyForms[0]
+	if modify.Get("symbol") != "BTCUSDT" || modify.Get("side") != "BUY" || modify.Get("quantity") != "0.2" || modify.Get("price") != "49999.9" || modify.Get("orderId") != "123456" {
+		t.Fatalf("bad modify form: %#v", modify)
+	}
+	if cancelCalled || marketCalled {
+		t.Fatalf("stop should not cancel or market fallback cancel=%v market=%v", cancelCalled, marketCalled)
+	}
+}
+
+func TestTVBotBinancePendingOrderChaseFallsBackToMarketAfterTimeout(t *testing.T) {
+	oldInterval := pendingOrderChaseInterval
+	oldTimeout := pendingOrderChaseTimeout
+	oldJobs := pendingOrderChaseJobs
+	pendingOrderChaseInterval = time.Hour
+	pendingOrderChaseTimeout = 20 * time.Millisecond
+	pendingOrderChaseJobs = newPendingOrderChaseRegistry()
+	defer func() {
+		pendingOrderChaseInterval = oldInterval
+		pendingOrderChaseTimeout = oldTimeout
+		pendingOrderChaseJobs = oldJobs
+	}()
+
+	srv := newTestServer(t)
+	var mu sync.Mutex
+	var cancelForms []url.Values
+	var marketForms []url.Values
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/fapi/v1/exchangeInfo" && r.URL.Path != "/fapi/v1/ticker/bookTicker" && r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key for %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":123456,"clientOrderId":"client-1","price":"50000","origQty":"0.2","executedQty":"0.1","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880005000}]`))
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.10"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v1/ticker/bookTicker":
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","bidPrice":"49999.9","bidQty":"1","askPrice":"50000.1","askQty":"2","time":1784880000000}`))
+		case "/fapi/v1/order":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			switch r.Method {
+			case http.MethodPut:
+				_, _ = w.Write([]byte(`{"orderId":123456,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"client-1","price":"49999.9","origQty":"0.2","executedQty":"0.1","type":"LIMIT","side":"BUY","positionSide":"BOTH"}`))
+			case http.MethodDelete:
+				mu.Lock()
+				cancelForms = append(cancelForms, cloneValues(r.Form))
+				mu.Unlock()
+				_, _ = w.Write([]byte(`{"orderId":123456,"symbol":"BTCUSDT","status":"CANCELED","clientOrderId":"client-1","price":"49999.9","origQty":"0.2","executedQty":"0.1","type":"LIMIT","side":"BUY","positionSide":"BOTH"}`))
+			case http.MethodPost:
+				mu.Lock()
+				marketForms = append(marketForms, cloneValues(r.Form))
+				mu.Unlock()
+				_, _ = w.Write([]byte(`{"orderId":999,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"market-1","price":"0","origQty":"0.1","executedQty":"0","type":"MARKET","side":"BUY","positionSide":"BOTH"}`))
+			default:
+				t.Fatalf("unexpected order method %s", r.Method)
+			}
+		default:
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+	}))
+	defer binanceServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.BinanceHTTPClient = binanceServer.Client()
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:          "main",
+		Active:      true,
+		Credentials: binance.Credentials{APIKey: "binance-key", SecretKey: "binance-secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"exchange":"binance","api_id":"main","inst_id":"BTCUSDT","ord_id":"123456","cl_ord_id":"client-1"}`
+	start := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/chase", strings.NewReader(body))
+	start.Header.Set("Content-Type", "application/json")
+	start.SetBasicAuth("admin", "Admin123")
+	startRR := httptest.NewRecorder()
+	srv.ServeHTTP(startRR, start)
+	if startRR.Code != http.StatusAccepted {
+		t.Fatalf("start chase code=%d body=%s", startRR.Code, startRR.Body.String())
+	}
+	for i := 0; i < 100; i++ {
+		mu.Lock()
+		done := len(marketForms) > 0
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	key := pendingOrderChaseKey(pendingOrderChaseRequest{Exchange: trading.ExchangeBinance, APIID: "main", InstID: "BTCUSDT", OrdID: "123456", ClOrdID: "client-1"})
+	for i := 0; i < 100 && pendingOrderChaseJobs.activeKey(key); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if pendingOrderChaseJobs.activeKey(key) {
+		t.Fatal("Binance chase job should stop after market fallback")
+	}
+	if len(cancelForms) != 1 || cancelForms[0].Get("symbol") != "BTCUSDT" || cancelForms[0].Get("orderId") != "123456" {
+		t.Fatalf("bad cancel forms: %#v", cancelForms)
+	}
+	if len(marketForms) != 1 {
+		t.Fatalf("expected one market order, got %#v", marketForms)
+	}
+	market := marketForms[0]
+	if market.Get("symbol") != "BTCUSDT" || market.Get("side") != "BUY" || market.Get("type") != "MARKET" || market.Get("quantity") != "0.1" || market.Get("positionSide") != "BOTH" || market.Get("newClientOrderId") == "" {
+		t.Fatalf("bad market fallback form: %#v", market)
 	}
 }
 
@@ -2354,4 +2575,14 @@ func validSignal(t *testing.T, srv *Server) trading.Signal {
 	signal.Normalize()
 	signal.Token = srv.Token.Generate(signal.CanonicalTokenPayload())
 	return signal
+}
+
+func cloneValues(values url.Values) url.Values {
+	out := url.Values{}
+	for key, list := range values {
+		for _, value := range list {
+			out.Add(key, value)
+		}
+	}
+	return out
 }

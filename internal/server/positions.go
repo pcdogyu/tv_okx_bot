@@ -72,10 +72,11 @@ type positionCloseRequest struct {
 }
 
 type pendingOrderChaseRequest struct {
-	APIID   string `json:"api_id"`
-	InstID  string `json:"inst_id"`
-	OrdID   string `json:"ord_id"`
-	ClOrdID string `json:"cl_ord_id"`
+	Exchange string `json:"exchange"`
+	APIID    string `json:"api_id"`
+	InstID   string `json:"inst_id"`
+	OrdID    string `json:"ord_id"`
+	ClOrdID  string `json:"cl_ord_id"`
 }
 
 type pendingOrderChaseResponse struct {
@@ -268,10 +269,6 @@ func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
 		return
 	}
-	if s.OKXCredentials == nil {
-		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
-		return
-	}
 	var req pendingOrderChaseRequest
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -284,6 +281,14 @@ func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 	cfg := s.ConfigStore.Get()
+	if req.Exchange == trading.ExchangeBinance {
+		s.handleBinancePendingOrderChaseAction(w, r, start, cfg, req)
+		return
+	}
+	if s.OKXCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+		return
+	}
 	client, apiID, err := s.okxClientForCredentials(cfg, req.APIID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
@@ -351,6 +356,86 @@ func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 	go s.watchPendingOrderChase(chaseCtx, cfg, client, req)
+	result.Status = "running"
+	result.Message = "pending order chase started; market fallback after timeout"
+	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (s *Server) handleBinancePendingOrderChaseAction(w http.ResponseWriter, r *http.Request, start bool, cfg config.Config, req pendingOrderChaseRequest) {
+	if s.BinanceCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+		return
+	}
+	if !cfg.BinanceLiveTradingAllowedByEnvironment() {
+		writeError(w, http.StatusForbidden, "live_trading_disabled", "Binance live trading is not allowed by environment")
+		return
+	}
+	client, apiID, err := s.binanceClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	req.APIID = apiID
+	key := pendingOrderChaseKey(req)
+	if !start {
+		stopped := pendingOrderChaseJobs.stop(key)
+		status := "not_running"
+		message := "pending order chase was not running"
+		if stopped {
+			status = "stopped"
+			message = "pending order chase stopped"
+		}
+		writeJSON(w, http.StatusOK, pendingOrderChaseResponse{
+			OK:      true,
+			Status:  status,
+			APIID:   apiID,
+			InstID:  req.InstID,
+			OrdID:   req.OrdID,
+			ClOrdID: req.ClOrdID,
+			Message: message,
+		})
+		return
+	}
+	if pendingOrderChaseJobs.activeKey(key) {
+		writeJSON(w, http.StatusOK, pendingOrderChaseResponse{
+			OK:      true,
+			Status:  "running",
+			APIID:   apiID,
+			InstID:  req.InstID,
+			OrdID:   req.OrdID,
+			ClOrdID: req.ClOrdID,
+			Message: "pending order chase is already running",
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	result, closed, err := prepareBinancePendingOrderChase(ctx, client, req)
+	cancel()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_chase_failed", err.Error())
+		return
+	}
+	if closed {
+		writeJSON(w, http.StatusConflict, pendingOrderChaseResponse{
+			OK:      false,
+			Status:  "finished",
+			APIID:   apiID,
+			InstID:  req.InstID,
+			OrdID:   req.OrdID,
+			ClOrdID: req.ClOrdID,
+			Message: "pending order is no longer open",
+		})
+		return
+	}
+	chaseCtx, chaseCancel := context.WithCancel(context.Background())
+	if !pendingOrderChaseJobs.start(key, chaseCancel) {
+		chaseCancel()
+		result.Status = "running"
+		result.Message = "pending order chase is already running"
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	go s.watchBinancePendingOrderChase(chaseCtx, client, req)
 	result.Status = "running"
 	result.Message = "pending order chase started; market fallback after timeout"
 	writeJSON(w, http.StatusAccepted, result)
@@ -638,14 +723,7 @@ func (s *Server) fetchBinancePendingOrders(ctx context.Context, cfg config.Confi
 		}
 		return orders[i].Symbol < orders[j].Symbol
 	})
-	views := make([]pendingOrderView, 0, len(orders))
-	for _, order := range orders {
-		views = append(views, pendingOrderView{
-			PendingOrder: binanceOpenOrderToOKX(order),
-			PriceError:   "Binance 暂不支持追单",
-			Chasing:      false,
-		})
-	}
+	views := s.binancePendingOrderViews(ctx, client, apiID, orders)
 	return pendingOrdersResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeBinance,
@@ -692,21 +770,26 @@ func binancePositionToOKX(position binance.Position) okx.Position {
 }
 
 func binanceOpenOrderToOKX(order binance.OpenOrder) okx.PendingOrder {
+	reduceOnly := json.RawMessage("false")
+	if order.ReduceOnly {
+		reduceOnly = json.RawMessage("true")
+	}
 	return okx.PendingOrder{
-		InstType:  "USDT-M",
-		InstID:    strings.ToUpper(strings.TrimSpace(order.Symbol)),
-		OrdID:     strconv.FormatInt(order.OrderID, 10),
-		ClOrdID:   strings.TrimSpace(order.ClientOrderID),
-		Side:      strings.ToLower(strings.TrimSpace(order.Side)),
-		PosSide:   strings.ToLower(strings.TrimSpace(order.PositionSide)),
-		OrdType:   strings.ToLower(strings.TrimSpace(order.Type)),
-		Px:        strings.TrimSpace(order.Price),
-		Sz:        strings.TrimSpace(order.OrigQty),
-		AccFillSz: strings.TrimSpace(order.ExecutedQty),
-		AvgPx:     strings.TrimSpace(order.AvgPrice),
-		State:     strings.ToLower(strings.TrimSpace(order.Status)),
-		CTime:     strconv.FormatInt(order.Time, 10),
-		UTime:     strconv.FormatInt(order.UpdateTime, 10),
+		InstType:   "USDT-M",
+		InstID:     strings.ToUpper(strings.TrimSpace(order.Symbol)),
+		OrdID:      strconv.FormatInt(order.OrderID, 10),
+		ClOrdID:    strings.TrimSpace(order.ClientOrderID),
+		Side:       strings.ToLower(strings.TrimSpace(order.Side)),
+		PosSide:    strings.ToLower(strings.TrimSpace(order.PositionSide)),
+		OrdType:    strings.ToLower(strings.TrimSpace(order.Type)),
+		Px:         strings.TrimSpace(order.Price),
+		Sz:         strings.TrimSpace(order.OrigQty),
+		AccFillSz:  strings.TrimSpace(order.ExecutedQty),
+		AvgPx:      strings.TrimSpace(order.AvgPrice),
+		State:      strings.ToLower(strings.TrimSpace(order.Status)),
+		ReduceOnly: reduceOnly,
+		CTime:      strconv.FormatInt(order.Time, 10),
+		UTime:      strconv.FormatInt(order.UpdateTime, 10),
 	}
 }
 
@@ -734,6 +817,34 @@ func (s *Server) pendingOrderViews(ctx context.Context, client okx.Client, apiID
 			})),
 		}
 		midPx, chasePx, err := pendingOrderMidAndChasePrice(ctx, client, order, tickers, instruments)
+		if err != nil {
+			view.PriceError = err.Error()
+		} else {
+			view.MidPx = midPx
+			view.ChasePx = chasePx
+		}
+		views = append(views, view)
+	}
+	return views
+}
+
+func (s *Server) binancePendingOrderViews(ctx context.Context, client binance.Client, apiID string, orders []binance.OpenOrder) []pendingOrderView {
+	views := make([]pendingOrderView, 0, len(orders))
+	tickers := map[string]binance.BookTicker{}
+	instruments := map[string]binance.SymbolInfo{}
+	for _, rawOrder := range orders {
+		order := binanceOpenOrderToOKX(rawOrder)
+		view := pendingOrderView{
+			PendingOrder: order,
+			Chasing: pendingOrderChaseJobs.activeKey(pendingOrderChaseKey(pendingOrderChaseRequest{
+				Exchange: trading.ExchangeBinance,
+				APIID:    apiID,
+				InstID:   order.InstID,
+				OrdID:    order.OrdID,
+				ClOrdID:  order.ClOrdID,
+			})),
+		}
+		midPx, chasePx, err := binancePendingOrderMidAndChasePrice(ctx, client, order, tickers, instruments)
 		if err != nil {
 			view.PriceError = err.Error()
 		} else {
@@ -971,12 +1082,203 @@ func fallbackPendingOrderMarket(ctx context.Context, cfg config.Config, client o
 	return resp, false, nil
 }
 
+func (s *Server) watchBinancePendingOrderChase(ctx context.Context, client binance.Client, req pendingOrderChaseRequest) {
+	key := pendingOrderChaseKey(req)
+	defer pendingOrderChaseJobs.done(key)
+	interval := pendingOrderChaseInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	timeout := pendingOrderChaseTimeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			_, closed, err := chaseBinancePendingOrderOnce(stepCtx, client, req)
+			cancel()
+			if err != nil {
+				if s.Logger != nil {
+					s.Logger.Warn("Binance pending order chase failed", "api_id", req.APIID, "symbol", req.InstID, "ord_id", req.OrdID, "cl_ord_id", req.ClOrdID, "error", err)
+				}
+				continue
+			}
+			if closed {
+				return
+			}
+		case <-timeoutTimer.C:
+			stepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			_, _, err := fallbackBinancePendingOrderMarket(stepCtx, client, req)
+			cancel()
+			if err != nil && s.Logger != nil {
+				s.Logger.Warn("Binance pending order chase market fallback failed", "api_id", req.APIID, "symbol", req.InstID, "ord_id", req.OrdID, "cl_ord_id", req.ClOrdID, "error", err)
+			}
+			return
+		}
+	}
+}
+
+func prepareBinancePendingOrderChase(ctx context.Context, client binance.Client, req pendingOrderChaseRequest) (pendingOrderChaseResponse, bool, error) {
+	return chaseBinancePendingOrderOnce(ctx, client, req)
+}
+
+func chaseBinancePendingOrderOnce(ctx context.Context, client binance.Client, req pendingOrderChaseRequest) (pendingOrderChaseResponse, bool, error) {
+	order, found, err := currentBinancePendingOrder(ctx, client, req)
+	if err != nil {
+		return pendingOrderChaseResponse{}, false, err
+	}
+	resp := pendingOrderChaseResponse{
+		OK:      true,
+		APIID:   req.APIID,
+		InstID:  req.InstID,
+		OrdID:   req.OrdID,
+		ClOrdID: req.ClOrdID,
+	}
+	if !found {
+		resp.Status = "finished"
+		resp.Message = "pending order is no longer open"
+		return resp, true, nil
+	}
+	return chaseBinancePendingOrderFromOrder(ctx, client, req, order)
+}
+
+func chaseBinancePendingOrderFromOrder(ctx context.Context, client binance.Client, req pendingOrderChaseRequest, order okx.PendingOrder) (pendingOrderChaseResponse, bool, error) {
+	resp := pendingOrderChaseResponse{
+		OK:      true,
+		APIID:   req.APIID,
+		InstID:  req.InstID,
+		OrdID:   order.OrdID,
+		ClOrdID: order.ClOrdID,
+	}
+	midPx, chasePx, err := binancePendingOrderMidAndChasePrice(ctx, client, order, nil, nil)
+	if err != nil {
+		return resp, false, err
+	}
+	resp.MidPx = midPx
+	resp.Px = chasePx
+	if strings.TrimSpace(order.Px) == chasePx {
+		resp.Status = "unchanged"
+		resp.Message = "pending order price is already at chase price"
+		return resp, false, nil
+	}
+	ack, err := client.ModifyOrder(ctx, binance.ModifyOrderRequest{
+		Symbol:            order.InstID,
+		Side:              order.Side,
+		Quantity:          strings.TrimSpace(order.Sz),
+		Price:             chasePx,
+		OrderID:           strings.TrimSpace(order.OrdID),
+		OrigClientOrderID: strings.TrimSpace(order.ClOrdID),
+	})
+	if err != nil {
+		return resp, false, err
+	}
+	resp.Status = "amended"
+	resp.Message = "pending order price amended"
+	if ack.OrderID != 0 {
+		resp.OrdID = strconv.FormatInt(ack.OrderID, 10)
+	}
+	if strings.TrimSpace(ack.ClientOrderID) != "" {
+		resp.ClOrdID = strings.TrimSpace(ack.ClientOrderID)
+	}
+	return resp, false, nil
+}
+
+func fallbackBinancePendingOrderMarket(ctx context.Context, client binance.Client, req pendingOrderChaseRequest) (pendingOrderChaseResponse, bool, error) {
+	order, found, err := currentBinancePendingOrder(ctx, client, req)
+	if err != nil {
+		return pendingOrderChaseResponse{}, false, err
+	}
+	resp := pendingOrderChaseResponse{
+		OK:      true,
+		APIID:   req.APIID,
+		InstID:  req.InstID,
+		OrdID:   req.OrdID,
+		ClOrdID: req.ClOrdID,
+	}
+	if !found {
+		resp.Status = "finished"
+		resp.Message = "pending order is no longer open"
+		return resp, true, nil
+	}
+	resp.OrdID = order.OrdID
+	resp.ClOrdID = order.ClOrdID
+	remaining, err := pendingOrderRemainingSize(order)
+	if err != nil {
+		if errors.Is(err, errPendingOrderNoRemaining) {
+			resp.Status = "finished"
+			resp.Message = "pending order has no remaining size"
+			return resp, true, nil
+		}
+		return resp, false, err
+	}
+	if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
+		if _, stillOpen, checkErr := currentBinancePendingOrder(ctx, client, req); checkErr == nil && !stillOpen {
+			resp.Status = "finished"
+			resp.Message = "pending order is no longer open"
+			return resp, true, nil
+		}
+		return resp, false, err
+	}
+	marketReq := binance.PlaceOrderRequest{
+		Symbol:           order.InstID,
+		Side:             order.Side,
+		PositionSide:     binancePendingPositionSide(order.PosSide),
+		Type:             "MARKET",
+		Quantity:         remaining,
+		NewClientOrderID: nextPendingOrderMarketClOrdID(),
+	}
+	if okxRawBool(order.ReduceOnly) && (marketReq.PositionSide == "" || marketReq.PositionSide == "BOTH") {
+		marketReq.ReduceOnly = true
+	}
+	ack, err := client.PlaceOrder(ctx, marketReq)
+	if err != nil {
+		return resp, false, err
+	}
+	resp.Status = "market_submitted"
+	resp.Message = "pending order canceled and market order submitted"
+	if ack.OrderID != 0 {
+		resp.OrdID = strconv.FormatInt(ack.OrderID, 10)
+	}
+	if strings.TrimSpace(ack.ClientOrderID) != "" {
+		resp.ClOrdID = strings.TrimSpace(ack.ClientOrderID)
+	}
+	return resp, false, nil
+}
+
 func currentPendingOrder(ctx context.Context, client okx.Client, req pendingOrderChaseRequest) (okx.PendingOrder, bool, error) {
 	orders, _, err := client.PendingOrders(ctx, "SWAP")
 	if err != nil {
 		return okx.PendingOrder{}, false, err
 	}
 	for _, order := range orders {
+		if !strings.EqualFold(order.InstID, req.InstID) {
+			continue
+		}
+		if req.OrdID != "" && order.OrdID == req.OrdID {
+			return order, true, nil
+		}
+		if req.OrdID == "" && req.ClOrdID != "" && order.ClOrdID == req.ClOrdID {
+			return order, true, nil
+		}
+	}
+	return okx.PendingOrder{}, false, nil
+}
+
+func currentBinancePendingOrder(ctx context.Context, client binance.Client, req pendingOrderChaseRequest) (okx.PendingOrder, bool, error) {
+	orders, err := client.OpenOrders(ctx, req.InstID)
+	if err != nil {
+		return okx.PendingOrder{}, false, err
+	}
+	for _, rawOrder := range orders {
+		order := binanceOpenOrderToOKX(rawOrder)
 		if !strings.EqualFold(order.InstID, req.InstID) {
 			continue
 		}
@@ -1002,6 +1304,31 @@ func cancelPendingOrder(ctx context.Context, client okx.Client, order okx.Pendin
 	}
 	_, _, err := client.CancelOrder(ctx, req)
 	return err
+}
+
+func cancelBinancePendingOrder(ctx context.Context, client binance.Client, order okx.PendingOrder) error {
+	if strings.TrimSpace(order.OrdID) == "" && strings.TrimSpace(order.ClOrdID) == "" {
+		return errors.New("pending order has no ord_id or cl_ord_id")
+	}
+	_, err := client.CancelOrder(ctx, binance.CancelOrderRequest{
+		Symbol:            order.InstID,
+		OrderID:           strings.TrimSpace(order.OrdID),
+		OrigClientOrderID: strings.TrimSpace(order.ClOrdID),
+	})
+	return err
+}
+
+func binancePendingPositionSide(posSide string) string {
+	switch strings.ToLower(strings.TrimSpace(posSide)) {
+	case "long":
+		return "LONG"
+	case "short":
+		return "SHORT"
+	case "both":
+		return "BOTH"
+	default:
+		return ""
+	}
 }
 
 func pendingOrderLimitRequest(cfg config.Config, order okx.PendingOrder, remaining, px string) (okx.PlaceOrderRequest, error) {
@@ -1192,6 +1519,59 @@ func pendingOrderMidAndChasePrice(ctx context.Context, client okx.Client, order 
 	return formatMidPrice(mid, inst.TickSz), chasePx, nil
 }
 
+func binancePendingOrderMidAndChasePrice(ctx context.Context, client binance.Client, order okx.PendingOrder, tickers map[string]binance.BookTicker, instruments map[string]binance.SymbolInfo) (string, string, error) {
+	symbol := strings.ToUpper(strings.TrimSpace(order.InstID))
+	if symbol == "" {
+		return "", "", errors.New("inst_id is required")
+	}
+	if strings.ToLower(strings.TrimSpace(order.OrdType)) != "limit" {
+		return "", "", fmt.Errorf("Binance only supports chasing limit orders")
+	}
+	var inst binance.SymbolInfo
+	var ok bool
+	if instruments != nil {
+		inst, ok = instruments[symbol]
+	}
+	if !ok {
+		var err error
+		inst, err = client.SymbolInfo(ctx, symbol)
+		if err != nil {
+			return "", "", err
+		}
+		if instruments != nil {
+			instruments[symbol] = inst
+		}
+	}
+	tickRaw, err := binanceTickSizeRaw(inst)
+	if err != nil {
+		return "", "", err
+	}
+	var ticker binance.BookTicker
+	if tickers != nil {
+		ticker, ok = tickers[symbol]
+	} else {
+		ok = false
+	}
+	if !ok {
+		ticker, err = client.BookTicker(ctx, symbol)
+		if err != nil {
+			return "", "", err
+		}
+		if tickers != nil {
+			tickers[symbol] = ticker
+		}
+	}
+	mid, err := binanceBookMidPrice(ticker)
+	if err != nil {
+		return "", "", err
+	}
+	chasePx, err := passivePendingOrderPrice(mid, tickRaw, order.Side)
+	if err != nil {
+		return "", "", err
+	}
+	return formatMidPrice(mid, tickRaw), chasePx, nil
+}
+
 func tickerMidPrice(ticker okx.Ticker) (float64, error) {
 	bid, bidErr := strconv.ParseFloat(strings.TrimSpace(ticker.BidPx), 64)
 	ask, askErr := strconv.ParseFloat(strings.TrimSpace(ticker.AskPx), 64)
@@ -1203,6 +1583,28 @@ func tickerMidPrice(ticker okx.Ticker) (float64, error) {
 		return 0, fmt.Errorf("invalid ticker bid/ask for %s", ticker.InstID)
 	}
 	return last, nil
+}
+
+func binanceBookMidPrice(ticker binance.BookTicker) (float64, error) {
+	bid, bidErr := strconv.ParseFloat(strings.TrimSpace(ticker.BidPrice), 64)
+	ask, askErr := strconv.ParseFloat(strings.TrimSpace(ticker.AskPrice), 64)
+	if bidErr != nil || askErr != nil || bid <= 0 || ask <= 0 {
+		return 0, fmt.Errorf("invalid Binance book ticker bid/ask for %s", ticker.Symbol)
+	}
+	return (bid + ask) / 2, nil
+}
+
+func binanceTickSizeRaw(info binance.SymbolInfo) (string, error) {
+	for _, filter := range info.Filters {
+		if filter.FilterType == "PRICE_FILTER" && strings.TrimSpace(filter.TickSize) != "" {
+			return strings.TrimSpace(filter.TickSize), nil
+		}
+	}
+	filters, err := info.TradingFilters()
+	if err != nil {
+		return "", err
+	}
+	return trading.NormalizeFloat(filters.TickSize), nil
 }
 
 func passivePendingOrderPrice(mid float64, tickRaw, side string) (string, error) {
@@ -1557,6 +1959,7 @@ func normalizePosSide(raw string) string {
 }
 
 func (r *pendingOrderChaseRequest) normalize() {
+	r.Exchange = trading.NormalizeExchange(r.Exchange)
 	r.APIID = strings.TrimSpace(r.APIID)
 	r.InstID = strings.ToUpper(strings.TrimSpace(r.InstID))
 	r.OrdID = strings.TrimSpace(r.OrdID)
@@ -1578,7 +1981,7 @@ func pendingOrderChaseKey(req pendingOrderChaseRequest) string {
 	if id == "" {
 		id = "cl:" + strings.TrimSpace(req.ClOrdID)
 	}
-	return strings.TrimSpace(req.APIID) + "|" + strings.ToUpper(strings.TrimSpace(req.InstID)) + "|" + id
+	return trading.NormalizeExchange(req.Exchange) + "|" + strings.TrimSpace(req.APIID) + "|" + strings.ToUpper(strings.TrimSpace(req.InstID)) + "|" + id
 }
 
 func positionCloseKey(apiID, instID, posSide string) string {

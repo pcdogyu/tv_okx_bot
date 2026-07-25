@@ -80,30 +80,52 @@ func TestClientTradingEndpoints(t *testing.T) {
 	const secret = "secret"
 	seen := map[string]url.Values{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
+		if r.Method != http.MethodGet {
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Fatal(err)
 			}
 			rawBody := string(body)
-			payload, gotSig := splitSignatureTail(t, rawBody)
-			if gotSig != sign(payload, secret) {
-				t.Fatalf("bad post signature got=%s payload=%s", gotSig, payload)
+			if rawBody != "" {
+				payload, gotSig := splitSignatureTail(t, rawBody)
+				if gotSig != sign(payload, secret) {
+					t.Fatalf("bad body signature got=%s payload=%s", gotSig, payload)
+				}
 			}
 			r.Body = io.NopCloser(strings.NewReader(rawBody))
+		}
+		if r.Method == http.MethodDelete {
+			payload, gotSig := splitSignatureTail(t, r.URL.RawQuery)
+			if gotSig != sign(payload, secret) {
+				t.Fatalf("bad delete signature got=%s payload=%s", gotSig, payload)
+			}
 		}
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
-		seen[r.URL.Path] = r.Form
+		seen[r.Method+" "+r.URL.Path] = r.Form
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/fapi/v3/positionRisk":
 			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","positionAmt":"0.1","entryPrice":"50000","markPrice":"50100","unRealizedProfit":"10","positionSide":"BOTH"}]`))
 		case "/fapi/v1/openOrders":
 			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":123,"clientOrderId":"cid","price":"50000","origQty":"0.1","executedQty":"0","side":"BUY","type":"LIMIT","status":"NEW","time":1784880000000}]`))
+		case "/fapi/v1/ticker/bookTicker":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" {
+				t.Fatalf("bad book ticker query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","bidPrice":"49999.9","bidQty":"1","askPrice":"50000.1","askQty":"2","time":1784880000000}`))
 		case "/fapi/v1/order":
-			_, _ = w.Write([]byte(`{"orderId":456,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"50000","origQty":"0.1","executedQty":"0","type":"LIMIT","side":"BUY"}`))
+			switch r.Method {
+			case http.MethodPost:
+				_, _ = w.Write([]byte(`{"orderId":456,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"50000","origQty":"0.1","executedQty":"0","type":"LIMIT","side":"BUY"}`))
+			case http.MethodPut:
+				_, _ = w.Write([]byte(`{"orderId":456,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"49999.9","origQty":"0.1","executedQty":"0","type":"LIMIT","side":"BUY"}`))
+			case http.MethodDelete:
+				_, _ = w.Write([]byte(`{"orderId":456,"symbol":"BTCUSDT","status":"CANCELED","clientOrderId":"entry","price":"49999.9","origQty":"0.1","executedQty":"0","type":"LIMIT","side":"BUY"}`))
+			default:
+				t.Fatalf("unexpected order method %s", r.Method)
+			}
 		case "/fapi/v1/algoOrder":
 			_, _ = w.Write([]byte(`{"algoId":789,"clientAlgoId":"tp","orderType":"TAKE_PROFIT_MARKET","symbol":"BTCUSDT","side":"SELL","quantity":"0.1","algoStatus":"NEW","triggerPrice":"51000"}`))
 		case "/fapi/v1/leverage":
@@ -133,6 +155,10 @@ func TestClientTradingEndpoints(t *testing.T) {
 	if err := client.ChangeMarginType(context.Background(), "BTCUSDT", "ISOLATED"); err != nil {
 		t.Fatal(err)
 	}
+	ticker, err := client.BookTicker(context.Background(), "btcusdt")
+	if err != nil || ticker.Symbol != "BTCUSDT" || ticker.BidPrice != "49999.9" || ticker.AskPrice != "50000.1" {
+		t.Fatalf("bad book ticker err=%v ticker=%#v", err, ticker)
+	}
 	ack, err := client.PlaceOrder(context.Background(), PlaceOrderRequest{
 		Symbol:           "BTCUSDT",
 		Side:             "BUY",
@@ -144,6 +170,23 @@ func TestClientTradingEndpoints(t *testing.T) {
 	})
 	if err != nil || ack.OrderID != 456 {
 		t.Fatalf("bad order ack err=%v ack=%#v", err, ack)
+	}
+	modified, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{
+		Symbol:   "BTCUSDT",
+		Side:     "BUY",
+		Quantity: "0.1",
+		Price:    "49999.9",
+		OrderID:  "456",
+	})
+	if err != nil || modified.Price != "49999.9" {
+		t.Fatalf("bad modify ack err=%v ack=%#v", err, modified)
+	}
+	canceled, err := client.CancelOrder(context.Background(), CancelOrderRequest{
+		Symbol:            "BTCUSDT",
+		OrigClientOrderID: "entry",
+	})
+	if err != nil || canceled.Status != "CANCELED" {
+		t.Fatalf("bad cancel ack err=%v ack=%#v", err, canceled)
 	}
 	algo, err := client.NewAlgoOrder(context.Background(), AlgoOrderRequest{
 		Symbol:           "BTCUSDT",
@@ -158,11 +201,17 @@ func TestClientTradingEndpoints(t *testing.T) {
 	if err != nil || algo.AlgoID != 789 {
 		t.Fatalf("bad algo ack err=%v ack=%#v", err, algo)
 	}
-	if seen["/fapi/v1/order"].Get("timeInForce") != "GTC" || seen["/fapi/v1/order"].Get("newClientOrderId") != "entry" {
-		t.Fatalf("bad order form: %#v", seen["/fapi/v1/order"])
+	if seen[http.MethodPost+" /fapi/v1/order"].Get("timeInForce") != "GTC" || seen[http.MethodPost+" /fapi/v1/order"].Get("newClientOrderId") != "entry" {
+		t.Fatalf("bad order form: %#v", seen[http.MethodPost+" /fapi/v1/order"])
 	}
-	if seen["/fapi/v1/algoOrder"].Get("algoType") != "CONDITIONAL" || seen["/fapi/v1/algoOrder"].Get("reduceOnly") != "true" {
-		t.Fatalf("bad algo form: %#v", seen["/fapi/v1/algoOrder"])
+	if seen[http.MethodPut+" /fapi/v1/order"].Get("price") != "49999.9" || seen[http.MethodPut+" /fapi/v1/order"].Get("orderId") != "456" {
+		t.Fatalf("bad modify order form: %#v", seen[http.MethodPut+" /fapi/v1/order"])
+	}
+	if seen[http.MethodDelete+" /fapi/v1/order"].Get("origClientOrderId") != "entry" {
+		t.Fatalf("bad cancel order form: %#v", seen[http.MethodDelete+" /fapi/v1/order"])
+	}
+	if seen[http.MethodPost+" /fapi/v1/algoOrder"].Get("algoType") != "CONDITIONAL" || seen[http.MethodPost+" /fapi/v1/algoOrder"].Get("reduceOnly") != "true" {
+		t.Fatalf("bad algo form: %#v", seen[http.MethodPost+" /fapi/v1/algoOrder"])
 	}
 }
 

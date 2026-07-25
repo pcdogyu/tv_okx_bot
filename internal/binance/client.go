@@ -111,6 +111,15 @@ type OpenOrder struct {
 	PriceMatch    string `json:"priceMatch"`
 }
 
+type BookTicker struct {
+	Symbol   string `json:"symbol"`
+	BidPrice string `json:"bidPrice"`
+	BidQty   string `json:"bidQty"`
+	AskPrice string `json:"askPrice"`
+	AskQty   string `json:"askQty"`
+	Time     int64  `json:"time"`
+}
+
 type ExchangeInfo struct {
 	Symbols []SymbolInfo `json:"symbols"`
 }
@@ -149,6 +158,21 @@ type PlaceOrderRequest struct {
 	Price            string
 	NewClientOrderID string
 	ReduceOnly       bool
+}
+
+type ModifyOrderRequest struct {
+	Symbol            string
+	Side              string
+	Quantity          string
+	Price             string
+	OrderID           string
+	OrigClientOrderID string
+}
+
+type CancelOrderRequest struct {
+	Symbol            string
+	OrderID           string
+	OrigClientOrderID string
 }
 
 type OrderAck struct {
@@ -327,6 +351,22 @@ func (c Client) OpenOrders(ctx context.Context, symbol string) ([]OpenOrder, err
 	return out, nil
 }
 
+func (c Client) BookTicker(ctx context.Context, symbol string) (BookTicker, error) {
+	q := url.Values{}
+	if strings.TrimSpace(symbol) != "" {
+		q.Set("symbol", strings.ToUpper(strings.TrimSpace(symbol)))
+	}
+	b, err := c.Do(ctx, http.MethodGet, "/fapi/v1/ticker/bookTicker", q, false)
+	if err != nil {
+		return BookTicker{}, err
+	}
+	var out BookTicker
+	if err := json.Unmarshal(b, &out); err != nil {
+		return BookTicker{}, err
+	}
+	return out, nil
+}
+
 func (c Client) ExchangeInfo(ctx context.Context) (ExchangeInfo, error) {
 	b, err := c.Do(ctx, http.MethodGet, "/fapi/v1/exchangeInfo", nil, false)
 	if err != nil {
@@ -394,6 +434,51 @@ func (c Client) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (OrderAck
 		q.Set("reduceOnly", "true")
 	}
 	b, err := c.Do(ctx, http.MethodPost, "/fapi/v1/order", q, true)
+	if err != nil {
+		return OrderAck{}, err
+	}
+	var ack OrderAck
+	if err := json.Unmarshal(b, &ack); err != nil {
+		return OrderAck{}, err
+	}
+	return ack, nil
+}
+
+func (c Client) ModifyOrder(ctx context.Context, req ModifyOrderRequest) (OrderAck, error) {
+	q := url.Values{}
+	q.Set("symbol", strings.ToUpper(strings.TrimSpace(req.Symbol)))
+	q.Set("side", strings.ToUpper(strings.TrimSpace(req.Side)))
+	q.Set("quantity", strings.TrimSpace(req.Quantity))
+	q.Set("price", strings.TrimSpace(req.Price))
+	if strings.TrimSpace(req.OrderID) != "" {
+		q.Set("orderId", strings.TrimSpace(req.OrderID))
+	} else if strings.TrimSpace(req.OrigClientOrderID) != "" {
+		q.Set("origClientOrderId", strings.TrimSpace(req.OrigClientOrderID))
+	} else {
+		return OrderAck{}, errors.New("orderId or origClientOrderId is required")
+	}
+	b, err := c.Do(ctx, http.MethodPut, "/fapi/v1/order", q, true)
+	if err != nil {
+		return OrderAck{}, err
+	}
+	var ack OrderAck
+	if err := json.Unmarshal(b, &ack); err != nil {
+		return OrderAck{}, err
+	}
+	return ack, nil
+}
+
+func (c Client) CancelOrder(ctx context.Context, req CancelOrderRequest) (OrderAck, error) {
+	q := url.Values{}
+	q.Set("symbol", strings.ToUpper(strings.TrimSpace(req.Symbol)))
+	if strings.TrimSpace(req.OrderID) != "" {
+		q.Set("orderId", strings.TrimSpace(req.OrderID))
+	} else if strings.TrimSpace(req.OrigClientOrderID) != "" {
+		q.Set("origClientOrderId", strings.TrimSpace(req.OrigClientOrderID))
+	} else {
+		return OrderAck{}, errors.New("orderId or origClientOrderId is required")
+	}
+	b, err := c.Do(ctx, http.MethodDelete, "/fapi/v1/order", q, true)
 	if err != nil {
 		return OrderAck{}, err
 	}

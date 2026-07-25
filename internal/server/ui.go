@@ -2051,9 +2051,6 @@ const tvbotHTML = `<!doctype html>
 
     function pendingOrderActionCell(row) {
       const exchange = normalizeExchange(row._exchange || "okx");
-      if (exchange === "binance") {
-        return '<td><span class="muted">不支持</span></td>';
-      }
       const key = pendingOrderRowKey(row);
       const busy = !!state.pendingOrderActions[key];
       const chasing = !!row.chasing;
@@ -2532,10 +2529,6 @@ const tvbotHTML = `<!doctype html>
 
     async function chasePendingOrder(button) {
       const exchange = normalizeExchange(button.dataset.exchange || "okx");
-      if (exchange !== "okx") {
-        toast("Binance 暂不支持追单");
-        return;
-      }
       const mode = button.dataset.pendingChase;
       const priceError = button.dataset.priceError || "";
       if (mode === "start" && priceError) {
@@ -2544,6 +2537,7 @@ const tvbotHTML = `<!doctype html>
       }
       const apiID = button.dataset.apiId || "";
       const body = {
+        exchange: exchange,
         api_id: apiID,
         inst_id: button.dataset.instId || "",
         ord_id: button.dataset.ordId || "",
@@ -2556,7 +2550,7 @@ const tvbotHTML = `<!doctype html>
       try {
         const path = mode === "stop" ? "/tvbot/pending-orders/chase/stop" : "/tvbot/pending-orders/chase";
         const result = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        toast(mode === "stop" ? "追单已停止" : ("追单已启动，已按下单设置处理风控，60秒未成交将转市价 " + asText(result.px)));
+        toast(mode === "stop" ? "追单已停止" : ("追单已启动，60秒未成交将转市价 " + asText(result.px)));
         await loadPendingOrders();
       } finally {
         delete state.pendingOrderActions[key];
