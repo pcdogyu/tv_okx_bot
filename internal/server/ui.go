@@ -640,12 +640,13 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-size-col { width: 7%; }
     .positions-table .pos-available-col { width: 6%; }
     .positions-table .pos-price-col { width: 6.5%; }
-    .positions-table .pos-pnl-col { width: 8%; }
-    .positions-table .pos-rate-col { width: 6.5%; }
-    .positions-table .pos-leverage-col { width: 5%; }
-    .positions-table .pos-margin-mode-col { width: 7%; }
-    .positions-table .pos-margin-col { width: 7.5%; }
-    .positions-table .pos-liquidation-col { width: 7.5%; }
+    .positions-table .pos-margin-col { width: 6.8%; }
+    .positions-table .pos-leverage-col { width: 4.5%; }
+    .positions-table .pos-position-amount-col { width: 7.3%; }
+    .positions-table .pos-pnl-col { width: 7.5%; }
+    .positions-table .pos-rate-col { width: 6%; }
+    .positions-table .pos-margin-mode-col { width: 6.5%; }
+    .positions-table .pos-liquidation-col { width: 6.5%; }
     .positions-table .pos-actions-col { width: 12%; }
     .pending-order-table {
       min-width: 1180px;
@@ -808,17 +809,18 @@ const tvbotHTML = `<!doctype html>
             <col class="pos-size-col">
             <col class="pos-available-col">
             <col class="pos-price-col">
+            <col class="pos-margin-col">
+            <col class="pos-leverage-col">
+            <col class="pos-position-amount-col">
             <col class="pos-price-col">
             <col class="pos-pnl-col">
             <col class="pos-rate-col">
-            <col class="pos-leverage-col">
             <col class="pos-margin-mode-col">
-            <col class="pos-margin-col">
             <col class="pos-liquidation-col">
             <col class="pos-actions-col">
           </colgroup>
           <thead>
-            <tr><th>交易所</th><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>杠杆</th><th>保证金模式</th><th>保证金</th><th>强平价</th><th>操作</th></tr>
+            <tr><th>交易所</th><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>保证金</th><th>杠杆</th><th>仓位金额</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>保证金模式</th><th>强平价</th><th>操作</th></tr>
           </thead>
           <tbody id="position-rows"></tbody>
         </table>
@@ -2150,6 +2152,19 @@ const tvbotHTML = `<!doctype html>
       }, 0);
     }
 
+    function positionAmount(row) {
+      const marginRaw = row ? row.margin : null;
+      const leverRaw = row ? row.lever : null;
+      if (marginRaw === null || marginRaw === undefined || leverRaw === null || leverRaw === undefined) return "-";
+      const marginText = String(marginRaw).trim();
+      const leverText = String(leverRaw).trim();
+      if (!marginText || marginText === "-" || !leverText || leverText === "-") return "-";
+      const margin = Number(marginText.replace(/,/g, ""));
+      const lever = Number(leverText.replace(/,/g, ""));
+      if (!Number.isFinite(margin) || !Number.isFinite(lever)) return "-";
+      return formatNumber(margin * lever);
+    }
+
     function signedToneClass(v) {
       const value = Number(v);
       if (!Number.isFinite(value) || value === 0) return "";
@@ -2191,7 +2206,7 @@ const tvbotHTML = `<!doctype html>
       $("positions-notional").textContent = positionsReady ? formatUSD(positionSum(rows, "notionalUsd")) : "-";
       $("positions-updated").textContent = state.positions ? combinedStatusText(state.positions) : "-";
       if (!state.positions) {
-        $("position-rows").innerHTML = '<tr><td colspan="14" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
+        $("position-rows").innerHTML = '<tr><td colspan="15" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
         return;
       }
       const positionRows = rows.map((row) => {
@@ -2203,18 +2218,19 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(formatAssetAmount(row.pos)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.availPos)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.avgPx)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.lever)) + "</td>" +
+          "<td>" + escapeHTML(positionAmount(row)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.markPx)) + "</td>" +
           signedCell(row.upl, formatNumber(row.upl)) +
           signedCell(row.uplRatio, positionPercent(row.uplRatio)) +
-          "<td>" + escapeHTML(asText(row.lever)) + "</td>" +
           "<td>" + escapeHTML(asText(row.mgnMode)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.liqPx)) + "</td>" +
           positionActionCell(row) +
           "</tr>";
       }).join("");
-      const warningRow = state.positionsError ? '<tr><td colspan="14" class="muted">' + escapeHTML(state.positionsError) + '</td></tr>' : "";
-      $("position-rows").innerHTML = positionRows + warningRow || '<tr><td colspan="14" class="muted">暂无当前持仓</td></tr>';
+      const warningRow = state.positionsError ? '<tr><td colspan="15" class="muted">' + escapeHTML(state.positionsError) + '</td></tr>' : "";
+      $("position-rows").innerHTML = positionRows + warningRow || '<tr><td colspan="15" class="muted">暂无当前持仓</td></tr>';
     }
 
     function renderPendingOrders() {
