@@ -2153,6 +2153,14 @@ const tvbotHTML = `<!doctype html>
     }
 
     function positionAmount(row) {
+      const notionalRaw = row ? row.notionalUsd : null;
+      if (notionalRaw !== null && notionalRaw !== undefined) {
+        const notionalText = String(notionalRaw).trim();
+        if (notionalText && notionalText !== "-") {
+          const notional = Number(notionalText.replace(/,/g, ""));
+          if (Number.isFinite(notional) && notional !== 0) return formatNumber(Math.abs(notional));
+        }
+      }
       const marginRaw = row ? row.margin : null;
       const leverRaw = row ? row.lever : null;
       if (marginRaw === null || marginRaw === undefined || leverRaw === null || leverRaw === undefined) return "-";
@@ -2182,9 +2190,6 @@ const tvbotHTML = `<!doctype html>
 
     function positionActionCell(row) {
       const exchange = normalizeExchange(row._exchange || "okx");
-      if (exchange === "binance") {
-        return '<td><span class="muted">不支持</span></td>';
-      }
       const key = positionCloseRowKey(row);
       const closing = !!state.positionClosing[key];
       const instID = escapeHTML(asText(row.instId));
@@ -2578,10 +2583,6 @@ const tvbotHTML = `<!doctype html>
 
     async function closePosition(button) {
       const exchange = normalizeExchange(button.dataset.exchange || "okx");
-      if (exchange !== "okx") {
-        toast("Binance 暂不支持页面平仓");
-        return;
-      }
       const mode = button.dataset.positionClose;
       const instID = button.dataset.instId || "";
       const posSide = button.dataset.posSide || "";
@@ -2595,13 +2596,15 @@ const tvbotHTML = `<!doctype html>
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            exchange,
             api_id: apiID,
             inst_id: instID,
             pos_side: posSide,
             mode
           })
         });
-        toast(mode === "market" ? "市价平仓已提交" : "限价平仓已启动 " + asText(result.px));
+        const limitCloseText = exchange === "okx" ? "限价平仓已启动 " : "限价平仓已提交 ";
+        toast(mode === "market" ? "市价平仓已提交" : limitCloseText + asText(result.px));
         await loadPositionView();
         window.setTimeout(() => loadPositionView().catch((err) => toast(err.message)), mode === "market" ? 1600 : 5200);
       } finally {

@@ -65,10 +65,11 @@ type pendingOrderView struct {
 }
 
 type positionCloseRequest struct {
-	APIID   string `json:"api_id"`
-	InstID  string `json:"inst_id"`
-	PosSide string `json:"pos_side"`
-	Mode    string `json:"mode"`
+	Exchange string `json:"exchange"`
+	APIID    string `json:"api_id"`
+	InstID   string `json:"inst_id"`
+	PosSide  string `json:"pos_side"`
+	Mode     string `json:"mode"`
 }
 
 type pendingOrderChaseRequest struct {
@@ -584,16 +585,13 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
 		return
 	}
-	if s.OKXCredentials == nil {
-		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
-		return
-	}
 	var req positionCloseRequest
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 		return
 	}
+	req.Exchange = trading.NormalizeExchange(req.Exchange)
 	req.APIID = strings.TrimSpace(req.APIID)
 	req.InstID = strings.ToUpper(strings.TrimSpace(req.InstID))
 	req.PosSide = normalizePosSide(req.PosSide)
@@ -607,6 +605,14 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.ConfigStore.Get()
+	if req.Exchange == trading.ExchangeBinance {
+		s.handleBinancePositionClose(w, r, cfg, req)
+		return
+	}
+	if s.OKXCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+		return
+	}
 	client, apiID, err := s.okxClientForCredentials(cfg, req.APIID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
@@ -664,6 +670,56 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 			Message: "limit close order started",
 		})
 	}
+}
+
+func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Request, cfg config.Config, req positionCloseRequest) {
+	if s.BinanceCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+		return
+	}
+	if !cfg.BinanceLiveTradingAllowedByEnvironment() {
+		writeError(w, http.StatusForbidden, "live_trading_disabled", "Binance live trading is not allowed by environment")
+		return
+	}
+	client, apiID, err := s.binanceClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	position, err := currentBinanceOpenPosition(ctx, client, req.InstID, req.PosSide)
+	if err != nil {
+		if errors.Is(err, errPositionNotOpen) {
+			writeError(w, http.StatusConflict, "position_not_open", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, "positions_failed", err.Error())
+		return
+	}
+	order, err := placeBinancePositionClose(ctx, client, position, req.Mode)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "position_close_failed", err.Error())
+		return
+	}
+	status := "submitted"
+	message := "market close order submitted"
+	code := http.StatusOK
+	if req.Mode == "limit" {
+		message = "limit close order submitted"
+	}
+	writeJSON(w, code, positionCloseResponse{
+		OK:      true,
+		Status:  status,
+		Mode:    req.Mode,
+		APIID:   apiID,
+		InstID:  order.Position.InstID,
+		PosSide: normalizePosSide(order.Position.PosSide),
+		OrdID:   order.Ack.OrdID,
+		ClOrdID: order.Ack.ClOrdID,
+		Px:      order.Px,
+		Message: message,
+	})
 }
 
 func (s *Server) startLimitPositionClose(ctx context.Context, apiID string, cfg config.Config, client okx.Client, position okx.Position) (positionCloseOrder, bool, error) {
@@ -816,6 +872,11 @@ func binancePositionToOKX(position binance.Position) okx.Position {
 	if margin == "" || margin == "0" {
 		margin = strings.TrimSpace(position.InitialMargin)
 	}
+	notional := binancePositionNotional(position)
+	lever := strings.TrimSpace(position.Leverage)
+	if lever == "" || lever == "0" || lever == "-" {
+		lever = binancePositionLeverage(notional, margin)
+	}
 	return okx.Position{
 		InstType:    "USDT-M",
 		InstID:      strings.ToUpper(strings.TrimSpace(position.Symbol)),
@@ -827,14 +888,42 @@ func binancePositionToOKX(position binance.Position) okx.Position {
 		MarkPx:      strings.TrimSpace(position.MarkPrice),
 		Upl:         strings.TrimSpace(position.UnRealizedProfit),
 		UplRatio:    binanceUPLRatio(position),
-		Lever:       strings.TrimSpace(position.Leverage),
+		Lever:       lever,
 		LiqPx:       strings.TrimSpace(position.LiquidationPrice),
-		NotionalUsd: strings.TrimLeft(strings.TrimSpace(position.Notional), "-"),
+		NotionalUsd: notional,
 		Margin:      margin,
 		Adl:         strconv.Itoa(position.Adl),
 		UTime:       strconv.FormatInt(position.UpdateTime, 10),
 		Ccy:         strings.TrimSpace(position.MarginAsset),
 	}
+}
+
+func binancePositionNotional(position binance.Position) string {
+	if notional := strings.TrimLeft(strings.TrimSpace(position.Notional), "-"); notional != "" && notional != "0" {
+		return notional
+	}
+	size, sizeErr := strconv.ParseFloat(strings.TrimSpace(position.PositionAmt), 64)
+	if sizeErr != nil || size == 0 {
+		return ""
+	}
+	priceRaw := strings.TrimSpace(position.MarkPrice)
+	if priceRaw == "" || priceRaw == "0" {
+		priceRaw = strings.TrimSpace(position.EntryPrice)
+	}
+	price, priceErr := strconv.ParseFloat(priceRaw, 64)
+	if priceErr != nil || price <= 0 {
+		return ""
+	}
+	return trading.NormalizeFloat(math.Abs(size) * price)
+}
+
+func binancePositionLeverage(notionalRaw, marginRaw string) string {
+	notional, notionalErr := strconv.ParseFloat(strings.TrimSpace(notionalRaw), 64)
+	margin, marginErr := strconv.ParseFloat(strings.TrimSpace(marginRaw), 64)
+	if notionalErr != nil || marginErr != nil || notional <= 0 || margin <= 0 {
+		return ""
+	}
+	return trading.NormalizeFloat(notional / margin)
 }
 
 func binanceOpenOrderToOKX(order binance.OpenOrder) okx.PendingOrder {
@@ -1787,6 +1876,118 @@ func placeLimitPositionClose(ctx context.Context, cfg config.Config, client okx.
 	return positionCloseOrder{Position: position, Ack: ack, Px: px}, nil
 }
 
+func currentBinanceOpenPosition(ctx context.Context, client binance.Client, instID, posSide string) (okx.Position, error) {
+	instID = strings.ToUpper(strings.TrimSpace(instID))
+	posSide = normalizePosSide(posSide)
+	positions, err := client.Positions(ctx, instID)
+	if err != nil {
+		return okx.Position{}, err
+	}
+	for _, raw := range positions {
+		position := binancePositionToOKX(raw)
+		if !strings.EqualFold(position.InstID, instID) || !isOpenPosition(position.Pos) {
+			continue
+		}
+		if posSide == "" || normalizePosSide(position.PosSide) == posSide {
+			return position, nil
+		}
+	}
+	return okx.Position{}, fmt.Errorf("%w: %s %s", errPositionNotOpen, instID, posSide)
+}
+
+func placeBinancePositionClose(ctx context.Context, client binance.Client, position okx.Position, mode string) (positionCloseOrder, error) {
+	px := ""
+	if mode == "limit" {
+		var err error
+		px, err = binanceLimitClosePrice(ctx, client, position)
+		if err != nil {
+			return positionCloseOrder{}, err
+		}
+	}
+	req, err := binancePositionCloseOrderRequest(position, mode, px)
+	if err != nil {
+		return positionCloseOrder{}, err
+	}
+	ack, err := client.PlaceOrder(ctx, req)
+	if err != nil {
+		return positionCloseOrder{}, err
+	}
+	return positionCloseOrder{
+		Position: position,
+		Ack: okx.OrderAck{
+			OrdID:   strconv.FormatInt(ack.OrderID, 10),
+			ClOrdID: ack.ClientOrderID,
+		},
+		Px: px,
+	}, nil
+}
+
+func binancePositionCloseOrderRequest(position okx.Position, mode, px string) (binance.PlaceOrderRequest, error) {
+	side, err := closeOrderSide(position)
+	if err != nil {
+		return binance.PlaceOrderRequest{}, err
+	}
+	size := absolutePositionSize(position.Pos)
+	if size == "" || size == "0" {
+		return binance.PlaceOrderRequest{}, errPositionNotOpen
+	}
+	ordType := strings.ToUpper(strings.TrimSpace(mode))
+	if ordType == "" {
+		ordType = "MARKET"
+	}
+	req := binance.PlaceOrderRequest{
+		Symbol:           strings.ToUpper(strings.TrimSpace(position.InstID)),
+		Side:             strings.ToUpper(side),
+		Type:             ordType,
+		Quantity:         size,
+		Price:            px,
+		NewClientOrderID: nextPositionCloseClOrdID(),
+		PositionSide:     binanceClosePositionSide(position.PosSide),
+	}
+	if req.Type == "LIMIT" {
+		req.TimeInForce = "GTC"
+	}
+	if req.PositionSide == "" || req.PositionSide == "BOTH" {
+		req.ReduceOnly = true
+	}
+	return req, nil
+}
+
+func binanceClosePositionSide(posSide string) string {
+	switch normalizePosSide(posSide) {
+	case "long":
+		return "LONG"
+	case "short":
+		return "SHORT"
+	default:
+		return ""
+	}
+}
+
+func binanceLimitClosePrice(ctx context.Context, client binance.Client, position okx.Position) (string, error) {
+	inst, err := client.SymbolInfo(ctx, position.InstID)
+	if err != nil {
+		return "", err
+	}
+	tickRaw, err := binanceTickSizeRaw(inst)
+	if err != nil {
+		return "", err
+	}
+	ticker, err := client.BookTicker(ctx, position.InstID)
+	if err != nil {
+		return "", err
+	}
+	mid, err := binanceBookMidPrice(ticker)
+	if err != nil {
+		return "", err
+	}
+	side, err := closeOrderSide(position)
+	if err != nil {
+		return "", err
+	}
+	return priceOneTickFromMidValue(mid, tickRaw, side)
+}
+
 func (s *Server) watchLimitPositionClose(apiID string, cfg config.Config, client okx.Client, active positionCloseOrder) {
 	key := positionCloseKey(apiID, active.Position.InstID, active.Position.PosSide)
 	defer positionCloseJobs.done(key)
@@ -1941,10 +2142,6 @@ func limitClosePrice(ctx context.Context, client okx.Client, position okx.Positi
 }
 
 func priceOneTickFromMid(ticker okx.Ticker, tickRaw, side string) (string, error) {
-	tick, err := strconv.ParseFloat(strings.TrimSpace(tickRaw), 64)
-	if err != nil || tick <= 0 {
-		return "", fmt.Errorf("invalid tick size %q", tickRaw)
-	}
 	bid, bidErr := strconv.ParseFloat(strings.TrimSpace(ticker.BidPx), 64)
 	ask, askErr := strconv.ParseFloat(strings.TrimSpace(ticker.AskPx), 64)
 	if bidErr != nil || askErr != nil || bid <= 0 || ask <= 0 {
@@ -1955,6 +2152,14 @@ func priceOneTickFromMid(ticker okx.Ticker, tickRaw, side string) (string, error
 		bid, ask = last, last
 	}
 	mid := (bid + ask) / 2
+	return priceOneTickFromMidValue(mid, tickRaw, side)
+}
+
+func priceOneTickFromMidValue(mid float64, tickRaw, side string) (string, error) {
+	tick, err := strconv.ParseFloat(strings.TrimSpace(tickRaw), 64)
+	if err != nil || tick <= 0 {
+		return "", fmt.Errorf("invalid tick size %q", tickRaw)
+	}
 	switch side {
 	case "sell":
 		return formatPriceToTick(mid-tick, tick, tickRaw, false)
