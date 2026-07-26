@@ -168,6 +168,10 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-profit")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-loss")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signedCell")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("positionSideKind")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("positionSideCell")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("多单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("空单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("市价平仓")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("限价平仓")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions/close")) ||

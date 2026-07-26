@@ -2171,16 +2171,24 @@ const tvbotHTML = `<!doctype html>
     }
 
     function positionSideText(posSide, pos) {
+      const kind = positionSideKind(posSide, pos);
+      if (kind === "long") return "多单";
+      if (kind === "short") return "空单";
+      if (kind === "net") return "持仓";
+      return asText(posSide);
+    }
+
+    function positionSideKind(posSide, pos) {
       const side = String(posSide || "").toLowerCase();
-      if (side === "long") return "多";
-      if (side === "short") return "空";
+      if (side === "long") return "long";
+      if (side === "short") return "short";
       if (side === "net") {
         const value = Number(pos);
-        if (Number.isFinite(value) && value < 0) return "净空";
-        if (Number.isFinite(value) && value > 0) return "净多";
-        return "净持仓";
+        if (Number.isFinite(value) && value < 0) return "short";
+        if (Number.isFinite(value) && value > 0) return "long";
+        return "net";
       }
-      return asText(posSide);
+      return "";
     }
 
     function tradeSideText(side) {
@@ -2279,6 +2287,12 @@ const tvbotHTML = `<!doctype html>
       return '<td' + (tone ? ' class="' + tone + '"' : "") + ">" + escapeHTML(formatted) + "</td>";
     }
 
+    function positionSideCell(row) {
+      const kind = positionSideKind(row ? row.posSide : "", row ? row.pos : "");
+      const tone = kind === "long" ? "signed-profit" : (kind === "short" ? "signed-loss" : "");
+      return '<td' + (tone ? ' class="' + tone + '"' : "") + ">" + escapeHTML(positionSideText(row ? row.posSide : "", row ? row.pos : "")) + "</td>";
+    }
+
     function positionCloseRowKey(row) {
       return [normalizeExchange(row._exchange || "okx"), row._api_id || "", String(row.instId || "").toUpperCase(), String(row.posSide || "net").toLowerCase()].join("|");
     }
@@ -2314,7 +2328,7 @@ const tvbotHTML = `<!doctype html>
         return "<tr>" +
           "<td>" + escapeHTML(exchangeLabel(exchange)) + "</td>" +
           "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
-          "<td>" + escapeHTML(positionSideText(row.posSide, row.pos)) + "</td>" +
+          positionSideCell(row) +
           "<td>" + escapeHTML(formatAssetAmount(row.pos)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.availPos)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.avgPx)) + "</td>" +
