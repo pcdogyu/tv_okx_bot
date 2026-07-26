@@ -105,6 +105,7 @@ type Signal struct {
 	Leverage       int           `json:"leverage"`
 	Amount         FlexibleFloat `json:"amount"`
 	Risk           Risk          `json:"risk,omitempty"`
+	TokenNonce     string        `json:"token_nonce,omitempty"`
 	Token          string        `json:"token"`
 }
 
@@ -126,8 +127,9 @@ type TemplateRequest struct {
 }
 
 type TemplateResponse struct {
-	JSON  string `json:"json"`
-	Token string `json:"token"`
+	JSON       string `json:"json"`
+	Token      string `json:"token"`
+	TokenNonce string `json:"token_nonce,omitempty"`
 }
 
 type OrderResult struct {
@@ -203,6 +205,7 @@ func (s *Signal) Normalize() {
 	if s.Coinpair == "" {
 		s.Coinpair = strings.ToUpper(s.Ticker)
 	}
+	s.TokenNonce = strings.TrimSpace(s.TokenNonce)
 	s.Token = strings.TrimSpace(s.Token)
 	s.Risk.Normalize()
 }
@@ -432,8 +435,25 @@ func (s Signal) CanonicalWebhookTokenPayload() string {
 	return CanonicalTargetWebhookTokenPayload(s.TargetExchange, s.APIID)
 }
 
+func (s Signal) CanonicalNonceWebhookTokenPayload() string {
+	return CanonicalTargetWebhookTokenPayloadWithNonce(s.TargetExchange, s.APIID, s.TokenNonce)
+}
+
 func (t TemplateRequest) CanonicalTokenPayload() string {
 	return CanonicalTargetWebhookTokenPayload(t.TargetExchange, t.APIID)
+}
+
+func CanonicalTargetWebhookTokenPayloadWithNonce(targetExchange, apiID, tokenNonce string) string {
+	tokenNonce = strings.TrimSpace(tokenNonce)
+	if tokenNonce == "" {
+		return CanonicalTargetWebhookTokenPayload(targetExchange, apiID)
+	}
+	return strings.Join([]string{
+		"v6",
+		NormalizeExchange(targetExchange),
+		strings.TrimSpace(apiID),
+		tokenNonce,
+	}, "\n")
 }
 
 func CanonicalTargetWebhookTokenPayload(targetExchange, apiID string) string {

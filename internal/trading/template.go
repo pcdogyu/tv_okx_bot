@@ -1,6 +1,8 @@
 package trading
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -23,6 +25,7 @@ type alertTemplatePayload struct {
 	Condition      string `json:"condition"`
 	Text           string `json:"text"`
 	Source         string `json:"source"`
+	TokenNonce     string `json:"token_nonce"`
 	Token          string `json:"token"`
 }
 
@@ -50,7 +53,12 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		Leverage:       req.Leverage,
 		Amount:         req.Amount,
 	}
-	token := generator.Generate(req.CanonicalTokenPayload())
+	tokenNonce, err := newTemplateTokenNonce()
+	if err != nil {
+		return TemplateResponse{}, err
+	}
+	signal.TokenNonce = tokenNonce
+	token := generator.Generate(signal.CanonicalNonceWebhookTokenPayload())
 	payload := alertTemplatePayload{
 		SentAt:         signal.SentAt,
 		APIID:          req.APIID,
@@ -64,11 +72,20 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		Condition:      "{{strategy.order.comment}}",
 		Text:           "{{strategy.order.alert_message}}",
 		Source:         "tradingview",
+		TokenNonce:     tokenNonce,
 		Token:          token,
 	}
 	b, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return TemplateResponse{}, err
 	}
-	return TemplateResponse{JSON: string(b), Token: token}, nil
+	return TemplateResponse{JSON: string(b), Token: token, TokenNonce: tokenNonce}, nil
+}
+
+func newTemplateTokenNonce() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate token nonce: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }

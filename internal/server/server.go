@@ -129,6 +129,8 @@ func (s *Server) recordTVOrderRejected(r *http.Request, signal trading.Signal, c
 
 func (s *Server) validSignalToken(raw, applied trading.Signal) bool {
 	payloads := []string{
+		applied.CanonicalNonceWebhookTokenPayload(),
+		raw.CanonicalNonceWebhookTokenPayload(),
 		applied.CanonicalWebhookTokenPayload(),
 		applied.CanonicalTokenPayload(),
 		raw.CanonicalTokenPayload(),
@@ -209,6 +211,7 @@ func signalPreviewFromJSON(body []byte) trading.Signal {
 	signal.Text = readString("text")
 	signal.Leverage = readInt("leverage")
 	signal.Amount = readFloat("amount")
+	signal.TokenNonce = readString("token_nonce")
 	signal.Token = readString("token")
 	signal.Normalize()
 	return signal
