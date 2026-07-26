@@ -145,6 +145,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionExchanges")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positions-table")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table td")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("font-size: 12px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-actions-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-position-amount-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("仓位金额")) ||

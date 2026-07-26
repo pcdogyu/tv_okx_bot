@@ -644,6 +644,11 @@ const tvbotHTML = `<!doctype html>
     .positions-table {
       min-width: 1360px;
     }
+    .positions-table th,
+    .positions-table td {
+      font-size: 12px;
+      line-height: 1.35;
+    }
     .positions-table .pos-exchange-col { width: 5.5%; }
     .positions-table .pos-symbol-col { width: 8.5%; }
     .positions-table .pos-side-col { width: 6%; }
