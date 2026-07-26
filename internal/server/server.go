@@ -83,8 +83,10 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 		return
 	}
+	targetExchangeProvided := strings.TrimSpace(signal.TargetExchange) != ""
 	signal.Normalize()
 	tokenSignal := signal
+	applySignalSourceExchangeRouting(&signal, targetExchangeProvided)
 	cfg := s.ConfigStore.Get()
 	cfg.OrderSettings().ApplyToSignal(&signal)
 	if err := signal.Validate(now, time.Duration(cfg.Trading.SignalTTLSeconds)*time.Second, cfg); err != nil {
@@ -146,6 +148,18 @@ func (s *Server) validSignalToken(raw, applied trading.Signal) bool {
 		}
 	}
 	return false
+}
+
+func applySignalSourceExchangeRouting(signal *trading.Signal, targetExchangeProvided bool) {
+	target, ok := trading.TargetExchangeFromSignalSource(signal.Exchange, signal.Ticker)
+	if !ok {
+		return
+	}
+	current := trading.NormalizeExchange(signal.TargetExchange)
+	if current != target || (!targetExchangeProvided && target != trading.ExchangeOKX) {
+		signal.APIID = ""
+	}
+	signal.TargetExchange = target
 }
 
 func signalPreviewFromJSON(body []byte) trading.Signal {
@@ -764,6 +778,7 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 		TargetExchange: rec.TargetExchange,
 		Coinpair:       rec.Coinpair,
 		Ticker:         rec.Ticker,
+		Exchange:       rec.SourceExchange,
 		Price:          trading.NewFlexibleFloat(price),
 		SentAt:         now.UTC().Format(time.RFC3339Nano),
 	}
@@ -775,6 +790,7 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 		signal.Amount = trading.NewFlexibleFloat(amount)
 	}
 	signal.Normalize()
+	applySignalSourceExchangeRouting(&signal, true)
 	cfg.OrderSettings().ApplyToSignal(&signal)
 	if err := signal.Validate(now, 0, cfg); err != nil {
 		return trading.Signal{}, err

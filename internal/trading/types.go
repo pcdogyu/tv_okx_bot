@@ -214,10 +214,30 @@ func NormalizeExchange(exchange string) string {
 	switch strings.ToLower(strings.TrimSpace(exchange)) {
 	case "", ExchangeOKX:
 		return ExchangeOKX
-	case ExchangeBinance, "binance_futures", "binance-usdm", "binance_usdm":
+	case ExchangeBinance, "binance_futures", "binance-usdm", "binance_usdm", "binance usdⓈ-m", "binance usdm":
 		return ExchangeBinance
 	default:
 		return strings.ToLower(strings.TrimSpace(exchange))
+	}
+}
+
+func TargetExchangeFromSignalSource(exchange, ticker string) (string, bool) {
+	source := strings.ToLower(strings.TrimSpace(exchange))
+	if source == "" {
+		source = strings.ToLower(strings.TrimSpace(ticker))
+	}
+	if i := strings.Index(source, ":"); i >= 0 {
+		source = source[:i]
+	}
+	source = strings.ReplaceAll(source, "_", " ")
+	source = strings.ReplaceAll(source, "-", " ")
+	switch {
+	case strings.Contains(source, "binance"):
+		return ExchangeBinance, true
+	case strings.Contains(source, "okx"), strings.Contains(source, "okex"):
+		return ExchangeOKX, true
+	default:
+		return "", false
 	}
 }
 
