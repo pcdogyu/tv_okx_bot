@@ -39,8 +39,9 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		return trading.OrderResult{}, fmt.Errorf("live trading requires config env=live, BINANCE_ENV=live and ALLOW_LIVE_TRADING=true")
 	}
 	orderSettings := cfg.OrderSettings().Normalize()
-	if orderSettings.Risk.Type == trading.RiskTrailing {
-		return trading.OrderResult{}, fmt.Errorf("Binance trailing stop is not supported in this version")
+	orderSettings.ApplyToSignal(&signal)
+	if err := validateBinanceRisk(signal.Risk); err != nil {
+		return trading.OrderResult{}, err
 	}
 	client, apiID, err := t.client(cfg, signal.APIID)
 	if err != nil {
@@ -115,7 +116,13 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 func (t Trader) placeRiskOrders(ctx context.Context, client Client, signal trading.Signal, order PlaceOrderRequest, entryPx, tickSize float64) error {
 	risk := signal.Risk
 	risk.Normalize()
-	if risk.Type != trading.RiskTPSL {
+	switch risk.Type {
+	case trading.RiskNone:
+		return nil
+	case trading.RiskTrailing:
+		return t.placeTrailingStop(ctx, client, signal, order)
+	case trading.RiskTPSL:
+	default:
 		return nil
 	}
 	if risk.TPPct == nil || risk.SLPct == nil {
@@ -155,6 +162,49 @@ func (t Trader) placeRiskOrders(ctx context.Context, client Client, signal tradi
 		return err
 	}
 	return nil
+}
+
+func validateBinanceRisk(risk trading.Risk) error {
+	risk.Normalize()
+	if risk.Type != trading.RiskTrailing {
+		return nil
+	}
+	if risk.TrailingPct == nil || !risk.TrailingPct.Set || risk.TrailingPct.Value <= 0 {
+		return fmt.Errorf("Binance trailing_pct must be positive")
+	}
+	if risk.TrailingPct.Value < 0.1 || risk.TrailingPct.Value > 10 {
+		return fmt.Errorf("Binance trailing_pct must be between 0.1 and 10, got %s", trading.NormalizeFloat(risk.TrailingPct.Value))
+	}
+	return nil
+}
+
+func (t Trader) placeTrailingStop(ctx context.Context, client Client, signal trading.Signal, order PlaceOrderRequest) error {
+	risk := signal.Risk
+	risk.Normalize()
+	if risk.TrailingPct == nil || !risk.TrailingPct.Set {
+		return nil
+	}
+	callbackRate := risk.TrailingPct.Value
+	if callbackRate < 0.1 || callbackRate > 10 {
+		return fmt.Errorf("Binance trailing_pct must be between 0.1 and 10, got %s", trading.NormalizeFloat(callbackRate))
+	}
+	closeSide := "SELL"
+	if signal.Action == trading.ActionShort {
+		closeSide = "BUY"
+	}
+	trailingID := trimClientID(order.NewClientOrderID, 32-2) + "TS"
+	_, err := client.NewAlgoOrder(ctx, AlgoOrderRequest{
+		Symbol:           order.Symbol,
+		Side:             closeSide,
+		PositionSide:     order.PositionSide,
+		Type:             "TRAILING_STOP_MARKET",
+		Quantity:         order.Quantity,
+		CallbackRate:     trading.NormalizeFloat(callbackRate),
+		WorkingType:      "MARK_PRICE",
+		NewClientOrderID: trailingID,
+		ReduceOnly:       order.PositionSide == "",
+	})
+	return err
 }
 
 func (t Trader) Check(ctx context.Context, cfg trading.RuntimeConfig) (map[string]any, error) {

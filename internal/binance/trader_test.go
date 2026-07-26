@@ -92,7 +92,66 @@ func TestTraderPlacesLimitOrderAndTPSLAlgoOrders(t *testing.T) {
 	}
 }
 
-func TestTraderRejectsBinanceTrailingBeforeSubmitting(t *testing.T) {
+func TestTraderPlacesMarketOrderAndTrailingAlgoOrder(t *testing.T) {
+	var orderForm url.Values
+	var trailingForm url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":10}`))
+		case "/fapi/v1/order":
+			orderForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"0.002","executedQty":"0","type":"MARKET","side":"BUY"}`))
+		case "/fapi/v1/algoOrder":
+			trailingForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"algoId":456,"clientAlgoId":"trail","algoType":"CONDITIONAL","orderType":"TRAILING_STOP_MARKET","symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","quantity":"0.002","algoStatus":"NEW","callbackRate":"1.5"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskTrailing)
+	cfg.Trading.TrailingPct = 1.5
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetExchange != trading.ExchangeBinance || result.OrdID != "123" {
+		t.Fatalf("bad result: %#v", result)
+	}
+	if orderForm.Get("type") != "MARKET" || orderForm.Get("quantity") != "0.002" {
+		t.Fatalf("bad order form: %#v", orderForm)
+	}
+	if trailingForm.Get("type") != "TRAILING_STOP_MARKET" ||
+		trailingForm.Get("side") != "SELL" ||
+		trailingForm.Get("quantity") != "0.002" ||
+		trailingForm.Get("callbackRate") != "1.5" ||
+		trailingForm.Get("workingType") != "MARK_PRICE" ||
+		trailingForm.Get("triggerPrice") != "" ||
+		trailingForm.Get("activatePrice") != "" ||
+		trailingForm.Get("reduceOnly") != "true" {
+		t.Fatalf("bad trailing form: %#v", trailingForm)
+	}
+}
+
+func TestTraderRejectsOutOfRangeBinanceTrailingBeforeSubmitting(t *testing.T) {
 	var called bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -102,6 +161,7 @@ func TestTraderRejectsBinanceTrailingBeforeSubmitting(t *testing.T) {
 	cfg := config.Default()
 	cfg.Trading.BinanceDemoBaseURL = ts.URL
 	cfg.Trading.RiskType = string(trading.RiskTrailing)
+	cfg.Trading.TrailingPct = 10.1
 	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
 	_, err := trader.ExecuteSignal(context.Background(), trading.Signal{
 		Action:   trading.ActionLong,
@@ -110,11 +170,11 @@ func TestTraderRejectsBinanceTrailingBeforeSubmitting(t *testing.T) {
 		Leverage: 10,
 		Amount:   trading.NewFlexibleFloat(100),
 	}, cfg)
-	if err == nil || !strings.Contains(err.Error(), "trailing") {
-		t.Fatalf("expected trailing unsupported error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "between 0.1 and 10") {
+		t.Fatalf("expected trailing range error, got %v", err)
 	}
 	if called {
-		t.Fatal("trailing unsupported should fail before HTTP calls")
+		t.Fatal("invalid trailing should fail before HTTP calls")
 	}
 }
 

@@ -195,22 +195,26 @@ type AlgoOrderRequest struct {
 	Type             string
 	Quantity         string
 	TriggerPrice     string
+	ActivationPrice  string
+	CallbackRate     string
 	WorkingType      string
 	NewClientOrderID string
 	ReduceOnly       bool
 }
 
 type AlgoOrderAck struct {
-	AlgoID       int64  `json:"algoId"`
-	ClientAlgoID string `json:"clientAlgoId"`
-	AlgoType     string `json:"algoType"`
-	OrderType    string `json:"orderType"`
-	Symbol       string `json:"symbol"`
-	Side         string `json:"side"`
-	PositionSide string `json:"positionSide"`
-	Quantity     string `json:"quantity"`
-	AlgoStatus   string `json:"algoStatus"`
-	TriggerPrice string `json:"triggerPrice"`
+	AlgoID        int64  `json:"algoId"`
+	ClientAlgoID  string `json:"clientAlgoId"`
+	AlgoType      string `json:"algoType"`
+	OrderType     string `json:"orderType"`
+	Symbol        string `json:"symbol"`
+	Side          string `json:"side"`
+	PositionSide  string `json:"positionSide"`
+	Quantity      string `json:"quantity"`
+	AlgoStatus    string `json:"algoStatus"`
+	TriggerPrice  string `json:"triggerPrice"`
+	ActivatePrice string `json:"activatePrice"`
+	CallbackRate  string `json:"callbackRate"`
 }
 
 func (c Client) Do(ctx context.Context, method, path string, values url.Values, private bool) ([]byte, error) {
@@ -495,8 +499,18 @@ func (c Client) NewAlgoOrder(ctx context.Context, req AlgoOrderRequest) (AlgoOrd
 	q.Set("symbol", strings.ToUpper(strings.TrimSpace(req.Symbol)))
 	q.Set("side", strings.ToUpper(strings.TrimSpace(req.Side)))
 	q.Set("type", strings.ToUpper(strings.TrimSpace(req.Type)))
-	q.Set("quantity", strings.TrimSpace(req.Quantity))
-	q.Set("triggerPrice", strings.TrimSpace(req.TriggerPrice))
+	if strings.TrimSpace(req.Quantity) != "" {
+		q.Set("quantity", strings.TrimSpace(req.Quantity))
+	}
+	if strings.TrimSpace(req.TriggerPrice) != "" {
+		q.Set("triggerPrice", strings.TrimSpace(req.TriggerPrice))
+	}
+	if strings.TrimSpace(req.ActivationPrice) != "" {
+		q.Set("activatePrice", strings.TrimSpace(req.ActivationPrice))
+	}
+	if strings.TrimSpace(req.CallbackRate) != "" {
+		q.Set("callbackRate", strings.TrimSpace(req.CallbackRate))
+	}
 	if req.PositionSide != "" {
 		q.Set("positionSide", strings.ToUpper(strings.TrimSpace(req.PositionSide)))
 	}
