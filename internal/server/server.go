@@ -151,12 +151,15 @@ func (s *Server) validSignalToken(raw, applied trading.Signal) bool {
 }
 
 func applySignalSourceExchangeRouting(signal *trading.Signal, targetExchangeProvided bool) {
+	if targetExchangeProvided {
+		return
+	}
 	target, ok := trading.TargetExchangeFromSignalSource(signal.Exchange, signal.Ticker)
 	if !ok {
 		return
 	}
 	current := trading.NormalizeExchange(signal.TargetExchange)
-	if current != target || (!targetExchangeProvided && target != trading.ExchangeOKX) {
+	if current != target || target != trading.ExchangeOKX {
 		signal.APIID = ""
 	}
 	signal.TargetExchange = target

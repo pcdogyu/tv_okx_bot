@@ -13,7 +13,7 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
-func TestTVOrderRoutesBinanceSourceToBinanceTarget(t *testing.T) {
+func TestTVOrderPreservesExplicitOKXTargetForBinanceSource(t *testing.T) {
 	srv := newTestServer(t)
 	signal := validSignal(t, srv)
 	signal.Exchange = "BINANCE"
@@ -31,19 +31,49 @@ func TestTVOrderRoutesBinanceSourceToBinanceTarget(t *testing.T) {
 	}
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
+		if got.Exchange != "BINANCE" || got.TargetExchange != trading.ExchangeOKX || got.APIID != "okx-moni" {
+			t.Fatalf("explicit OKX target should win over BINANCE source: %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor was not called")
+	}
+	records := srv.Orders.List(10)
+	if len(records) != 1 || records[0].SourceExchange != "BINANCE" || records[0].TargetExchange != trading.ExchangeOKX || records[0].APIID != "okx-moni" {
+		t.Fatalf("order record should preserve explicit OKX target: %#v", records)
+	}
+}
+
+func TestTVOrderRoutesMissingTargetExchangeBySource(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.Exchange = "BINANCE"
+	signal.TargetExchange = ""
+	signal.APIID = "okx-moni"
+	signal.Token = srv.Token.Generate(signal.CanonicalTokenPayload())
+	body, err := json.Marshal(signal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.Exchange != "BINANCE" || got.TargetExchange != trading.ExchangeBinance || got.APIID != "" {
-			t.Fatalf("BINANCE source should route to default Binance API: %#v", got)
+			t.Fatalf("missing target_exchange should route by BINANCE source: %#v", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
 	records := srv.Orders.List(10)
 	if len(records) != 1 || records[0].SourceExchange != "BINANCE" || records[0].TargetExchange != trading.ExchangeBinance || records[0].APIID != "" {
-		t.Fatalf("order record should save Binance source routing: %#v", records)
+		t.Fatalf("order record should save source-derived Binance target: %#v", records)
 	}
 }
 
-func TestTVOrderRoutesOKXSourceToOKXTarget(t *testing.T) {
+func TestTVOrderPreservesExplicitBinanceTargetForOKXSource(t *testing.T) {
 	srv := newTestServer(t)
 	signal := validSignal(t, srv)
 	signal.Exchange = "OKX"
@@ -61,15 +91,15 @@ func TestTVOrderRoutesOKXSourceToOKXTarget(t *testing.T) {
 	}
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
-		if got.Exchange != "OKX" || got.TargetExchange != trading.ExchangeOKX || got.APIID != "" {
-			t.Fatalf("OKX source should route to default OKX API: %#v", got)
+		if got.Exchange != "OKX" || got.TargetExchange != trading.ExchangeBinance || got.APIID != "binance-main" {
+			t.Fatalf("explicit Binance target should win over OKX source: %#v", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
 }
 
-func TestOrderRetryUsesSourceExchangeRouting(t *testing.T) {
+func TestOrderRetryPreservesStoredTargetExchange(t *testing.T) {
 	srv := newTestServer(t)
 	signal := validSignal(t, srv)
 	signal.Exchange = "BINANCE"
@@ -95,8 +125,8 @@ func TestOrderRetryUsesSourceExchangeRouting(t *testing.T) {
 	}
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
-		if got.Exchange != "BINANCE" || got.TargetExchange != trading.ExchangeBinance || got.APIID != "" {
-			t.Fatalf("retry should route by source exchange: %#v", got)
+		if got.Exchange != "BINANCE" || got.TargetExchange != trading.ExchangeOKX || got.APIID != "okx-moni" {
+			t.Fatalf("retry should preserve stored target exchange: %#v", got)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("retry order was not executed")
@@ -112,7 +142,7 @@ func TestOrderRetryUsesSourceExchangeRouting(t *testing.T) {
 			break
 		}
 	}
-	if retry.TargetExchange != trading.ExchangeBinance || retry.APIID != "" || retry.SourceExchange != "BINANCE" {
-		t.Fatalf("retry record should save source-routed target: %#v", retry)
+	if retry.TargetExchange != trading.ExchangeOKX || retry.APIID != "okx-moni" || retry.SourceExchange != "BINANCE" {
+		t.Fatalf("retry record should preserve stored target: %#v", retry)
 	}
 }
