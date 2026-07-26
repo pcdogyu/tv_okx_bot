@@ -419,6 +419,12 @@ const tvbotHTML = `<!doctype html>
     .pill.ok { color: var(--green); border-color: #9fd8bd; }
     .pill.warn { color: var(--amber); border-color: #e9d08d; }
     .pill.bad { color: var(--red); border-color: #efb3ac; }
+    .status-cell {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
     .split {
       display: grid;
       grid-template-columns: 0.95fr 1.05fr;
@@ -484,6 +490,10 @@ const tvbotHTML = `<!doctype html>
       min-height: 28px;
       padding: 4px 8px;
       font-size: 12px;
+    }
+    .btn.order-json-button {
+      min-height: 24px;
+      padding: 2px 7px;
     }
     .btn:disabled, .btn.is-disabled {
       opacity: 0.58;
@@ -673,6 +683,41 @@ const tvbotHTML = `<!doctype html>
       padding: 12px;
       min-height: 140px;
       font-size: 12px;
+    }
+    .raw-json-dialog {
+      width: min(780px, calc(100vw - 32px));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0;
+      color: var(--text);
+      background: #fff;
+      box-shadow: var(--shadow);
+    }
+    .raw-json-dialog::backdrop {
+      background: rgba(15, 23, 42, 0.45);
+    }
+    .raw-json-dialog:not([open]) {
+      display: none;
+    }
+    .raw-json-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .raw-json-dialog pre {
+      border-radius: 0;
+      min-height: 260px;
+      max-height: min(62vh, 560px);
+      overflow: auto;
+    }
+    .raw-json-actions {
+      padding: 12px 14px;
+      margin-top: 0;
+      border-top: 1px solid var(--line);
+      justify-content: flex-end;
     }
     .toast {
       position: fixed;
@@ -1069,6 +1114,16 @@ const tvbotHTML = `<!doctype html>
   </main>
   <footer class="build-footer">{{APP_FOOTER}}</footer>
   <div class="toast" id="toast"></div>
+  <dialog class="raw-json-dialog" id="raw-json-dialog">
+    <div class="raw-json-head">
+      <h3>原始 JSON</h3>
+      <button class="btn small" type="button" id="close-raw-json">关闭</button>
+    </div>
+    <pre id="raw-json-output">-</pre>
+    <div class="actions raw-json-actions">
+      <button class="btn" type="button" id="copy-raw-json">复制 JSON</button>
+    </div>
+  </dialog>
 
   <script>
     const state = {
@@ -1312,6 +1367,41 @@ const tvbotHTML = `<!doctype html>
 
     function pill(text, tone) {
       return '<span class="pill ' + (tone || "") + '">' + escapeHTML(asText(text)) + '</span>';
+    }
+
+    function orderRawJSONText(order) {
+      const raw = order && order.raw_json ? order.raw_json : "";
+      if (!raw) return "";
+      if (typeof raw !== "string") return JSON.stringify(raw, null, 2);
+      try {
+        return JSON.stringify(JSON.parse(raw), null, 2);
+      } catch (err) {
+        return raw;
+      }
+    }
+
+    function showOrderRawJSON(order) {
+      const text = orderRawJSONText(order);
+      if (!text) {
+        toast("暂无原始 JSON");
+        return;
+      }
+      $("raw-json-output").textContent = text;
+      const dialog = $("raw-json-dialog");
+      if (dialog.showModal) {
+        dialog.showModal();
+      } else {
+        dialog.setAttribute("open", "open");
+      }
+    }
+
+    function closeRawJSONDialog() {
+      const dialog = $("raw-json-dialog");
+      if (dialog.close) {
+        dialog.close();
+      } else {
+        dialog.removeAttribute("open");
+      }
     }
 
     function escapeHTML(v) {
@@ -2397,7 +2487,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderOrders() {
-      const rows = (state.orders || []).map((order) => {
+      const rows = (state.orders || []).map((order, index) => {
         const targetExchange = normalizeExchange(order.target_exchange || (order.result && order.result.target_exchange));
         const okxResult = targetExchange === "okx" && order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : "";
         const binanceResult = targetExchange === "binance" && order.result && (order.result.ord_id || order.result.binance_code || order.result.binance_msg) ? [order.result.ord_id, order.result.binance_code, order.result.binance_msg].filter(Boolean).join(" / ") : "";
@@ -2410,9 +2500,11 @@ const tvbotHTML = `<!doctype html>
         const canRetry = order.status === "failed" && order.signal_id;
         const retrying = canRetry && state.retrying[order.signal_id];
         const retryButton = canRetry ? '<button class="btn small" type="button" data-retry-id="' + escapeHTML(order.signal_id) + '"' + (retrying ? " disabled" : "") + ">" + (retrying ? "重试中" : "重试") + "</button>" : "";
+        const rawJSONButton = orderRawJSONText(order) ? '<button class="btn small order-json-button" type="button" data-order-json-index="' + index + '">JSON</button>' : "";
+        const statusCell = '<div class="status-cell">' + pill(order.status, tone) + rawJSONButton + "</div>";
         return "<tr>" +
           '<td class="time">' + escapeHTML(shanghaiTime(order.accepted_at)) + "</td>" +
-          "<td>" + pill(order.status, tone) + "</td>" +
+          "<td>" + statusCell + "</td>" +
           "<td>" + escapeHTML(sourceExchange) + "</td>" +
           "<td>" + escapeHTML(targetText) + "</td>" +
           "<td>" + escapeHTML(asText(order.action)) + "</td>" +
@@ -2812,7 +2904,18 @@ const tvbotHTML = `<!doctype html>
       await navigator.clipboard.writeText($("template-output").value);
       toast("已复制");
     });
+    $("close-raw-json").addEventListener("click", () => closeRawJSONDialog());
+    $("copy-raw-json").addEventListener("click", async () => {
+      await navigator.clipboard.writeText($("raw-json-output").textContent || "");
+      toast("原始 JSON 已复制");
+    });
     $("order-rows").addEventListener("click", (event) => {
+      const jsonButton = event.target.closest("button[data-order-json-index]");
+      if (jsonButton) {
+        const order = state.orders[Number(jsonButton.dataset.orderJsonIndex)];
+        showOrderRawJSON(order);
+        return;
+      }
       const button = event.target.closest("button[data-retry-id]");
       if (!button) return;
       retryOrder(button.dataset.retryId).catch((err) => toast(err.message));

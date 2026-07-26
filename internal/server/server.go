@@ -77,12 +77,16 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 		return
 	}
+	rawJSON := sanitizedRawWebhookJSON(body)
 	var signal trading.Signal
 	if err := json.Unmarshal(body, &signal); err != nil {
-		s.recordTVOrderRejected(r, signalPreviewFromJSON(body), "bad_json", err, now)
+		preview := signalPreviewFromJSON(body)
+		preview.RawJSON = rawJSON
+		s.recordTVOrderRejected(r, preview, "bad_json", err, now)
 		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
 		return
 	}
+	signal.RawJSON = rawJSON
 	targetExchangeProvided := strings.TrimSpace(signal.TargetExchange) != ""
 	signal.Normalize()
 	tokenSignal := signal
@@ -126,6 +130,42 @@ func (s *Server) recordTVOrderRejected(r *http.Request, signal trading.Signal, c
 	}
 	if _, storeErr := s.Orders.RecordRejected(signal, code, err, now); storeErr != nil && s.Logger != nil {
 		s.Logger.Error("failed to record rejected tvorder", "code", code, "error", storeErr)
+	}
+}
+
+func sanitizedRawWebhookJSON(body []byte) string {
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	b, err := json.MarshalIndent(redactSensitiveJSONFields(payload), "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func redactSensitiveJSONFields(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "token", "token_nonce":
+				out[key] = "[redacted]"
+			default:
+				out[key] = redactSensitiveJSONFields(item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = redactSensitiveJSONFields(item)
+		}
+		return out
+	default:
+		return typed
 	}
 }
 
@@ -784,6 +824,7 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 		Exchange:       rec.SourceExchange,
 		Price:          trading.NewFlexibleFloat(price),
 		SentAt:         now.UTC().Format(time.RFC3339Nano),
+		RawJSON:        rec.RawJSON,
 	}
 	if strings.TrimSpace(rec.Amount) != "" {
 		amount, err := parseOrderRecordFloat("amount", rec.Amount)

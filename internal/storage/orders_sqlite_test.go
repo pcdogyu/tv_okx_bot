@@ -78,6 +78,7 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 		Leverage: 3,
 		Amount:   trading.NewFlexibleFloat(120),
 		Token:    "token",
+		RawJSON:  `{"action":"sell","token":"[redacted]"}`,
 	}
 	signal.Normalize()
 	dedupe := DedupeKey(signal)
@@ -104,6 +105,9 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	records := store.List(10)
 	if len(records) != 2 || records[0].Status != StatusDuplicate || records[1].Status != StatusSubmitted || records[1].Result.OrdID != "okx-1" {
 		t.Fatalf("bad records: %#v", records)
+	}
+	if records[0].RawJSON != signal.RawJSON || records[1].RawJSON != signal.RawJSON {
+		t.Fatalf("raw json should be preserved: %#v", records)
 	}
 }
 
@@ -168,12 +172,12 @@ func TestSQLiteOrderStoreReadsLegacyRowsWithNullExchangeColumns(t *testing.T) {
 	if len(records) != 1 || records[0].SignalID != "sig-old" || records[0].TargetExchange != trading.ExchangeOKX {
 		t.Fatalf("legacy order should remain readable after exchange migration: %#v", records)
 	}
-	var sourceExchange, targetExchange string
-	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange); err != nil {
+	var sourceExchange, targetExchange, rawJSON string
+	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange, raw_json FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange, &rawJSON); err != nil {
 		t.Fatal(err)
 	}
-	if sourceExchange != "" || targetExchange != trading.ExchangeOKX {
-		t.Fatalf("legacy exchange columns not backfilled source=%q target=%q", sourceExchange, targetExchange)
+	if sourceExchange != "" || targetExchange != trading.ExchangeOKX || rawJSON != "" {
+		t.Fatalf("legacy order columns not backfilled source=%q target=%q raw_json=%q", sourceExchange, targetExchange, rawJSON)
 	}
 }
 

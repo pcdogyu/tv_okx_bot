@@ -226,6 +226,10 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("交易所 / 返回")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("信号来源")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("下单去向")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("raw-json-dialog")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-order-json-index")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("showOrderRawJSON")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("copy-raw-json")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Webhook URL")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("template-webhook-url")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("copy-webhook-url")) ||
@@ -467,6 +471,9 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 	if ordersRR.Code != http.StatusOK {
 		t.Fatalf("orders status=%d body=%s", ordersRR.Code, ordersRR.Body.String())
 	}
+	if bytes.Contains(ordersRR.Body.Bytes(), []byte(signal.Token)) {
+		t.Fatalf("orders response leaked webhook token: %s", ordersRR.Body.String())
+	}
 	var list struct {
 		Orders []storage.OrderRecord `json:"orders"`
 	}
@@ -477,6 +484,9 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 	for _, order := range list.Orders {
 		if order.TargetExchange != trading.ExchangeOKX {
 			t.Fatalf("orders should default target exchange to OKX: %#v", list.Orders)
+		}
+		if order.RawJSON == "" || !strings.Contains(order.RawJSON, `"token": "[redacted]"`) || strings.Contains(order.RawJSON, signal.Token) {
+			t.Fatalf("order should include redacted raw json: %#v", order)
 		}
 		if order.Status == storage.StatusDuplicate {
 			foundDuplicate = true
@@ -696,6 +706,7 @@ func TestTVOrderRecordsRejectedSignals(t *testing.T) {
 		"interval": "15",
 		"condition": "{{strategy.order.comment}}",
 		"text": "{{strategy.order.alert_message}}",
+		"token_nonce": "raw-nonce-value",
 		"source": "tradingview"
 	}`)
 	rr := httptest.NewRecorder()
@@ -733,6 +744,13 @@ func TestTVOrderRecordsRejectedSignals(t *testing.T) {
 	}
 	if got.Action != trading.Side("{{strategy.order.action}}") || got.Coinpair != "ETHUSDT.P" || got.Price != "1893.55" || got.Amount != "100" {
 		t.Fatalf("rejected record lost signal fields: %#v", got)
+	}
+	if got.RawJSON == "" ||
+		!strings.Contains(got.RawJSON, `"token": "[redacted]"`) ||
+		!strings.Contains(got.RawJSON, `"token_nonce": "[redacted]"`) ||
+		strings.Contains(got.RawJSON, "present-but-not-checked-before-signal-validation") ||
+		strings.Contains(got.RawJSON, "raw-nonce-value") {
+		t.Fatalf("rejected record should include redacted raw json: %#v", got)
 	}
 }
 

@@ -107,6 +107,7 @@ type Signal struct {
 	Risk           Risk          `json:"risk,omitempty"`
 	TokenNonce     string        `json:"token_nonce,omitempty"`
 	Token          string        `json:"token"`
+	RawJSON        string        `json:"-"`
 }
 
 type OrderSettings struct {
