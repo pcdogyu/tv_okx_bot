@@ -2248,6 +2248,29 @@ const tvbotHTML = `<!doctype html>
       return formatted === "-" ? asText(v) : formatted;
     }
 
+    function positionNumber(value) {
+      if (value === null || value === undefined) return null;
+      const text = String(value).trim();
+      if (!text || text === "-") return null;
+      const number = Number(text.replace(/,/g, ""));
+      return Number.isFinite(number) ? number : null;
+    }
+
+    function positionReturnRatio(row) {
+      const rawRatio = positionNumber(row ? row.uplRatio : null);
+      const lever = positionNumber(row ? row.lever : null);
+      if (rawRatio !== null && lever !== null && lever !== 0) return rawRatio * lever;
+      const upl = positionNumber(row ? row.upl : null);
+      const margin = positionNumber(row ? row.margin : null);
+      if (upl !== null && margin !== null && margin !== 0) return upl / Math.abs(margin);
+      return rawRatio;
+    }
+
+    function positionReturnPercent(row) {
+      const ratio = positionReturnRatio(row);
+      return ratio === null ? positionPercent(row ? row.uplRatio : null) : formatPct(ratio);
+    }
+
     function positionSum(rows, field) {
       return rows.reduce((sum, row) => {
         const value = Number(row[field]);
@@ -2260,7 +2283,7 @@ const tvbotHTML = `<!doctype html>
       if (notionalRaw !== null && notionalRaw !== undefined) {
         const notionalText = String(notionalRaw).trim();
         if (notionalText && notionalText !== "-") {
-          const notional = Number(notionalText.replace(/,/g, ""));
+          const notional = positionNumber(notionalText);
           if (Number.isFinite(notional) && notional !== 0) return formatNumber(Math.abs(notional));
         }
       }
@@ -2270,8 +2293,8 @@ const tvbotHTML = `<!doctype html>
       const marginText = String(marginRaw).trim();
       const leverText = String(leverRaw).trim();
       if (!marginText || marginText === "-" || !leverText || leverText === "-") return "-";
-      const margin = Number(marginText.replace(/,/g, ""));
-      const lever = Number(leverText.replace(/,/g, ""));
+      const margin = positionNumber(marginText);
+      const lever = positionNumber(leverText);
       if (!Number.isFinite(margin) || !Number.isFinite(lever)) return "-";
       return formatNumber(margin * lever);
     }
@@ -2337,7 +2360,7 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(positionAmount(row)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.markPx)) + "</td>" +
           signedCell(row.upl, formatNumber(row.upl)) +
-          signedCell(row.uplRatio, positionPercent(row.uplRatio)) +
+          signedCell(positionReturnRatio(row), positionReturnPercent(row)) +
           "<td>" + escapeHTML(asText(row.mgnMode)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.liqPx)) + "</td>" +
           positionActionCell(row) +
