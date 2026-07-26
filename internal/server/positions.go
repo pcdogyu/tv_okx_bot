@@ -873,10 +873,7 @@ func binancePositionToOKX(position binance.Position) okx.Position {
 		margin = strings.TrimSpace(position.InitialMargin)
 	}
 	notional := binancePositionNotional(position)
-	lever := strings.TrimSpace(position.Leverage)
-	if lever == "" || lever == "0" || lever == "-" {
-		lever = binancePositionLeverage(notional, margin)
-	}
+	lever := binancePositionLeverage(position, notional)
 	return okx.Position{
 		InstType:    "USDT-M",
 		InstID:      strings.ToUpper(strings.TrimSpace(position.Symbol)),
@@ -917,13 +914,44 @@ func binancePositionNotional(position binance.Position) string {
 	return trading.NormalizeFloat(math.Abs(size) * price)
 }
 
-func binancePositionLeverage(notionalRaw, marginRaw string) string {
+func binancePositionLeverage(position binance.Position, notionalRaw string) string {
+	if leverage := normalizeBinanceLeverage(position.Leverage); leverage != "" {
+		return leverage
+	}
+	for _, marginRaw := range []string{position.PositionInitialMargin, position.InitialMargin} {
+		if leverage := deriveBinanceLeverage(notionalRaw, marginRaw); leverage != "" {
+			return leverage
+		}
+	}
+	return ""
+}
+
+func normalizeBinanceLeverage(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "0" || raw == "-" {
+		return ""
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return raw
+	}
+	if value <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(int64(math.Round(value)), 10)
+}
+
+func deriveBinanceLeverage(notionalRaw, marginRaw string) string {
 	notional, notionalErr := strconv.ParseFloat(strings.TrimSpace(notionalRaw), 64)
 	margin, marginErr := strconv.ParseFloat(strings.TrimSpace(marginRaw), 64)
 	if notionalErr != nil || marginErr != nil || notional <= 0 || margin <= 0 {
 		return ""
 	}
-	return trading.NormalizeFloat(notional / margin)
+	leverage := math.Round(notional / margin)
+	if leverage <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(int64(leverage), 10)
 }
 
 func binanceOpenOrderToOKX(order binance.OpenOrder) okx.PendingOrder {

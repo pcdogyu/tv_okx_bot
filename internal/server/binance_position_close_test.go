@@ -20,14 +20,14 @@ func TestBinancePositionToOKXDerivesLeverageAndNotional(t *testing.T) {
 		EntryPrice:            "0.1",
 		MarkPrice:             "0.12",
 		UnRealizedProfit:      "50",
-		IsolatedMargin:        "30",
 		Leverage:              "0",
 		MarginType:            "isolated",
 		LiquidationPrice:      "0.08",
 		MarginAsset:           "USDT",
-		PositionInitialMargin: "0",
+		IsolatedMargin:        "37",
+		PositionInitialMargin: "30",
 	})
-	if position.NotionalUsd != "300" || position.Lever != "10" {
+	if position.NotionalUsd != "300" || position.Lever != "10" || position.Margin != "37" {
 		t.Fatalf("expected derived notional/leverage, got %#v", position)
 	}
 }
