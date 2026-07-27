@@ -357,6 +357,63 @@ func TestTraderClosesReversePositionBeforeNewDirection(t *testing.T) {
 	}
 }
 
+func TestTraderContinuesWhenMarginTypeSetupBlockedByOpenOrders(t *testing.T) {
+	var orderForm url.Values
+	var leverageCalled bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"SXTUSDT","status":"TRADING","pricePrecision":6,"quantityPrecision":1,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.000001"},{"filterType":"LOT_SIZE","minQty":"0.1","stepSize":"0.1"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":-4067,"msg":"Position side cannot be changed if there exists open orders."}`))
+		case "/fapi/v1/leverage":
+			leverageCalled = true
+			_, _ = w.Write([]byte(`{"symbol":"SXTUSDT","leverage":10}`))
+		case "/fapi/v1/order":
+			orderForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"orderId":321,"symbol":"SXTUSDT","status":"NEW","clientOrderId":"entry","price":"0.007312","origQty":"68231.4","executedQty":"0","type":"LIMIT","side":"BUY"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	cfg.Trading.OrderType = string(trading.OrderTypeLimit)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "SXTUSDT.P",
+		Ticker:   "SXTUSDT.P",
+		Price:    trading.NewFlexibleFloat(0.007335),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(500),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leverageCalled {
+		t.Fatal("expected leverage setup after margin setup was skipped")
+	}
+	if result.OrdID != "321" || result.InstID != "SXTUSDT" {
+		t.Fatalf("bad order result: %#v", result)
+	}
+	if orderForm.Get("symbol") != "SXTUSDT" || orderForm.Get("side") != "BUY" || orderForm.Get("type") != "LIMIT" || orderForm.Get("quantity") == "" {
+		t.Fatalf("bad order form: %#v", orderForm)
+	}
+}
+
 func TestTraderRejectsOutOfRangeBinanceTrailingBeforeSubmitting(t *testing.T) {
 	var called bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

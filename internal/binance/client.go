@@ -47,6 +47,19 @@ func (e APIError) Error() string {
 	return fmt.Sprintf("binance code %d: %s", e.Code, e.Msg)
 }
 
+func IsAPIErrorCode(err error, codes ...int) bool {
+	var apiErr APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	for _, code := range codes {
+		if apiErr.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 type Balance struct {
 	AccountAlias       string `json:"accountAlias"`
 	Asset              string `json:"asset"`
@@ -496,7 +509,7 @@ func (c Client) ChangeMarginType(ctx context.Context, symbol, marginType string)
 	q.Set("symbol", strings.ToUpper(strings.TrimSpace(symbol)))
 	q.Set("marginType", strings.ToUpper(strings.TrimSpace(marginType)))
 	_, err := c.Do(ctx, http.MethodPost, "/fapi/v1/marginType", q, true)
-	if err != nil && strings.Contains(err.Error(), "-4046") {
+	if err != nil && IsAPIErrorCode(err, -4046) {
 		return nil
 	}
 	return err

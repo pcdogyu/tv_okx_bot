@@ -73,11 +73,18 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if compareDecimal(quantity, filters.MinQty) < 0 {
 		return trading.OrderResult{}, fmt.Errorf("order size %s is below Binance minQty %s", quantity, filters.MinQty)
 	}
-	if err := client.ChangeMarginType(ctx, symbol, binanceMarginType(cfg.MarginMode())); err != nil {
-		return trading.OrderResult{}, err
+	marginType := binanceMarginType(cfg.MarginMode())
+	if err := client.ChangeMarginType(ctx, symbol, marginType); err != nil {
+		if shouldContinueAfterBinanceMarginSetupError(err) {
+			if t.Logger != nil {
+				t.Logger.Warn("binance margin type setup skipped before order", "symbol", symbol, "margin_type", marginType, "error", err)
+			}
+		} else {
+			return trading.OrderResult{}, fmt.Errorf("binance change margin type %s to %s: %w", symbol, marginType, err)
+		}
 	}
 	if err := client.SetLeverage(ctx, symbol, signal.Leverage); err != nil {
-		return trading.OrderResult{}, err
+		return trading.OrderResult{}, fmt.Errorf("binance set leverage %s to %dx: %w", symbol, signal.Leverage, err)
 	}
 	clOrdID := clientOrderID(signal)
 	posSide := binancePositionSide(signal.Action, cfg.PositionMode())
@@ -373,6 +380,10 @@ func binanceMarginType(mode string) string {
 		return "CROSSED"
 	}
 	return "ISOLATED"
+}
+
+func shouldContinueAfterBinanceMarginSetupError(err error) bool {
+	return IsAPIErrorCode(err, -4047, -4048, -4067, -4068)
 }
 
 func riskTriggerPrices(action trading.Side, entryPx, tpPct, slPct float64) (float64, float64) {
