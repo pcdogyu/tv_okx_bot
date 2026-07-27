@@ -636,8 +636,22 @@ const tvbotHTML = `<!doctype html>
       gap: 10px;
       align-content: start;
     }
+    .exchange-balance-metrics {
+      min-height: 150px;
+      align-content: start;
+      margin: 0;
+    }
+    .balance-table-wrap {
+      height: 188px;
+      overflow: auto;
+    }
     .exchange-balance-card table {
       margin-top: 0;
+    }
+    .balance-table-wrap th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
     }
     #usdt-chart {
       width: 100%;
@@ -785,6 +799,8 @@ const tvbotHTML = `<!doctype html>
       #usdt-chart { height: 320px; }
       #usdt-chart.mini-usdt-chart { height: 240px; }
       .mini-usdt-chart { height: 240px; }
+      .exchange-balance-metrics { min-height: 0; }
+      .balance-table-wrap { height: auto; max-height: 260px; }
     }
   </style>
 </head>
@@ -967,7 +983,7 @@ const tvbotHTML = `<!doctype html>
             <h3>OKX USDT 余额表</h3>
             <span class="muted" id="analysis-okx-balance-status">-</span>
           </div>
-          <div class="analysis-metrics symbol-metrics">
+          <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
             <div class="analysis-card"><div class="label">资产估值</div><div class="value" id="analysis-total-eq">-</div></div>
             <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-usdt-eq">-</div></div>
             <div class="analysis-card"><div class="label">可用权益</div><div class="value" id="analysis-avail-eq">-</div></div>
@@ -975,12 +991,14 @@ const tvbotHTML = `<!doctype html>
             <div class="analysis-card"><div class="label">资产数</div><div class="value" id="analysis-asset-count">-</div></div>
             <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-balance-updated">-</div></div>
           </div>
-          <table>
-            <thead>
-              <tr><th>币种</th><th>权益</th><th>估值 USD</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
-            </thead>
-            <tbody id="analysis-balance-rows"></tbody>
-          </table>
+          <div class="balance-table-wrap">
+            <table>
+              <thead>
+                <tr><th>币种</th><th>权益</th><th>估值 USD</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
+              </thead>
+              <tbody id="analysis-balance-rows"></tbody>
+            </table>
+          </div>
           <div class="section-head" style="margin:2px 0 0">
             <h3 id="analysis-okx-usdt-title">OKX USDT估值</h3>
           </div>
@@ -991,18 +1009,20 @@ const tvbotHTML = `<!doctype html>
             <h3>Binance USDT 余额表</h3>
             <span class="muted" id="analysis-binance-balance-status">-</span>
           </div>
-          <div class="analysis-metrics symbol-metrics">
+          <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
             <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-binance-usdt-eq">-</div></div>
             <div class="analysis-card"><div class="label">可用</div><div class="value" id="analysis-binance-avail">-</div></div>
             <div class="analysis-card"><div class="label">交易 API</div><div class="value" id="analysis-binance-api">-</div></div>
             <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-binance-balance-updated">-</div></div>
           </div>
-          <table>
-            <thead>
-              <tr><th>币种</th><th>权益</th><th>估值 USD</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
-            </thead>
-            <tbody id="analysis-binance-balance-rows"></tbody>
-          </table>
+          <div class="balance-table-wrap">
+            <table>
+              <thead>
+                <tr><th>币种</th><th>权益</th><th>估值 USD</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
+              </thead>
+              <tbody id="analysis-binance-balance-rows"></tbody>
+            </table>
+          </div>
           <div class="section-head" style="margin:2px 0 0">
             <h3 id="analysis-binance-usdt-title">Binance USDT估值</h3>
           </div>
