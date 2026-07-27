@@ -98,6 +98,7 @@ type pendingOrderView struct {
 	okx.PendingOrder
 	MidPx      string `json:"mid_px,omitempty"`
 	ChasePx    string `json:"chase_px,omitempty"`
+	Margin     string `json:"margin,omitempty"`
 	PriceError string `json:"price_error,omitempty"`
 	Chasing    bool   `json:"chasing"`
 }
@@ -833,7 +834,7 @@ func (s *Server) fetchPendingOrders(ctx context.Context, cfg config.Config, requ
 		}
 		return orders[i].InstID < orders[j].InstID
 	})
-	views := s.pendingOrderViews(ctx, client, apiID, orders)
+	views := s.pendingOrderViews(ctx, cfg, client, apiID, orders)
 	return pendingOrdersResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeOKX,
@@ -912,7 +913,7 @@ func (s *Server) fetchBinancePendingOrders(ctx context.Context, cfg config.Confi
 		}
 		return orders[i].Symbol < orders[j].Symbol
 	})
-	views := s.binancePendingOrderViews(ctx, client, apiID, orders)
+	views := s.binancePendingOrderViews(ctx, cfg, client, apiID, orders)
 	return pendingOrdersResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeBinance,
@@ -1371,7 +1372,7 @@ func binanceUPLRatio(position binance.Position) string {
 	return strconv.FormatFloat(upl/notional, 'f', 8, 64)
 }
 
-func (s *Server) pendingOrderViews(ctx context.Context, client okx.Client, apiID string, orders []okx.PendingOrder) []pendingOrderView {
+func (s *Server) pendingOrderViews(ctx context.Context, cfg config.Config, client okx.Client, apiID string, orders []okx.PendingOrder) []pendingOrderView {
 	views := make([]pendingOrderView, 0, len(orders))
 	tickers := map[string]okx.Ticker{}
 	instruments := map[string]okx.Instrument{}
@@ -1392,12 +1393,15 @@ func (s *Server) pendingOrderViews(ctx context.Context, client okx.Client, apiID
 			view.MidPx = midPx
 			view.ChasePx = chasePx
 		}
+		if inst, ok := instruments[strings.ToUpper(strings.TrimSpace(order.InstID))]; ok {
+			view.Margin = pendingOrderMargin(order, view.MidPx, inst.CtVal, cfg.Trading.Leverage)
+		}
 		views = append(views, view)
 	}
 	return views
 }
 
-func (s *Server) binancePendingOrderViews(ctx context.Context, client binance.Client, apiID string, orders []binance.OpenOrder) []pendingOrderView {
+func (s *Server) binancePendingOrderViews(ctx context.Context, cfg config.Config, client binance.Client, apiID string, orders []binance.OpenOrder) []pendingOrderView {
 	views := make([]pendingOrderView, 0, len(orders))
 	tickers := map[string]binance.BookTicker{}
 	instruments := map[string]binance.SymbolInfo{}
@@ -1420,6 +1424,7 @@ func (s *Server) binancePendingOrderViews(ctx context.Context, client binance.Cl
 			view.MidPx = midPx
 			view.ChasePx = chasePx
 		}
+		view.Margin = pendingOrderMargin(order, view.MidPx, "1", cfg.Trading.Leverage)
 		views = append(views, view)
 	}
 	return views
@@ -2023,6 +2028,39 @@ func pendingOrderRemainingSize(order okx.PendingOrder) (string, error) {
 		return "", errPendingOrderNoRemaining
 	}
 	return out, nil
+}
+
+func pendingOrderMargin(order okx.PendingOrder, fallbackPx, ctValRaw string, fallbackLeverage int) string {
+	remainingRaw, err := pendingOrderRemainingSize(order)
+	if err != nil {
+		return ""
+	}
+	priceRaw := strings.TrimSpace(order.Px)
+	if priceRaw == "" || priceRaw == "0" {
+		priceRaw = strings.TrimSpace(fallbackPx)
+	}
+	price, priceErr := strconv.ParseFloat(priceRaw, 64)
+	remaining, remainingErr := strconv.ParseFloat(remainingRaw, 64)
+	ctVal, ctValErr := strconv.ParseFloat(strings.TrimSpace(ctValRaw), 64)
+	leverage := pendingOrderLeverage(order, fallbackLeverage)
+	if priceErr != nil || remainingErr != nil || ctValErr != nil || price <= 0 || remaining <= 0 || ctVal <= 0 || leverage <= 0 {
+		return ""
+	}
+	margin := price * remaining * ctVal / leverage
+	if math.IsNaN(margin) || math.IsInf(margin, 0) || margin <= 0 {
+		return ""
+	}
+	return trimDecimalZeros(strconv.FormatFloat(margin, 'f', 8, 64))
+}
+
+func pendingOrderLeverage(order okx.PendingOrder, fallback int) float64 {
+	if leverage, err := strconv.ParseFloat(strings.TrimSpace(order.Lever), 64); err == nil && leverage > 0 {
+		return leverage
+	}
+	if fallback > 0 {
+		return float64(fallback)
+	}
+	return 0
 }
 
 func okxRawBool(raw []byte) bool {

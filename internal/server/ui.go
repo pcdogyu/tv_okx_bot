@@ -717,20 +717,21 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-holding-time-col { width: 6.5%; }
     .positions-table .pos-actions-col { width: 12%; }
     .pending-order-table {
-      min-width: 1180px;
+      min-width: 1280px;
     }
     .pending-order-table .pending-exchange-col { width: 6%; }
     .pending-order-table .pending-time-col { width: 10%; }
-    .pending-order-table .pending-symbol-col { width: 11%; }
-    .pending-order-table .pending-side-col { width: 6%; }
-    .pending-order-table .pending-pos-side-col { width: 7%; }
-    .pending-order-table .pending-type-col { width: 7%; }
-    .pending-order-table .pending-price-col { width: 9%; }
-    .pending-order-table .pending-mid-col { width: 9%; }
-    .pending-order-table .pending-size-col { width: 9%; }
+    .pending-order-table .pending-symbol-col { width: 10.5%; }
+    .pending-order-table .pending-side-col { width: 5.5%; }
+    .pending-order-table .pending-pos-side-col { width: 6.5%; }
+    .pending-order-table .pending-type-col { width: 6.5%; }
+    .pending-order-table .pending-price-col { width: 8.5%; }
+    .pending-order-table .pending-mid-col { width: 8.5%; }
+    .pending-order-table .pending-size-col { width: 8%; }
+    .pending-order-table .pending-margin-col { width: 8%; }
     .pending-order-table .pending-filled-col { width: 7%; }
-    .pending-order-table .pending-state-col { width: 7%; }
-    .pending-order-table .pending-actions-col { width: 12%; }
+    .pending-order-table .pending-state-col { width: 6.5%; }
+    .pending-order-table .pending-actions-col { width: 8.5%; }
     pre {
       margin: 0;
       white-space: pre-wrap;
@@ -948,12 +949,13 @@ const tvbotHTML = `<!doctype html>
             <col class="pending-price-col">
             <col class="pending-mid-col">
             <col class="pending-size-col">
+            <col class="pending-margin-col">
             <col class="pending-filled-col">
             <col class="pending-state-col">
             <col class="pending-actions-col">
           </colgroup>
           <thead>
-            <tr><th>交易所</th><th>时间</th><th>币对</th><th>方向</th><th>持仓方向</th><th>类型</th><th>委托价格</th><th>中间价</th><th>委托量</th><th>已成交</th><th>状态</th><th>操作</th></tr>
+            <tr><th>交易所</th><th>时间</th><th>币对</th><th>方向</th><th>持仓方向</th><th>类型</th><th>委托价格</th><th>中间价</th><th>委托量</th><th>保证金</th><th>已成交</th><th>状态</th><th>操作</th></tr>
           </thead>
           <tbody id="pending-order-rows"></tbody>
         </table>
@@ -2580,7 +2582,7 @@ const tvbotHTML = `<!doctype html>
       const rows = state.pendingOrders && Array.isArray(state.pendingOrders.orders) ? state.pendingOrders.orders : [];
       if (!state.pendingOrders) {
         $("pending-orders-updated").textContent = state.pendingOrdersError || "-";
-        $("pending-order-rows").innerHTML = '<tr><td colspan="12" class="muted">' + escapeHTML(state.pendingOrdersError || "-") + '</td></tr>';
+        $("pending-order-rows").innerHTML = '<tr><td colspan="13" class="muted">' + escapeHTML(state.pendingOrdersError || "-") + '</td></tr>';
         return;
       }
       const pendingReady = state.pendingOrders && state.pendingOrders.ok;
@@ -2597,13 +2599,14 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(formatNumber(row.px)) + "</td>" +
           "<td>" + escapeHTML(row.price_error ? row.price_error : formatNumber(row.mid_px)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.sz)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.accFillSz)) + "</td>" +
           "<td>" + escapeHTML(pendingOrderStateText(row.state)) + "</td>" +
           pendingOrderActionCell(row) +
           "</tr>";
       }).join("");
-      const warningRow = state.pendingOrdersError ? '<tr><td colspan="12" class="muted">' + escapeHTML(state.pendingOrdersError) + '</td></tr>' : "";
-      $("pending-order-rows").innerHTML = orderRows + warningRow || '<tr><td colspan="12" class="muted">暂无当前挂单</td></tr>';
+      const warningRow = state.pendingOrdersError ? '<tr><td colspan="13" class="muted">' + escapeHTML(state.pendingOrdersError) + '</td></tr>' : "";
+      $("pending-order-rows").innerHTML = orderRows + warningRow || '<tr><td colspan="13" class="muted">暂无当前挂单</td></tr>';
     }
 
     function renderAnalysis() {

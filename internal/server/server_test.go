@@ -167,11 +167,14 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("rawRatio * lever")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`colspan="15"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pending-margin-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-actions-col")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`colspan="13"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("当前挂单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("renderPendingOrders")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("委托价格")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("中间价")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("保证金")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("追单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("停止追单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("取消")) ||
@@ -1291,7 +1294,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if err := json.Unmarshal(pendingRR.Body.Bytes(), &pending); err != nil {
 		t.Fatal(err)
 	}
-	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].MidPx != "50000" || pending.Orders[0].ChasePx != "49999.9" || pending.Orders[0].PriceError != "" {
+	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].MidPx != "50000" || pending.Orders[0].ChasePx != "49999.9" || pending.Orders[0].Margin != "998" || pending.Orders[0].PriceError != "" {
 		t.Fatalf("bad Binance pending response: %#v", pending)
 	}
 
@@ -1399,7 +1402,7 @@ func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
 	if !resp.OK || resp.APIID != "default" || resp.Count != 2 || len(resp.Orders) != 2 {
 		t.Fatalf("bad pending orders response: %#v", resp)
 	}
-	if resp.Orders[0].InstID != "BTC-USDT-SWAP" || resp.Orders[0].OrdID != "100" || resp.Orders[0].AccFillSz != "0.1" || resp.Orders[0].MidPx != "64000" || resp.Orders[0].ChasePx != "63999.9" {
+	if resp.Orders[0].InstID != "BTC-USDT-SWAP" || resp.Orders[0].OrdID != "100" || resp.Orders[0].AccFillSz != "0.1" || resp.Orders[0].MidPx != "64000" || resp.Orders[0].ChasePx != "63999.9" || resp.Orders[0].Margin != "5120" {
 		t.Fatalf("bad pending order sorting/data: %#v", resp.Orders)
 	}
 }
