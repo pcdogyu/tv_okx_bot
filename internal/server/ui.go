@@ -1526,6 +1526,12 @@ const tvbotHTML = `<!doctype html>
       return normalized + "m";
     }
 
+    function analysisPNLWindowMinutes() {
+      const minutes = Math.max(0, Number(state.balanceWindowMinutes || 0));
+      if (!Number.isFinite(minutes) || minutes <= 0) return 5;
+      return Math.min(minutes, 30 * 24 * 60);
+    }
+
     function balanceOverviewPath(forceRefresh) {
       const qs = new URLSearchParams({ minutes: String(Math.max(0, Number(state.balanceWindowMinutes || 0))) });
       if (forceRefresh) qs.set("refresh", "true");
@@ -1939,7 +1945,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadAnalysis(refresh) {
-      const qs = new URLSearchParams({ price_days: "3", pnl_days: "30" });
+      const qs = new URLSearchParams({ price_days: "3", pnl_minutes: String(analysisPNLWindowMinutes()) });
       const selected = $("analysis-api-id") ? $("analysis-api-id").value : "";
       if (selected) qs.set("api_id", selected);
       if (refresh) qs.set("refresh", "true");

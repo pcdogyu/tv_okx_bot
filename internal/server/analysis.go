@@ -19,14 +19,16 @@ import (
 )
 
 const (
-	analysisPriceInstID = "USDT-USD"
-	analysisPriceBar    = "1H"
-	defaultPriceDays    = 3
-	defaultPNLDays      = 30
-	maxAnalysisPNLDays  = 30
-	analysisCacheTTL    = 60 * time.Second
-	usdtSampleInterval  = time.Minute
-	maxBalanceMinutes   = 90 * 24 * 60
+	analysisPriceInstID   = "USDT-USD"
+	analysisPriceBar      = "1H"
+	defaultPriceDays      = 3
+	defaultPNLDays        = 30
+	defaultPNLMinutes     = defaultPNLDays * 24 * 60
+	maxAnalysisPNLDays    = 30
+	maxAnalysisPNLMinutes = maxAnalysisPNLDays * 24 * 60
+	analysisCacheTTL      = 60 * time.Second
+	usdtSampleInterval    = time.Minute
+	maxBalanceMinutes     = 90 * 24 * 60
 
 	binanceAnalysisTradeWindow = 7 * 24 * time.Hour
 	binanceAnalysisTradeLimit  = 1000
@@ -39,6 +41,7 @@ type analysisResponse struct {
 	Env               string                 `json:"env"`
 	PriceDays         int                    `json:"price_days"`
 	PNLDays           int                    `json:"pnl_days"`
+	PNLMinutes        int                    `json:"pnl_minutes"`
 	PriceInstID       string                 `json:"price_inst_id"`
 	PriceBar          string                 `json:"price_bar"`
 	RefreshedAt       time.Time              `json:"refreshed_at"`
@@ -337,13 +340,11 @@ func (s *Server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
 	}
 	priceDays := positiveIntQuery(r, "price_days", defaultPriceDays)
 	pnlDays := positiveIntQuery(r, "pnl_days", defaultPNLDays)
-	if pnlDays > maxAnalysisPNLDays {
-		pnlDays = maxAnalysisPNLDays
-	}
+	pnlMinutes := analysisPNLMinutesFromQuery(r, pnlDays)
 	refresh := strings.EqualFold(r.URL.Query().Get("refresh"), "true")
 	apiID := strings.TrimSpace(r.URL.Query().Get("api_id"))
 	cfg := s.ConfigStore.Get()
-	resp, err := s.buildAnalysis(r.Context(), cfg, apiID, priceDays, pnlDays, refresh)
+	resp, err := s.buildAnalysis(r.Context(), cfg, apiID, priceDays, pnlMinutes, refresh)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "analysis_failed", err.Error())
 		return
@@ -351,10 +352,8 @@ func (s *Server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requestedAPIID string, priceDays, pnlDays int, refresh bool) (analysisResponse, error) {
-	if pnlDays > maxAnalysisPNLDays {
-		pnlDays = maxAnalysisPNLDays
-	}
+func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requestedAPIID string, priceDays, pnlMinutes int, refresh bool) (analysisResponse, error) {
+	pnlMinutes = normalizeAnalysisPNLMinutes(pnlMinutes)
 	creds, apiID, err := s.OKXCredentials.OKXCredentials(requestedAPIID)
 	if err != nil {
 		return analysisResponse{}, err
@@ -362,7 +361,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 	now := s.now()
 	envName := analysisEnvName(cfg)
 	binanceCreds, binanceAPIID, binanceConfigured := s.analysisBinanceCredentials()
-	cacheKey := analysisCacheKey(apiID, binanceAPIID, envName, priceDays, pnlDays)
+	cacheKey := analysisCacheKey(apiID, binanceAPIID, envName, priceDays, pnlMinutes)
 	if !refresh {
 		if cached, ok, err := s.Orders.CachedPayload(cacheKey); err != nil {
 			return analysisResponse{}, err
@@ -387,7 +386,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 	binanceTrades := []analysisTrade{}
 	if binanceConfigured {
 		source.Fills = "okx+binance"
-		binanceTrades, err = s.fetchBinanceAnalysisTrades(ctx, s.analysisBinanceClient(cfg, binanceCreds), binanceAPIID, cfg, pnlDays, now)
+		binanceTrades, err = s.fetchBinanceAnalysisTrades(ctx, s.analysisBinanceClient(cfg, binanceCreds), binanceAPIID, cfg, pnlMinutes, now)
 		if err != nil {
 			source.Fills = "okx+binance_error"
 			if s.Logger != nil {
@@ -395,7 +394,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 			}
 		}
 	}
-	if err := s.refreshAnalysisData(ctx, client, apiID, priceDays, pnlDays, now); err != nil {
+	if err := s.refreshAnalysisData(ctx, client, apiID, priceDays, pnlMinutes, now); err != nil {
 		cached, ok, cacheErr := s.Orders.CachedPayload(cacheKey)
 		if cacheErr == nil && ok {
 			var resp analysisResponse
@@ -410,7 +409,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		}
 		return analysisResponse{}, err
 	}
-	resp, err := s.analysisFromStore(apiID, binanceAPIID, envName, priceDays, pnlDays, now, source, binanceTrades)
+	resp, err := s.analysisFromStore(apiID, binanceAPIID, envName, priceDays, pnlMinutes, now, source, binanceTrades)
 	if err != nil {
 		return analysisResponse{}, err
 	}
@@ -465,11 +464,48 @@ func analysisEnvName(cfg config.Config) string {
 	return envName
 }
 
-func analysisCacheKey(apiID, binanceAPIID, envName string, priceDays, pnlDays int) string {
-	return "analysis|" + apiID + "|binance:" + binanceAPIID + "|" + envName + "|" + strconv.Itoa(priceDays) + "|" + strconv.Itoa(pnlDays)
+func analysisPNLMinutesFromQuery(r *http.Request, pnlDays int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get("pnl_minutes"))
+	if raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err == nil && parsed > 0 {
+			return normalizeAnalysisPNLMinutes(parsed)
+		}
+	}
+	return normalizeAnalysisPNLMinutes(pnlDays * 24 * 60)
 }
 
-func (s *Server) refreshAnalysisData(ctx context.Context, client okx.Client, apiID string, priceDays, pnlDays int, now time.Time) error {
+func normalizeAnalysisPNLMinutes(minutes int) int {
+	if minutes <= 0 {
+		return defaultPNLMinutes
+	}
+	if minutes > maxAnalysisPNLMinutes {
+		return maxAnalysisPNLMinutes
+	}
+	return minutes
+}
+
+func analysisPNLDaysForMinutes(minutes int) int {
+	minutes = normalizeAnalysisPNLMinutes(minutes)
+	days := (minutes + 24*60 - 1) / (24 * 60)
+	if days < 1 {
+		return 1
+	}
+	if days > maxAnalysisPNLDays {
+		return maxAnalysisPNLDays
+	}
+	return days
+}
+
+func analysisPNLSince(now time.Time, pnlMinutes int) time.Time {
+	return now.UTC().Add(-time.Duration(normalizeAnalysisPNLMinutes(pnlMinutes)) * time.Minute)
+}
+
+func analysisCacheKey(apiID, binanceAPIID, envName string, priceDays, pnlMinutes int) string {
+	return "analysis|" + apiID + "|binance:" + binanceAPIID + "|" + envName + "|" + strconv.Itoa(priceDays) + "|pnlm:" + strconv.Itoa(normalizeAnalysisPNLMinutes(pnlMinutes))
+}
+
+func (s *Server) refreshAnalysisData(ctx context.Context, client okx.Client, apiID string, priceDays, pnlMinutes int, now time.Time) error {
 	priceLimit := priceDays * 24
 	if priceLimit <= 0 {
 		priceLimit = defaultPriceDays * 24
@@ -499,7 +535,7 @@ func (s *Server) refreshAnalysisData(ctx context.Context, client okx.Client, api
 	if err := s.Orders.UpsertMarketCandles(storageCandles, now); err != nil {
 		return err
 	}
-	return s.refreshFills(ctx, client, apiID, pnlDays, now)
+	return s.refreshFills(ctx, client, apiID, pnlMinutes, now)
 }
 
 func (s *Server) fetchAnalysisBalance(ctx context.Context, client okx.Client, apiID, envName string, now time.Time) (analysisBalance, error) {
@@ -664,8 +700,8 @@ func binanceMillisToRFC3339(ms int64) string {
 	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 }
 
-func (s *Server) refreshFills(ctx context.Context, client okx.Client, apiID string, pnlDays int, now time.Time) error {
-	cutoff := now.AddDate(0, 0, -pnlDays)
+func (s *Server) refreshFills(ctx context.Context, client okx.Client, apiID string, pnlMinutes int, now time.Time) error {
+	cutoff := analysisPNLSince(now, pnlMinutes)
 	after := ""
 	for page := 0; page < 20; page++ {
 		fills, _, err := client.FillsHistory(ctx, "SWAP", after, 100)
@@ -719,14 +755,8 @@ func (s *Server) refreshFills(ctx context.Context, client okx.Client, apiID stri
 	return nil
 }
 
-func (s *Server) fetchBinanceAnalysisTrades(ctx context.Context, client binance.Client, apiID string, cfg config.Config, pnlDays int, now time.Time) ([]analysisTrade, error) {
-	if pnlDays <= 0 {
-		pnlDays = defaultPNLDays
-	}
-	if pnlDays > maxAnalysisPNLDays {
-		pnlDays = maxAnalysisPNLDays
-	}
-	since := now.AddDate(0, 0, -pnlDays).UTC()
+func (s *Server) fetchBinanceAnalysisTrades(ctx context.Context, client binance.Client, apiID string, cfg config.Config, pnlMinutes int, now time.Time) ([]analysisTrade, error) {
+	since := analysisPNLSince(now, pnlMinutes)
 	symbols := s.analysisBinanceSymbols(cfg, since)
 	if len(symbols) == 0 {
 		return nil, nil
@@ -1037,10 +1067,13 @@ func parsePositiveFloat(v string) (float64, bool) {
 	return parsed, ok && parsed > 0
 }
 
-func (s *Server) analysisFromStore(apiID, binanceAPIID, envName string, priceDays, pnlDays int, now time.Time, source analysisSourceStatus, binanceTrades []analysisTrade) (analysisResponse, error) {
+func (s *Server) analysisFromStore(apiID, binanceAPIID, envName string, priceDays, pnlMinutes int, now time.Time, source analysisSourceStatus, binanceTrades []analysisTrade) (analysisResponse, error) {
 	priceLimit := priceDays * 24
 	balanceLimit := priceDays*24*60 + 1
 	priceSince := now.AddDate(0, 0, -priceDays)
+	pnlMinutes = normalizeAnalysisPNLMinutes(pnlMinutes)
+	pnlDays := analysisPNLDaysForMinutes(pnlMinutes)
+	pnlSince := analysisPNLSince(now, pnlMinutes)
 	candles, err := s.Orders.ListMarketCandles(analysisPriceInstID, analysisPriceBar, priceSince, priceLimit)
 	if err != nil {
 		return analysisResponse{}, err
@@ -1062,7 +1095,7 @@ func (s *Server) analysisFromStore(apiID, binanceAPIID, envName string, priceDay
 		return analysisResponse{}, err
 	}
 	balancePoints := balancePointsFromSnapshots(snapshots)
-	fills, err := s.Orders.ListOKXFills(apiID, now.AddDate(0, 0, -pnlDays))
+	fills, err := s.Orders.ListOKXFills(apiID, pnlSince)
 	if err != nil {
 		return analysisResponse{}, err
 	}
@@ -1084,13 +1117,14 @@ func (s *Server) analysisFromStore(apiID, binanceAPIID, envName string, priceDay
 		Env:          envName,
 		PriceDays:    priceDays,
 		PNLDays:      pnlDays,
+		PNLMinutes:   pnlMinutes,
 		PriceInstID:  analysisPriceInstID,
 		PriceBar:     analysisPriceBar,
 		RefreshedAt:  now.UTC(),
 		Cache: analysisCacheStatus{
 			Hit:      false,
 			Stale:    false,
-			CacheKey: analysisCacheKey(apiID, binanceAPIID, envName, priceDays, pnlDays),
+			CacheKey: analysisCacheKey(apiID, binanceAPIID, envName, priceDays, pnlMinutes),
 		},
 		Source:            source,
 		PricePoints:       points,
