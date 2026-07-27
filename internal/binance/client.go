@@ -234,6 +234,29 @@ type AlgoOrderAck struct {
 	CallbackRate  string `json:"callbackRate"`
 }
 
+type AlgoOpenOrder struct {
+	AlgoID        int64  `json:"algoId"`
+	ClientAlgoID  string `json:"clientAlgoId"`
+	AlgoType      string `json:"algoType"`
+	OrderType     string `json:"orderType"`
+	Symbol        string `json:"symbol"`
+	Side          string `json:"side"`
+	PositionSide  string `json:"positionSide"`
+	Quantity      string `json:"quantity"`
+	AlgoStatus    string `json:"algoStatus"`
+	ClosePosition bool   `json:"closePosition"`
+	ReduceOnly    bool   `json:"reduceOnly"`
+	CreateTime    int64  `json:"createTime"`
+	UpdateTime    int64  `json:"updateTime"`
+}
+
+type CancelAlgoOrderAck struct {
+	AlgoID       int64  `json:"algoId"`
+	ClientAlgoID string `json:"clientAlgoId"`
+	Code         string `json:"code"`
+	Msg          string `json:"msg"`
+}
+
 func (c Client) Do(ctx context.Context, method, path string, values url.Values, private bool) ([]byte, error) {
 	if c.HTTPClient == nil {
 		c.HTTPClient = http.DefaultClient
@@ -370,6 +393,29 @@ func (c Client) OpenOrders(ctx context.Context, symbol string) ([]OpenOrder, err
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c Client) OpenAlgoOrders(ctx context.Context, symbol string) ([]AlgoOpenOrder, error) {
+	q := url.Values{}
+	q.Set("algoType", "CONDITIONAL")
+	if strings.TrimSpace(symbol) != "" {
+		q.Set("symbol", strings.ToUpper(strings.TrimSpace(symbol)))
+	}
+	b, err := c.Do(ctx, http.MethodGet, "/fapi/v1/openAlgoOrders", q, true)
+	if err != nil {
+		return nil, err
+	}
+	var out []AlgoOpenOrder
+	if err := json.Unmarshal(b, &out); err == nil {
+		return out, nil
+	}
+	var wrapped struct {
+		Orders []AlgoOpenOrder `json:"orders"`
+	}
+	if err := json.Unmarshal(b, &wrapped); err != nil {
+		return nil, err
+	}
+	return wrapped.Orders, nil
 }
 
 func (c Client) UserTrades(ctx context.Context, symbol string, startTime, endTime time.Time, limit int) ([]UserTrade, error) {
@@ -531,6 +577,43 @@ func (c Client) CancelOrder(ctx context.Context, req CancelOrderRequest) (OrderA
 		return OrderAck{}, err
 	}
 	return ack, nil
+}
+
+func (c Client) CancelAllOpenOrders(ctx context.Context, symbol string) error {
+	q := url.Values{}
+	q.Set("symbol", strings.ToUpper(strings.TrimSpace(symbol)))
+	_, err := c.Do(ctx, http.MethodDelete, "/fapi/v1/allOpenOrders", q, true)
+	return err
+}
+
+func (c Client) CancelAlgoOrder(ctx context.Context, algoID int64, clientAlgoID string) (CancelAlgoOrderAck, error) {
+	q := url.Values{}
+	if algoID > 0 {
+		q.Set("algoId", strconv.FormatInt(algoID, 10))
+	} else if strings.TrimSpace(clientAlgoID) != "" {
+		q.Set("clientAlgoId", strings.TrimSpace(clientAlgoID))
+	} else {
+		return CancelAlgoOrderAck{}, errors.New("algoId or clientAlgoId is required")
+	}
+	b, err := c.Do(ctx, http.MethodDelete, "/fapi/v1/algoOrder", q, true)
+	if err != nil {
+		return CancelAlgoOrderAck{}, err
+	}
+	var ack CancelAlgoOrderAck
+	if err := json.Unmarshal(b, &ack); err != nil {
+		return CancelAlgoOrderAck{}, err
+	}
+	if ack.Code != "" && ack.Code != "200" {
+		return ack, fmt.Errorf("binance cancel algo rejected %s: %s", ack.Code, ack.Msg)
+	}
+	return ack, nil
+}
+
+func (c Client) CancelAllAlgoOpenOrders(ctx context.Context, symbol string) error {
+	q := url.Values{}
+	q.Set("symbol", strings.ToUpper(strings.TrimSpace(symbol)))
+	_, err := c.Do(ctx, http.MethodDelete, "/fapi/v1/algoOpenOrders", q, true)
+	return err
 }
 
 func (c Client) NewAlgoOrder(ctx context.Context, req AlgoOrderRequest) (AlgoOrderAck, error) {

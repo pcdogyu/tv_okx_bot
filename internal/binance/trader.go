@@ -59,6 +59,9 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if err != nil {
 		return trading.OrderResult{}, err
 	}
+	if err := t.prepareDirectionSwitch(ctx, client, signal.Action, symbol, filters); err != nil {
+		return trading.OrderResult{}, err
+	}
 	sizingPx := signal.Price.Value
 	orderType := strings.ToUpper(string(orderSettings.OrderType))
 	orderPx := ""

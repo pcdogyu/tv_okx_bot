@@ -240,6 +240,36 @@ type CancelOrderAck struct {
 	SMsg    string `json:"sMsg"`
 }
 
+type AlgoOrder struct {
+	InstType    string          `json:"instType"`
+	InstID      string          `json:"instId"`
+	AlgoID      string          `json:"algoId"`
+	AlgoClOrdID string          `json:"algoClOrdId"`
+	Side        string          `json:"side"`
+	PosSide     string          `json:"posSide"`
+	OrdType     string          `json:"ordType"`
+	Sz          string          `json:"sz"`
+	ActualSz    string          `json:"actualSz"`
+	State       string          `json:"state"`
+	ReduceOnly  json.RawMessage `json:"reduceOnly,omitempty"`
+	CTime       string          `json:"cTime"`
+	UTime       string          `json:"uTime"`
+	RawJSON     string          `json:"-"`
+}
+
+type CancelAlgoOrderRequest struct {
+	InstID      string `json:"instId"`
+	AlgoID      string `json:"algoId,omitempty"`
+	AlgoClOrdID string `json:"algoClOrdId,omitempty"`
+}
+
+type CancelAlgoOrderAck struct {
+	AlgoID      string `json:"algoId"`
+	AlgoClOrdID string `json:"algoClOrdId"`
+	SCode       string `json:"sCode"`
+	SMsg        string `json:"sMsg"`
+}
+
 type AmendOrderRequest struct {
 	InstID         string              `json:"instId"`
 	OrdID          string              `json:"ordId,omitempty"`
@@ -408,6 +438,57 @@ func (c Client) CancelOrder(ctx context.Context, req CancelOrderRequest) (Cancel
 		return data[0], env, fmt.Errorf("okx cancel order rejected %s: %s", data[0].SCode, data[0].SMsg)
 	}
 	return data[0], env, nil
+}
+
+func (c Client) PendingAlgoOrders(ctx context.Context, instType, instID string) ([]AlgoOrder, Envelope, error) {
+	q := url.Values{}
+	if strings.TrimSpace(instType) != "" {
+		q.Set("instType", strings.ToUpper(strings.TrimSpace(instType)))
+	}
+	if strings.TrimSpace(instID) != "" {
+		q.Set("instId", strings.ToUpper(strings.TrimSpace(instID)))
+	}
+	env, err := c.Do(ctx, http.MethodGet, "/api/v5/trade/orders-algo-pending", q, nil, true)
+	if err != nil {
+		return nil, env, err
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(env.Data, &raw); err != nil {
+		return nil, env, err
+	}
+	out := make([]AlgoOrder, 0, len(raw))
+	for _, item := range raw {
+		var order AlgoOrder
+		if err := json.Unmarshal(item, &order); err != nil {
+			return nil, env, err
+		}
+		order.RawJSON = string(item)
+		out = append(out, order)
+	}
+	return out, env, nil
+}
+
+func (c Client) CancelAlgoOrders(ctx context.Context, reqs []CancelAlgoOrderRequest) ([]CancelAlgoOrderAck, Envelope, error) {
+	if len(reqs) == 0 {
+		return nil, Envelope{Code: "0"}, nil
+	}
+	env, err := c.Do(ctx, http.MethodPost, "/api/v5/trade/cancel-algos", nil, reqs, true)
+	if err != nil {
+		return nil, env, err
+	}
+	var data []CancelAlgoOrderAck
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return nil, env, err
+	}
+	if len(data) == 0 {
+		return nil, env, errors.New("okx cancel algo response data is empty")
+	}
+	for _, ack := range data {
+		if ack.SCode != "" && ack.SCode != "0" {
+			return data, env, fmt.Errorf("okx cancel algo rejected %s: %s", ack.SCode, ack.SMsg)
+		}
+	}
+	return data, env, nil
 }
 
 func (c Client) AmendOrder(ctx context.Context, req AmendOrderRequest) (AmendOrderAck, Envelope, error) {

@@ -45,6 +45,10 @@ func TestTraderExecuteSignalPlacesDefaultMarketOrderWithTPSL(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 		case "/api/v5/account/set-leverage":
 			leverageSeen = true
 			var req SetLeverageRequest
@@ -124,6 +128,10 @@ func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *
 				t.Fatalf("instId query = %q", r.URL.Query().Get("instId"))
 			}
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"ETH-USDT-SWAP","ctVal":"0.1","lotSz":"0.01","minSz":"0.01"}]}`))
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 		case "/api/v5/account/set-leverage":
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
 		case "/api/v5/trade/order":
@@ -170,6 +178,10 @@ func TestTraderExecuteSignalUsesSelectedAPIIDCredentials(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 		case "/api/v5/account/set-leverage":
 			seenAPIKey = r.Header.Get("OK-ACCESS-KEY")
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
@@ -217,6 +229,10 @@ func TestTraderExecuteSignalFallsBackWhenLeverageExceedsMaximum(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 		case "/api/v5/account/set-leverage":
 			var req SetLeverageRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -270,6 +286,182 @@ func TestTraderExecuteSignalFallsBackWhenLeverageExceedsMaximum(t *testing.T) {
 	}
 }
 
+func TestTraderExecuteSignalKeepsSameDirectionPositionAndOrderAsAdd(t *testing.T) {
+	var entryReq PlaceOrderRequest
+	var cancelCalled bool
+	var algoQueried bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posSide":"net","pos":"1","availPos":"1"}]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","tdMode":"isolated","side":"buy","posSide":"net","ordType":"limit","sz":"1","accFillSz":"0","state":"live"}]}`))
+		case "/api/v5/trade/orders-algo-pending":
+			algoQueried = true
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/cancel-order", "/api/v5/trade/cancel-algos":
+			cancelCalled = true
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			if err := json.NewDecoder(r.Body).Decode(&entryReq); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"entry","ordId":"123","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: ts.Client()}
+	_, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelCalled || algoQueried {
+		t.Fatalf("same direction add should not cancel or query algos cancelCalled=%v algoQueried=%v", cancelCalled, algoQueried)
+	}
+	if entryReq.Side != "buy" || entryReq.ReduceOnly || entryReq.Sz != "0.2" {
+		t.Fatalf("bad add entry request: %#v", entryReq)
+	}
+}
+
+func TestTraderExecuteSignalCancelsReversePendingOrderBeforeNewDirection(t *testing.T) {
+	var paths []string
+	var canceled CancelOrderRequest
+	var entryReq PlaceOrderRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","tdMode":"isolated","side":"buy","posSide":"net","ordType":"limit","sz":"1","accFillSz":"0","state":"live"}]}`))
+		case "/api/v5/trade/cancel-order":
+			if err := json.NewDecoder(r.Body).Decode(&canceled); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"100","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/trade/orders-algo-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			if err := json.NewDecoder(r.Body).Decode(&entryReq); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"entry","ordId":"123","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: ts.Client()}
+	_, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canceled.InstID != "BTC-USDT-SWAP" || canceled.OrdID != "100" {
+		t.Fatalf("bad canceled order: %#v", canceled)
+	}
+	if entryReq.Side != "sell" || entryReq.ReduceOnly {
+		t.Fatalf("bad reverse entry request: %#v", entryReq)
+	}
+	if pathIndex(paths, "/api/v5/trade/cancel-order") > pathIndex(paths, "/api/v5/trade/order") {
+		t.Fatalf("entry placed before reverse order cancellation: %#v", paths)
+	}
+}
+
+func TestTraderExecuteSignalClosesReversePositionBeforeNewDirection(t *testing.T) {
+	var positionCalls int
+	var cancelAlgoReq []CancelAlgoOrderRequest
+	var orderReqs []PlaceOrderRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			positionCalls++
+			if positionCalls <= 2 {
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posSide":"net","pos":"2","availPos":"2"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-algo-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","algoId":"900","side":"sell","posSide":"net","ordType":"conditional","sz":"2","state":"live"}]}`))
+		case "/api/v5/trade/cancel-algos":
+			if err := json.NewDecoder(r.Body).Decode(&cancelAlgoReq); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"algoId":"900","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/trade/order":
+			var req PlaceOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			orderReqs = append(orderReqs, req)
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"ok","ordId":"123","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: ts.Client()}
+	_, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cancelAlgoReq) != 1 || cancelAlgoReq[0].AlgoID != "900" {
+		t.Fatalf("bad cancel algo request: %#v", cancelAlgoReq)
+	}
+	if len(orderReqs) != 2 {
+		t.Fatalf("expected close and entry orders, got %#v", orderReqs)
+	}
+	closeReq, entryReq := orderReqs[0], orderReqs[1]
+	if closeReq.Side != "sell" || closeReq.OrdType != "market" || closeReq.Sz != "2" || !closeReq.ReduceOnly || len(closeReq.AttachAlgoOrds) != 0 {
+		t.Fatalf("bad close request: %#v", closeReq)
+	}
+	if entryReq.Side != "sell" || entryReq.ReduceOnly || entryReq.Sz != "0.2" {
+		t.Fatalf("bad entry request after close: %#v", entryReq)
+	}
+}
+
 func TestDeriveSwapInstrumentID(t *testing.T) {
 	tests := map[string]string{
 		"BTC":             "BTC-USDT-SWAP",
@@ -287,4 +479,13 @@ func TestDeriveSwapInstrumentID(t *testing.T) {
 			t.Fatalf("%s => %s, want %s", raw, got, want)
 		}
 	}
+}
+
+func pathIndex(paths []string, want string) int {
+	for i, path := range paths {
+		if path == want {
+			return i
+		}
+	}
+	return len(paths) + 1
 }

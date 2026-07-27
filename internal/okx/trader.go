@@ -46,6 +46,9 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if err != nil {
 		return trading.OrderResult{}, err
 	}
+	if err := t.prepareDirectionSwitch(ctx, client, cfg, signal.Action, sym.InstID); err != nil {
+		return trading.OrderResult{}, err
+	}
 	orderSettings := cfg.OrderSettings().Normalize()
 	orderType := string(orderSettings.OrderType)
 	sizingPx := signal.Price.Value

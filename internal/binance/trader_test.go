@@ -23,6 +23,10 @@ func TestTraderPlacesLimitOrderAndTPSLAlgoOrders(t *testing.T) {
 		switch r.URL.Path {
 		case "/fapi/v1/exchangeInfo":
 			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
 		case "/fapi/v1/marginType":
 			if r.Form.Get("marginType") != "ISOLATED" {
 				t.Fatalf("bad margin type form: %#v", r.Form)
@@ -103,6 +107,10 @@ func TestTraderPlacesMarketOrderAndTrailingAlgoOrder(t *testing.T) {
 		switch r.URL.Path {
 		case "/fapi/v1/exchangeInfo":
 			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
 		case "/fapi/v1/marginType":
 			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
 		case "/fapi/v1/leverage":
@@ -151,6 +159,204 @@ func TestTraderPlacesMarketOrderAndTrailingAlgoOrder(t *testing.T) {
 	}
 }
 
+func TestTraderKeepsSameDirectionPositionAndOrderAsAdd(t *testing.T) {
+	var entryForm url.Values
+	var cancelCalled bool
+	var algoQueried bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0.1","entryPrice":"50000"}]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":100,"clientOrderId":"old-long","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","origQty":"0.1","executedQty":"0"}]`))
+		case "/fapi/v1/openAlgoOrders":
+			algoQueried = true
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/order":
+			if r.Method == http.MethodDelete {
+				cancelCalled = true
+				_, _ = w.Write([]byte(`{"orderId":100,"status":"CANCELED"}`))
+				return
+			}
+			entryForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"0.002","executedQty":"0","type":"MARKET","side":"BUY"}`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":10}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	_, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelCalled || algoQueried {
+		t.Fatalf("same direction add should not cancel or query algos cancelCalled=%v algoQueried=%v", cancelCalled, algoQueried)
+	}
+	if entryForm.Get("side") != "BUY" || entryForm.Get("reduceOnly") != "" || entryForm.Get("quantity") != "0.002" {
+		t.Fatalf("bad add entry form: %#v", entryForm)
+	}
+}
+
+func TestTraderCancelsReversePendingOrderBeforeNewDirection(t *testing.T) {
+	var paths []string
+	var canceledForm url.Values
+	var entryForm url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":100,"clientOrderId":"old-long","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","origQty":"0.1","executedQty":"0"}]`))
+		case "/fapi/v1/order":
+			switch r.Method {
+			case http.MethodDelete:
+				canceledForm = cloneValues(r.Form)
+				_, _ = w.Write([]byte(`{"orderId":100,"symbol":"BTCUSDT","status":"CANCELED","clientOrderId":"old-long"}`))
+			case http.MethodPost:
+				entryForm = cloneValues(r.Form)
+				_, _ = w.Write([]byte(`{"orderId":123,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"0.002","executedQty":"0","type":"MARKET","side":"SELL"}`))
+			default:
+				t.Fatalf("unexpected order method %s", r.Method)
+			}
+		case "/fapi/v1/openAlgoOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":10}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	_, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canceledForm.Get("orderId") != "100" {
+		t.Fatalf("bad canceled order form: %#v", canceledForm)
+	}
+	if entryForm.Get("side") != "SELL" || entryForm.Get("reduceOnly") != "" || entryForm.Get("quantity") != "0.002" {
+		t.Fatalf("bad reverse entry form: %#v", entryForm)
+	}
+	if pathIndex(paths, http.MethodDelete+" /fapi/v1/order") > pathIndex(paths, http.MethodPost+" /fapi/v1/order") {
+		t.Fatalf("entry placed before reverse order cancellation: %#v", paths)
+	}
+}
+
+func TestTraderClosesReversePositionBeforeNewDirection(t *testing.T) {
+	var positionCalls int
+	var canceledAlgo url.Values
+	var orderForms []url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			positionCalls++
+			if positionCalls <= 2 {
+				_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0.1","entryPrice":"50000"}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openAlgoOrders":
+			_, _ = w.Write([]byte(`[{"algoId":900,"clientAlgoId":"old-long-tp","algoType":"CONDITIONAL","orderType":"TAKE_PROFIT_MARKET","symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","quantity":"0.1","algoStatus":"NEW","reduceOnly":true}]`))
+		case "/fapi/v1/algoOrder":
+			if r.Method != http.MethodDelete {
+				t.Fatalf("unexpected algo method %s", r.Method)
+			}
+			canceledAlgo = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"algoId":900,"clientAlgoId":"old-long-tp","code":"200","msg":"success"}`))
+		case "/fapi/v1/order":
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected order method %s", r.Method)
+			}
+			orderForms = append(orderForms, cloneValues(r.Form))
+			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"ok","price":"0","origQty":"0.1","executedQty":"0","type":"MARKET","side":"SELL"}`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":10}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	_, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canceledAlgo.Get("algoId") != "900" {
+		t.Fatalf("bad canceled algo form: %#v", canceledAlgo)
+	}
+	if len(orderForms) != 2 {
+		t.Fatalf("expected close and entry orders, got %#v", orderForms)
+	}
+	closeForm, entryForm := orderForms[0], orderForms[1]
+	if closeForm.Get("side") != "SELL" || closeForm.Get("type") != "MARKET" || closeForm.Get("quantity") != "0.1" || closeForm.Get("reduceOnly") != "true" {
+		t.Fatalf("bad close form: %#v", closeForm)
+	}
+	if entryForm.Get("side") != "SELL" || entryForm.Get("quantity") != "0.002" || entryForm.Get("reduceOnly") != "" {
+		t.Fatalf("bad entry form after close: %#v", entryForm)
+	}
+}
+
 func TestTraderRejectsOutOfRangeBinanceTrailingBeforeSubmitting(t *testing.T) {
 	var called bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -191,4 +397,13 @@ func cloneValues(values url.Values) url.Values {
 func ptrFlexible(value float64) *trading.FlexibleFloat {
 	v := trading.NewFlexibleFloat(value)
 	return &v
+}
+
+func pathIndex(paths []string, want string) int {
+	for i, path := range paths {
+		if path == want {
+			return i
+		}
+	}
+	return len(paths) + 1
 }
