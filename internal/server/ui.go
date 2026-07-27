@@ -289,6 +289,9 @@ const tvbotHTML = `<!doctype html>
       gap: 12px;
       margin-bottom: 16px;
     }
+    .status[hidden] {
+      display: none;
+    }
     .metric, section {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -828,7 +831,7 @@ const tvbotHTML = `<!doctype html>
   </header>
 
   <main>
-    <div class="status">
+    <div class="status" id="order-info-status" hidden>
       <div class="metric"><div class="label">交易环境</div><div class="value" id="metric-env">-</div></div>
       <div class="metric"><div class="label">交易 API</div><div class="value" id="metric-api-keys">-</div></div>
       <div class="metric"><div class="label">下单金额</div><div class="value" id="metric-amount">-</div></div>
@@ -1681,6 +1684,8 @@ const tvbotHTML = `<!doctype html>
       const activeButton = document.querySelector('nav button[aria-selected="true"]');
       if (!activeButton || activeButton.hidden) {
         activateTab(effectiveDefaultTab(), false);
+      } else {
+        syncOrderInfoVisibility(activeButton.dataset.tab || activeTabID());
       }
     }
 
@@ -1739,6 +1744,12 @@ const tvbotHTML = `<!doctype html>
       positionViewPollBusy = false;
     }
 
+    function syncOrderInfoVisibility(tabID) {
+      const box = $("order-info-status");
+      if (!box) return;
+      box.hidden = tabID !== "orderSettings";
+    }
+
     function activateTab(tabID, persist) {
       let target = tabID || "dashboard";
       let button = tabButton(target);
@@ -1754,6 +1765,7 @@ const tvbotHTML = `<!doctype html>
         button.setAttribute("aria-selected", "true");
         section.classList.add("active");
       }
+      syncOrderInfoVisibility(target);
       if (persist) {
         if (window.history && location.hash !== "#" + target) {
           history.replaceState(null, "", "#" + target);

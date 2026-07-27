@@ -132,6 +132,12 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("OKX Bot")) || !bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/config")) {
 		t.Fatalf("tvbot ui body does not look like dashboard")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte(`id="order-info-status" hidden`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(".status[hidden]")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("syncOrderInfoVisibility")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`tabID !== "orderSettings"`)) {
+		t.Fatalf("tvbot ui should only show order info status on order settings tab")
+	}
 	if bytes.Contains(ui.Body.Bytes(), []byte("max-width: 1240px")) || !bytes.Contains(ui.Body.Bytes(), []byte("Asia/Shanghai")) {
 		t.Fatalf("tvbot ui should use full-width layout and Shanghai order times")
 	}
