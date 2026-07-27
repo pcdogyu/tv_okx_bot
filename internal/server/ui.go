@@ -485,7 +485,7 @@ const tvbotHTML = `<!doctype html>
     }
     .position-actions {
       display: flex;
-      gap: 6px;
+      gap: 4px;
       flex-wrap: nowrap;
       white-space: nowrap;
     }
@@ -497,6 +497,20 @@ const tvbotHTML = `<!doctype html>
     .btn.order-json-button {
       min-height: 24px;
       padding: 2px 7px;
+    }
+    .positions-table .position-actions {
+      gap: 3px;
+    }
+    .position-percent-close-btn {
+      width: 32px;
+      height: 32px;
+      min-width: 32px;
+      min-height: 32px;
+      padding: 0;
+      border-radius: 999px;
+      font-size: 10px;
+      line-height: 1;
+      flex: 0 0 32px;
     }
     .btn:disabled, .btn.is-disabled {
       opacity: 0.58;
@@ -719,26 +733,26 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: wrap;
     }
     .positions-table {
-      min-width: 1560px;
+      min-width: 1400px;
     }
     .positions-table th,
     .positions-table td {
       font-size: 12px;
       line-height: 1.35;
     }
-    .positions-table .pos-exchange-col { width: 5.5%; }
-    .positions-table .pos-symbol-col { width: 8.5%; }
-    .positions-table .pos-side-col { width: 6%; }
-    .positions-table .pos-size-col { width: 7%; }
-    .positions-table .pos-price-col { width: 6.5%; }
-    .positions-table .pos-margin-col { width: 6.8%; }
-    .positions-table .pos-leverage-col { width: 4.5%; }
-    .positions-table .pos-position-amount-col { width: 7.3%; }
-    .positions-table .pos-pnl-col { width: 7.5%; }
-    .positions-table .pos-rate-col { width: 6%; }
-    .positions-table .pos-entry-time-col { width: 8%; }
-    .positions-table .pos-holding-time-col { width: 6.5%; }
-    .positions-table .pos-actions-col { width: 22%; }
+    .positions-table .pos-exchange-col { width: 4.8%; }
+    .positions-table .pos-symbol-col { width: 7.4%; }
+    .positions-table .pos-side-col { width: 5.2%; }
+    .positions-table .pos-size-col { width: 6.1%; }
+    .positions-table .pos-price-col { width: 5.6%; }
+    .positions-table .pos-margin-col { width: 5.9%; }
+    .positions-table .pos-leverage-col { width: 3.9%; }
+    .positions-table .pos-position-amount-col { width: 6.3%; }
+    .positions-table .pos-pnl-col { width: 6.5%; }
+    .positions-table .pos-rate-col { width: 5.2%; }
+    .positions-table .pos-entry-time-col { width: 6.9%; }
+    .positions-table .pos-holding-time-col { width: 5.6%; }
+    .positions-table .pos-actions-col { width: 25%; }
     .pending-order-table {
       min-width: 1280px;
     }
@@ -2717,7 +2731,7 @@ const tvbotHTML = `<!doctype html>
         { label: "平25%", ratio: "0.25" },
         { label: "平50%", ratio: "0.5" },
         { label: "平75%", ratio: "0.75" }
-      ].map((item) => '<button class="btn small" type="button" data-position-close="limit" data-position-ratio="' + item.ratio + '"' + baseAttrs + ' title="限价平仓 ' + item.label.slice(1) + '，60秒后市价兜底"' + (closing ? " disabled" : "") + '>' + item.label + '</button>').join("");
+      ].map((item) => '<button class="btn small position-percent-close-btn" type="button" data-position-close="limit" data-position-ratio="' + item.ratio + '"' + baseAttrs + ' title="限价平仓 ' + item.label.slice(1) + '，60秒后市价兜底"' + (closing ? " disabled" : "") + '>' + item.label + '</button>').join("");
       return '<td><div class="position-actions">' +
         percentButtons +
         '<button class="btn small danger" type="button" data-position-close="market"' + baseAttrs + (closing ? " disabled" : "") + '>市价平仓</button>' +
