@@ -1343,8 +1343,11 @@ const tvbotHTML = `<!doctype html>
     };
     let positionViewPollTimer = null;
     let positionViewPollBusy = false;
+    let analysisBalanceRefreshTimer = null;
+    let analysisBalanceRefreshBusy = false;
     let menuSettingsSynced = false;
     const analysisTradePageSize = 20;
+    const analysisBalanceRefreshIntervalMs = 60000;
     const defaultMenuItems = [
       { tab: "dashboard", label: "总览" },
       { tab: "positions", label: "持仓" },
@@ -1838,6 +1841,39 @@ const tvbotHTML = `<!doctype html>
       positionViewPollBusy = false;
     }
 
+    function analysisTabActive() {
+      const section = $("analysis");
+      return !!(section && section.classList.contains("active"));
+    }
+
+    function analysisBalanceAutoRefreshAllowed() {
+      return analysisTabActive() && !(document.hidden);
+    }
+
+    function startAnalysisBalanceAutoRefresh() {
+      if (analysisBalanceRefreshTimer) return;
+      analysisBalanceRefreshTimer = window.setInterval(() => {
+        refreshAnalysisBalanceOverviewAuto();
+      }, analysisBalanceRefreshIntervalMs);
+    }
+
+    function stopAnalysisBalanceAutoRefresh() {
+      if (!analysisBalanceRefreshTimer) return;
+      window.clearInterval(analysisBalanceRefreshTimer);
+      analysisBalanceRefreshTimer = null;
+      analysisBalanceRefreshBusy = false;
+    }
+
+    async function refreshAnalysisBalanceOverviewAuto() {
+      if (analysisBalanceRefreshBusy || !analysisBalanceAutoRefreshAllowed()) return;
+      analysisBalanceRefreshBusy = true;
+      try {
+        await loadBalanceOverview(true);
+      } finally {
+        analysisBalanceRefreshBusy = false;
+      }
+    }
+
     function syncOrderInfoVisibility(tabID) {
       const box = $("order-info-status");
       if (!box) return;
@@ -1869,6 +1905,11 @@ const tvbotHTML = `<!doctype html>
         startPositionViewPolling();
       } else {
         stopPositionViewPolling();
+      }
+      if (target === "analysis") {
+        startAnalysisBalanceAutoRefresh();
+      } else {
+        stopAnalysisBalanceAutoRefresh();
       }
       if (target === "analysis" && !state.analysis) {
         loadAnalysis(false).catch((err) => toast(err.message));
@@ -3444,6 +3485,11 @@ const tvbotHTML = `<!doctype html>
     $("refresh-orders").addEventListener("click", () => loadOrders().then(() => toast("订单已刷新")).catch((err) => toast(err.message)));
     $("refresh-upgrade").addEventListener("click", () => loadUpgrade().then(() => toast("升级状态已刷新")).catch((err) => toast(err.message)));
     $("start-upgrade").addEventListener("click", () => startUpgrade().catch((err) => toast(err.message)));
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && analysisTabActive()) {
+        refreshAnalysisBalanceOverviewAuto();
+      }
+    });
 
     renderTemplateWebhookURL();
     updateBalanceWindowButtons();

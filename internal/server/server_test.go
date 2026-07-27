@@ -247,6 +247,9 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-page-info")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisTradePageSize = 20")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysisBalanceRefreshIntervalMs = 60000")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("refreshAnalysisBalanceOverviewAuto")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("visibilitychange")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPNLWindowMinutes")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pnl_minutes")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-symbol-table")) ||
