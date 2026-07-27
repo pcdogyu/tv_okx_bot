@@ -508,7 +508,7 @@ const tvbotHTML = `<!doctype html>
       min-height: 36px;
       padding: 0;
       border-radius: 999px;
-      font-size: 9px;
+      font-size: 7px;
       line-height: 1;
       flex: 0 0 36px;
     }
