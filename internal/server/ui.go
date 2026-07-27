@@ -499,18 +499,18 @@ const tvbotHTML = `<!doctype html>
       padding: 2px 7px;
     }
     .positions-table .position-actions {
-      gap: 3px;
+      gap: 5px;
     }
     .position-percent-close-btn {
-      width: 32px;
-      height: 32px;
-      min-width: 32px;
-      min-height: 32px;
+      width: 36px;
+      height: 36px;
+      min-width: 36px;
+      min-height: 36px;
       padding: 0;
       border-radius: 999px;
       font-size: 10px;
       line-height: 1;
-      flex: 0 0 32px;
+      flex: 0 0 36px;
     }
     .btn:disabled, .btn.is-disabled {
       opacity: 0.58;
