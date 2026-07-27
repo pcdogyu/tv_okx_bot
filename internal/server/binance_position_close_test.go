@@ -126,6 +126,105 @@ func TestTVBotBinancePositionCloseMarketAndLimit(t *testing.T) {
 	}
 }
 
+func TestTVBotBinanceLimitCloseRetriesAfterReduceOnlyConflict(t *testing.T) {
+	oldPoll := positionClosePollInterval
+	oldTimeout := positionCloseLimitTimeout
+	oldJobs := positionCloseJobs
+	positionClosePollInterval = time.Hour
+	positionCloseLimitTimeout = time.Hour
+	positionCloseJobs = newPositionCloseRegistry()
+	t.Cleanup(func() {
+		positionClosePollInterval = oldPoll
+		positionCloseLimitTimeout = oldTimeout
+		positionCloseJobs = oldJobs
+	})
+
+	srv := newTestServer(t)
+	var orderForms []url.Values
+	var cancelForms []url.Values
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/fapi/v1/exchangeInfo" && r.URL.Path != "/fapi/v1/ticker/bookTicker" && r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key for %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/fapi/v3/positionRisk":
+			if r.URL.Query().Get("symbol") != "AVAXUSDT" {
+				t.Fatalf("bad positions query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[{"symbol":"AVAXUSDT","positionSide":"BOTH","positionAmt":"-15","entryPrice":"6.816","markPrice":"6.6284","unRealizedProfit":"2.814317","isolatedMargin":"33.141895","notional":"99.426583","marginAsset":"USDT","leverage":"3","marginType":"isolated","updateTime":1784880000000}]`))
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"AVAXUSDT","status":"TRADING","pricePrecision":4,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0001"},{"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"}]}]}`))
+		case "/fapi/v1/ticker/bookTicker":
+			if r.URL.Query().Get("symbol") != "AVAXUSDT" {
+				t.Fatalf("bad book ticker query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"AVAXUSDT","bidPrice":"6.6283","bidQty":"1","askPrice":"6.6285","askQty":"1","time":1784880000000}`))
+		case "/fapi/v1/openOrders":
+			if r.URL.Query().Get("symbol") != "AVAXUSDT" {
+				t.Fatalf("bad open orders query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[
+				{"symbol":"AVAXUSDT","orderId":100,"clientOrderId":"old-close","price":"6.6285","origQty":"15","executedQty":"0","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880000000,"reduceOnly":true},
+				{"symbol":"AVAXUSDT","orderId":101,"clientOrderId":"entry","price":"6.5","origQty":"2","executedQty":"0","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880000000,"reduceOnly":false},
+				{"symbol":"AVAXUSDT","orderId":102,"clientOrderId":"other-side","price":"7","origQty":"1","executedQty":"0","side":"SELL","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880000000,"reduceOnly":true}
+			]`))
+		case "/fapi/v1/order":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			switch r.Method {
+			case http.MethodPost:
+				orderForms = append(orderForms, cloneValues(r.Form))
+				if len(orderForms) == 1 {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"code":-2022,"msg":"ReduceOnly Order is rejected."}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"orderId":789,"symbol":"AVAXUSDT","status":"NEW","clientOrderId":"close-1","price":"6.6285","origQty":"15","executedQty":"0","type":"LIMIT","side":"BUY","positionSide":"BOTH"}`))
+			case http.MethodDelete:
+				cancelForms = append(cancelForms, cloneValues(r.Form))
+				_, _ = w.Write([]byte(`{"orderId":100,"symbol":"AVAXUSDT","status":"CANCELED","clientOrderId":"old-close","price":"6.6285","origQty":"15","executedQty":"0","type":"LIMIT","side":"BUY","positionSide":"BOTH"}`))
+			default:
+				t.Fatalf("unexpected Binance order method %s", r.Method)
+			}
+		default:
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+	}))
+	defer binanceServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.BinanceHTTPClient = binanceServer.Client()
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:          "main",
+		Active:      true,
+		Credentials: binance.Credentials{APIKey: "binance-key", SecretKey: "binance-secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"exchange":"binance","api_id":"main","inst_id":"AVAXUSDT","pos_side":"net","mode":"limit"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/positions/close", bytes.NewReader(body))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("limit close retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(orderForms) != 2 {
+		t.Fatalf("expected failed order and retry, got %#v", orderForms)
+	}
+	if len(cancelForms) != 1 || cancelForms[0].Get("orderId") != "100" {
+		t.Fatalf("expected only conflicting reduce-only close order canceled, got %#v", cancelForms)
+	}
+	retry := orderForms[1]
+	if retry.Get("symbol") != "AVAXUSDT" || retry.Get("side") != "BUY" || retry.Get("type") != "LIMIT" || retry.Get("quantity") != "15" || retry.Get("price") != "6.6285" || retry.Get("reduceOnly") != "true" {
+		t.Fatalf("bad retry close form: %#v", retry)
+	}
+}
+
 func TestTVBotBinanceLimitCloseFallsBackToMarketRemaining(t *testing.T) {
 	oldPoll := positionClosePollInterval
 	oldTimeout := positionCloseLimitTimeout

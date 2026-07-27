@@ -2709,7 +2709,10 @@ func placeBinancePositionClose(ctx context.Context, client binance.Client, posit
 	}
 	ack, err := client.PlaceOrder(ctx, req)
 	if err != nil {
-		return positionCloseOrder{}, err
+		ack, err = retryBinanceReduceOnlyPositionClose(ctx, client, req, err)
+		if err != nil {
+			return positionCloseOrder{}, err
+		}
 	}
 	return positionCloseOrder{
 		Position: position,
@@ -2721,6 +2724,60 @@ func placeBinancePositionClose(ctx context.Context, client binance.Client, posit
 		CloseSz: req.Quantity,
 		Partial: partial,
 	}, nil
+}
+
+func retryBinanceReduceOnlyPositionClose(ctx context.Context, client binance.Client, req binance.PlaceOrderRequest, originalErr error) (binance.OrderAck, error) {
+	if !req.ReduceOnly || !binance.IsAPIErrorCode(originalErr, -2022) {
+		return binance.OrderAck{}, originalErr
+	}
+	orders, err := client.OpenOrders(ctx, req.Symbol)
+	if err != nil {
+		return binance.OrderAck{}, originalErr
+	}
+	canceled := 0
+	for _, order := range orders {
+		if !binanceConflictingReduceOnlyCloseOrder(order, req) {
+			continue
+		}
+		cancelReq := binance.CancelOrderRequest{Symbol: order.Symbol}
+		if order.OrderID != 0 {
+			cancelReq.OrderID = strconv.FormatInt(order.OrderID, 10)
+		} else {
+			cancelReq.OrigClientOrderID = strings.TrimSpace(order.ClientOrderID)
+		}
+		if _, err := client.CancelOrder(ctx, cancelReq); err != nil {
+			return binance.OrderAck{}, fmt.Errorf("cancel conflicting Binance reduce-only close order failed: %w", err)
+		}
+		canceled++
+	}
+	if canceled == 0 {
+		return binance.OrderAck{}, originalErr
+	}
+	ack, err := client.PlaceOrder(ctx, req)
+	if err != nil {
+		return binance.OrderAck{}, fmt.Errorf("Binance reduce-only close retry failed after canceling %d conflicting orders: %w", canceled, err)
+	}
+	return ack, nil
+}
+
+func binanceConflictingReduceOnlyCloseOrder(order binance.OpenOrder, req binance.PlaceOrderRequest) bool {
+	if !order.ReduceOnly || !strings.EqualFold(order.Symbol, req.Symbol) || !strings.EqualFold(order.Side, req.Side) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(order.Type), "LIMIT") {
+		return false
+	}
+	reqPosSide := normalizedBinanceClosePositionSide(req.PositionSide)
+	orderPosSide := normalizedBinanceClosePositionSide(order.PositionSide)
+	return reqPosSide == orderPosSide
+}
+
+func normalizedBinanceClosePositionSide(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	if raw == "" || raw == "BOTH" {
+		return "BOTH"
+	}
+	return raw
 }
 
 func binancePositionCloseOrderRequest(position okx.Position, mode, px, closeSz string) (binance.PlaceOrderRequest, bool, error) {
