@@ -1353,6 +1353,12 @@ const tvbotHTML = `<!doctype html>
       return n.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 8 });
     }
 
+    function formatUSDTBalance(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return Math.round(n).toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    }
+
     function formatPct(v) {
       const n = Number(v);
       if (!Number.isFinite(n)) return "-";
@@ -1500,7 +1506,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     function chartAxisValue(v) {
-      const formatted = formatNumber(v);
+      const formatted = formatUSDTBalance(v);
       return formatted === "-" ? asText(v) : formatted;
     }
 
@@ -2052,7 +2058,7 @@ const tvbotHTML = `<!doctype html>
         const statusText = configured ? (item.status === "ok" ? "已更新" : (item.error || item.status || "错误")) : "未配置";
         $(prefix + "-status").textContent = statusText;
         $(prefix + "-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
-        $(prefix + "-avail").textContent = usdt ? formatAssetAmount(usdt.avail_bal || usdt.avail_eq) + " USDT" : "-";
+        $(prefix + "-avail").textContent = usdt ? formatUSDTBalance(usdt.avail_bal || usdt.avail_eq) + " USDT" : "-";
         $(prefix + "-api").textContent = item.api_id ? apiDisplayName(item.api_id, exchange) : "-";
         $(prefix + "-updated").textContent = balance.updated_at ? shanghaiTime(balance.updated_at) : (item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
         const points = usdtValuationPoints(item.balance_points || [], [], balance);
@@ -2666,7 +2672,7 @@ const tvbotHTML = `<!doctype html>
       const details = balance && Array.isArray(balance.details) ? balance.details : [];
       const usdt = usdtBalanceDetail(balance);
       $("analysis-binance-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
-      $("analysis-binance-avail").textContent = usdt ? formatAssetAmount(usdt.avail_bal || usdt.avail_eq) + " USDT" : "-";
+      $("analysis-binance-avail").textContent = usdt ? formatUSDTBalance(usdt.avail_bal || usdt.avail_eq) + " USDT" : "-";
       $("analysis-binance-api").textContent = item && item.api_id ? apiDisplayName(item.api_id, "binance") : "-";
       $("analysis-binance-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : (item && item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
       $("analysis-binance-balance-status").textContent = exchangeBalanceStatusText(item, balance, "Binance");
@@ -2690,10 +2696,10 @@ const tvbotHTML = `<!doctype html>
       const rows = (Array.isArray(details) ? details : []).filter((row) => String(row.ccy || "").toUpperCase() === "USDT").map((row) => {
         return "<tr>" +
           "<td>" + escapeHTML(asText(row.ccy)) + "</td>" +
-          "<td>" + escapeHTML(formatAssetAmount(row.eq)) + "</td>" +
-          "<td>" + escapeHTML(formatAssetAmount(row.avail_bal || row.avail_eq)) + "</td>" +
-          "<td>" + escapeHTML(formatAssetAmount(row.cash_bal)) + "</td>" +
-          "<td>" + escapeHTML(formatAssetAmount(row.frozen_bal)) + "</td>" +
+          "<td>" + escapeHTML(formatUSDTBalance(row.eq)) + "</td>" +
+          "<td>" + escapeHTML(formatUSDTBalance(row.avail_bal || row.avail_eq)) + "</td>" +
+          "<td>" + escapeHTML(formatUSDTBalance(row.cash_bal)) + "</td>" +
+          "<td>" + escapeHTML(formatUSDTBalance(row.frozen_bal)) + "</td>" +
           "</tr>";
       });
       return rows.join("") || '<tr><td colspan="5" class="muted">' + escapeHTML(emptyText) + '</td></tr>';
