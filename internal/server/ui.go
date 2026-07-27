@@ -499,7 +499,7 @@ const tvbotHTML = `<!doctype html>
       padding: 2px 7px;
     }
     .positions-table .position-actions {
-      gap: 5px;
+      gap: 8px;
     }
     .position-percent-close-btn {
       width: 36px;
@@ -508,7 +508,7 @@ const tvbotHTML = `<!doctype html>
       min-height: 36px;
       padding: 0;
       border-radius: 999px;
-      font-size: 10px;
+      font-size: 9px;
       line-height: 1;
       flex: 0 0 36px;
     }

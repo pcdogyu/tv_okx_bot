@@ -171,9 +171,9 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-percent-close-btn")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("width: 36px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("border-radius: 999px")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("font-size: 10px")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("font-size: 9px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .position-actions")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("gap: 5px")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("gap: 8px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .pos-actions-col { width: 25%; }")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`colspan="14"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
