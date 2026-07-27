@@ -1330,6 +1330,7 @@ const tvbotHTML = `<!doctype html>
       analysis: null,
       analysisError: "",
       analysisTradePage: 1,
+      symbolPrecisions: {},
       balanceOverview: null,
       balanceOverviewError: "",
       balanceWindowMinutes: 60,
@@ -1431,6 +1432,79 @@ const tvbotHTML = `<!doctype html>
       const n = Number(v);
       if (!Number.isFinite(n)) return "-";
       return n.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 8 });
+    }
+
+    function normalizedPrecision(value) {
+      const precision = Number(value);
+      if (!Number.isFinite(precision) || precision < 0) return null;
+      return Math.min(20, Math.floor(precision));
+    }
+
+    function formatFixedPrecision(v, precision, fallback) {
+      if (v === null || v === undefined || String(v).trim() === "") return "-";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      const digits = normalizedPrecision(precision);
+      if (digits === null) return fallback(v);
+      return n.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    }
+
+    function formatPriceAmount(row, value) {
+      return formatFixedPrecision(value, row ? row.price_precision : null, formatNumber);
+    }
+
+    function formatQuantityAmount(row, value) {
+      return formatFixedPrecision(value, row ? row.quantity_precision : null, formatAssetAmount);
+    }
+
+    function symbolPrecisionKey(exchange, instID) {
+      const normalized = normalizeExchange(exchange);
+      const key = normalizePrecisionInstID(normalized, instID);
+      return key ? normalized + "|" + key : "";
+    }
+
+    function normalizePrecisionInstID(exchange, value) {
+      let raw = String(value || "").trim().toUpperCase();
+      if (!raw) return "";
+      const colon = raw.lastIndexOf(":");
+      if (colon >= 0) raw = raw.slice(colon + 1);
+      raw = raw.replace(/\.P$/, "").replace(/\.PERP$/, "").replace(/PERP$/, "");
+      raw = raw.replace(/\s+/g, "");
+      if (normalizeExchange(exchange) === "binance") {
+        raw = raw.replace(/[-_/]/g, "");
+        if (raw && !raw.endsWith("USDT")) raw += "USDT";
+        return raw;
+      }
+      raw = raw.replace(/_/g, "-").replace(/\//g, "-");
+      if (raw.endsWith("-SWAP")) return raw;
+      if (raw.includes("-")) {
+        const parts = raw.split("-").filter(Boolean);
+        if (parts.length >= 2) return parts[0] + "-" + parts[1] + "-SWAP";
+      }
+      if (raw.endsWith("USDT") && raw.length > 4) return raw.slice(0, -4) + "-USDT-SWAP";
+      return raw + "-USDT-SWAP";
+    }
+
+    function rememberSymbolPrecision(exchange, row) {
+      const key = symbolPrecisionKey(exchange, row && row.instId);
+      if (!key) return;
+      const pricePrecision = normalizedPrecision(row && row.price_precision);
+      const quantityPrecision = normalizedPrecision(row && row.quantity_precision);
+      if (pricePrecision === null && quantityPrecision === null) return;
+      const current = state.symbolPrecisions[key] || {};
+      state.symbolPrecisions[key] = Object.assign({}, current, {
+        price_precision: pricePrecision === null ? current.price_precision : pricePrecision,
+        quantity_precision: quantityPrecision === null ? current.quantity_precision : quantityPrecision
+      });
+    }
+
+    function symbolPrecision(exchange, instID) {
+      return state.symbolPrecisions[symbolPrecisionKey(exchange, instID)] || null;
+    }
+
+    function formatCachedSymbolPrice(exchange, instID, value) {
+      const precision = symbolPrecision(exchange, instID);
+      return formatFixedPrecision(value, precision ? precision.price_precision : null, formatNumber);
     }
 
     function formatUSDTBalance(v) {
@@ -2010,7 +2084,9 @@ const tvbotHTML = `<!doctype html>
         const exchange = normalizeExchange(result.exchange);
         const apiID = result.api_id || "";
         (Array.isArray(result.positions) ? result.positions : []).forEach((row) => {
-          rows.push(Object.assign({}, row, { _exchange: exchange, _api_id: apiID }));
+          const view = Object.assign({}, row, { _exchange: exchange, _api_id: apiID });
+          rememberSymbolPrecision(exchange, view);
+          rows.push(view);
         });
       });
       state.positions = {
@@ -2031,7 +2107,9 @@ const tvbotHTML = `<!doctype html>
         const exchange = normalizeExchange(result.exchange);
         const apiID = result.api_id || "";
         (Array.isArray(result.orders) ? result.orders : []).forEach((row) => {
-          rows.push(Object.assign({}, row, { _exchange: exchange, _api_id: apiID }));
+          const view = Object.assign({}, row, { _exchange: exchange, _api_id: apiID });
+          rememberSymbolPrecision(exchange, view);
+          rows.push(view);
         });
       });
       state.pendingOrders = {
@@ -2684,13 +2762,13 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(exchangeLabel(exchange)) + "</td>" +
           "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
           positionSideCell(row) +
-          "<td>" + escapeHTML(formatAssetAmount(row.pos)) + "</td>" +
-          "<td>" + escapeHTML(formatAssetAmount(row.availPos)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.avgPx)) + "</td>" +
+          "<td>" + escapeHTML(formatQuantityAmount(row, row.pos)) + "</td>" +
+          "<td>" + escapeHTML(formatQuantityAmount(row, row.availPos)) + "</td>" +
+          "<td>" + escapeHTML(formatPriceAmount(row, row.avgPx)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
           "<td>" + escapeHTML(asText(row.lever)) + "</td>" +
           "<td>" + escapeHTML(positionAmount(row)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.markPx)) + "</td>" +
+          "<td>" + escapeHTML(formatPriceAmount(row, row.markPx)) + "</td>" +
           signedCell(row.upl, formatNumber(row.upl)) +
           signedCell(positionReturnRatio(row), positionReturnPercent(row)) +
           positionEntryTimeCell(row) +
@@ -2720,11 +2798,11 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(tradeSideText(row.side)) + "</td>" +
           "<td>" + escapeHTML(positionSideText(row.posSide, "")) + "</td>" +
           "<td>" + escapeHTML(orderTypeText(row.ordType)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.px)) + "</td>" +
-          "<td>" + escapeHTML(row.price_error ? row.price_error : formatNumber(row.mid_px)) + "</td>" +
-          "<td>" + escapeHTML(formatAssetAmount(row.sz)) + "</td>" +
+          "<td>" + escapeHTML(formatPriceAmount(row, row.px)) + "</td>" +
+          "<td>" + escapeHTML(row.price_error ? row.price_error : formatPriceAmount(row, row.mid_px)) + "</td>" +
+          "<td>" + escapeHTML(formatQuantityAmount(row, row.sz)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
-          "<td>" + escapeHTML(formatAssetAmount(row.accFillSz)) + "</td>" +
+          "<td>" + escapeHTML(formatQuantityAmount(row, row.accFillSz)) + "</td>" +
           "<td>" + escapeHTML(pendingOrderStateText(row.state)) + "</td>" +
           pendingOrderActionCell(row) +
           "</tr>";
@@ -2975,6 +3053,7 @@ const tvbotHTML = `<!doctype html>
     function renderOrders() {
       const rows = (state.orders || []).map((order, index) => {
         const targetExchange = normalizeExchange(order.target_exchange || (order.result && order.result.target_exchange));
+        const precisionInstID = order.result && order.result.inst_id ? order.result.inst_id : order.coinpair;
         const okxResult = targetExchange === "okx" && order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : "";
         const binanceResult = targetExchange === "binance" && order.result && (order.result.ord_id || order.result.binance_code || order.result.binance_msg) ? [order.result.ord_id, order.result.binance_code, order.result.binance_msg].filter(Boolean).join(" / ") : "";
         const errorText = [order.error_code, order.error].filter(Boolean).join(": ");
@@ -2995,7 +3074,7 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(targetText) + "</td>" +
           "<td>" + escapeHTML(asText(order.action)) + "</td>" +
           "<td>" + escapeHTML(asText(order.coinpair)) + "</td>" +
-          "<td>" + escapeHTML(asText(order.price)) + "</td>" +
+          "<td>" + escapeHTML(formatCachedSymbolPrice(targetExchange, precisionInstID, order.price)) + "</td>" +
           "<td>" + escapeHTML(asText(order.amount)) + "</td>" +
           '<td class="order-okx"><div class="okx-cell"><span class="okx-text">' + escapeHTML(exchangeResult) + "</span>" + retryButton + "</div></td>" +
           "</tr>";

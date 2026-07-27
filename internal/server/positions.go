@@ -60,10 +60,12 @@ type positionsResponse struct {
 
 type positionView struct {
 	okx.Position
-	EntryFillTime   string `json:"entry_fill_time"`
-	HoldingSeconds  int64  `json:"holding_seconds"`
-	EntryTimeSource string `json:"entry_time_source"`
-	EntryTimeError  string `json:"entry_time_error"`
+	PricePrecision    *int   `json:"price_precision,omitempty"`
+	QuantityPrecision *int   `json:"quantity_precision,omitempty"`
+	EntryFillTime     string `json:"entry_fill_time"`
+	HoldingSeconds    int64  `json:"holding_seconds"`
+	EntryTimeSource   string `json:"entry_time_source"`
+	EntryTimeError    string `json:"entry_time_error"`
 }
 
 type positionEntryFill struct {
@@ -96,11 +98,18 @@ type pendingOrdersResponse struct {
 
 type pendingOrderView struct {
 	okx.PendingOrder
-	MidPx      string `json:"mid_px,omitempty"`
-	ChasePx    string `json:"chase_px,omitempty"`
-	Margin     string `json:"margin,omitempty"`
-	PriceError string `json:"price_error,omitempty"`
-	Chasing    bool   `json:"chasing"`
+	PricePrecision    *int   `json:"price_precision,omitempty"`
+	QuantityPrecision *int   `json:"quantity_precision,omitempty"`
+	MidPx             string `json:"mid_px,omitempty"`
+	ChasePx           string `json:"chase_px,omitempty"`
+	Margin            string `json:"margin,omitempty"`
+	PriceError        string `json:"price_error,omitempty"`
+	Chasing           bool   `json:"chasing"`
+}
+
+type symbolDisplayPrecision struct {
+	PricePrecision    *int
+	QuantityPrecision *int
 }
 
 type positionCloseRequest struct {
@@ -791,6 +800,7 @@ func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requeste
 		return positionsResponse{}, err
 	}
 	positions = openPositions(positions)
+	precisions := s.okxDisplayPrecisions(ctx, client)
 	sort.Slice(positions, func(i, j int) bool {
 		if positions[i].InstID == positions[j].InstID {
 			return positions[i].PosSide < positions[j].PosSide
@@ -805,6 +815,8 @@ func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requeste
 			return fetchOKXPositionEntryFills(ctx, client, instType, positions, now)
 		},
 	)
+	views := positionViewsWithEntryTimes(positions, fills, now, entryTimeSourceOKXFills, fillErr)
+	applyPositionViewPrecisions(views, precisions)
 	return positionsResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeOKX,
@@ -812,7 +824,7 @@ func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requeste
 		InstType:    instType,
 		Count:       len(positions),
 		RefreshedAt: now,
-		Positions:   positionViewsWithEntryTimes(positions, fills, now, entryTimeSourceOKXFills, fillErr),
+		Positions:   views,
 	}, nil
 }
 
@@ -855,6 +867,7 @@ func (s *Server) fetchBinancePositions(ctx context.Context, cfg config.Config, r
 	if err != nil {
 		return positionsResponse{}, err
 	}
+	precisions := s.binanceDisplayPrecisions(ctx, client)
 	out := make([]okx.Position, 0, len(positions))
 	for _, position := range positions {
 		converted := binancePositionToOKX(position)
@@ -887,6 +900,8 @@ func (s *Server) fetchBinancePositions(ctx context.Context, cfg config.Config, r
 			errorsBySymbol[symbol] = fillErr
 		}
 	}
+	views := binancePositionViewsWithEntryTimes(out, fillsBySymbol, errorsBySymbol, now)
+	applyPositionViewPrecisions(views, precisions)
 	return positionsResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeBinance,
@@ -894,7 +909,7 @@ func (s *Server) fetchBinancePositions(ctx context.Context, cfg config.Config, r
 		InstType:    "USDT-M",
 		Count:       len(out),
 		RefreshedAt: now,
-		Positions:   binancePositionViewsWithEntryTimes(out, fillsBySymbol, errorsBySymbol, now),
+		Positions:   views,
 	}, nil
 }
 
@@ -1244,6 +1259,129 @@ func positionsByInstID(positions []okx.Position) map[string][]okx.Position {
 	return out
 }
 
+func (s *Server) okxDisplayPrecisions(ctx context.Context, client okx.Client) map[string]symbolDisplayPrecision {
+	instruments, _, err := client.SwapInstruments(ctx)
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("failed to fetch OKX symbol display precision", "error", err)
+		}
+		return nil
+	}
+	out := make(map[string]symbolDisplayPrecision, len(instruments))
+	for _, inst := range instruments {
+		instID := strings.ToUpper(strings.TrimSpace(inst.InstID))
+		if instID == "" {
+			continue
+		}
+		out[instID] = precisionFromOKXInstrument(inst)
+	}
+	return out
+}
+
+func (s *Server) binanceDisplayPrecisions(ctx context.Context, client binance.Client) map[string]symbolDisplayPrecision {
+	info, err := client.ExchangeInfo(ctx)
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("failed to fetch Binance symbol display precision", "error", err)
+		}
+		return nil
+	}
+	out := make(map[string]symbolDisplayPrecision, len(info.Symbols))
+	for _, symbol := range info.Symbols {
+		symbolID := strings.ToUpper(strings.TrimSpace(symbol.Symbol))
+		if symbolID == "" {
+			continue
+		}
+		out[symbolID] = precisionFromBinanceSymbol(symbol)
+	}
+	return out
+}
+
+func precisionFromOKXInstrument(inst okx.Instrument) symbolDisplayPrecision {
+	return symbolDisplayPrecision{
+		PricePrecision:    boundedPrecision(decimalPlacesForDisplay(inst.TickSz)),
+		QuantityPrecision: boundedPrecision(decimalPlacesForDisplay(inst.LotSz)),
+	}
+}
+
+func precisionFromBinanceSymbol(symbol binance.SymbolInfo) symbolDisplayPrecision {
+	pricePrecision := symbol.PricePrecision
+	quantityPrecision := symbol.QuantityPrecision
+	for _, filter := range symbol.Filters {
+		switch filter.FilterType {
+		case "PRICE_FILTER":
+			pricePrecision = maxInt(pricePrecision, decimalPlacesForDisplay(filter.TickSize))
+		case "LOT_SIZE":
+			quantityPrecision = maxInt(quantityPrecision, decimalPlacesForDisplay(filter.StepSize))
+		}
+	}
+	return symbolDisplayPrecision{
+		PricePrecision:    boundedPrecision(pricePrecision),
+		QuantityPrecision: boundedPrecision(quantityPrecision),
+	}
+}
+
+func applyPositionViewPrecisions(views []positionView, precisions map[string]symbolDisplayPrecision) {
+	for i := range views {
+		precision, ok := precisions[strings.ToUpper(strings.TrimSpace(views[i].InstID))]
+		if !ok {
+			continue
+		}
+		views[i].PricePrecision = cloneIntPtr(precision.PricePrecision)
+		views[i].QuantityPrecision = cloneIntPtr(precision.QuantityPrecision)
+	}
+}
+
+func applyPendingOrderViewPrecision(view *pendingOrderView, precision symbolDisplayPrecision) {
+	if view == nil {
+		return
+	}
+	view.PricePrecision = cloneIntPtr(precision.PricePrecision)
+	view.QuantityPrecision = cloneIntPtr(precision.QuantityPrecision)
+}
+
+func boundedPrecision(value int) *int {
+	if value < 0 {
+		return nil
+	}
+	if value > 20 {
+		value = 20
+	}
+	return &value
+}
+
+func cloneIntPtr(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func decimalPlacesForDisplay(raw string) int {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return 0
+	}
+	if i := strings.Index(raw, "e-"); i >= 0 {
+		n, err := strconv.Atoi(raw[i+2:])
+		if err == nil && n > 0 {
+			return n
+		}
+	}
+	if i := strings.Index(raw, "."); i >= 0 {
+		return len(raw) - i - 1
+	}
+	return 0
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func binancePositionToOKX(position binance.Position) okx.Position {
 	posSide := strings.ToLower(strings.TrimSpace(position.PositionSide))
 	if posSide == "" || posSide == "both" {
@@ -1394,6 +1532,7 @@ func (s *Server) pendingOrderViews(ctx context.Context, cfg config.Config, clien
 			view.ChasePx = chasePx
 		}
 		if inst, ok := instruments[strings.ToUpper(strings.TrimSpace(order.InstID))]; ok {
+			applyPendingOrderViewPrecision(&view, precisionFromOKXInstrument(inst))
 			view.Margin = pendingOrderMargin(order, view.MidPx, inst.CtVal, cfg.Trading.Leverage)
 		}
 		views = append(views, view)
@@ -1423,6 +1562,9 @@ func (s *Server) binancePendingOrderViews(ctx context.Context, cfg config.Config
 		} else {
 			view.MidPx = midPx
 			view.ChasePx = chasePx
+		}
+		if inst, ok := instruments[strings.ToUpper(strings.TrimSpace(order.InstID))]; ok {
+			applyPendingOrderViewPrecision(&view, precisionFromBinanceSymbol(inst))
 		}
 		view.Margin = pendingOrderMargin(order, view.MidPx, "1", cfg.Trading.Leverage)
 		views = append(views, view)

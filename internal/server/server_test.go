@@ -250,6 +250,9 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisBalanceRefreshIntervalMs = 60000")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("refreshAnalysisBalanceOverviewAuto")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("visibilitychange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("formatPriceAmount")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("formatQuantityAmount")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbolPrecisions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPNLWindowMinutes")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pnl_minutes")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-symbol-table")) ||
@@ -1267,6 +1270,11 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"trade-2","ordId":"order-2","side":"sell","posSide":"long","fillSz":"0.2","fillTime":"%d"},
 				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"trade-1","ordId":"order-1","side":"buy","posSide":"long","fillSz":"0.7","fillTime":"%d"}
 			]}`, reduceFillTime.UnixMilli(), entryFillTime.UnixMilli())))
+		case "/api/v5/public/instruments":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instId":"BTC-USDT-SWAP","tickSz":"0.1","ctVal":"0.01","lotSz":"0.01","minSz":"0.01"},
+				{"instId":"ETH-USDT-SWAP","tickSz":"0.01","ctVal":"0.1","lotSz":"0.001","minSz":"0.001"}
+			]}`))
 		default:
 			t.Fatalf("unexpected OKX path %s", r.URL.Path)
 		}
@@ -1318,6 +1326,9 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	}
 	if resp.Positions[0].EntryFillTime != entryFillTime.UTC().Format(time.RFC3339Nano) || resp.Positions[0].HoldingSeconds != int64((2*time.Hour).Seconds()) || resp.Positions[0].EntryTimeSource != entryTimeSourceOKXFills {
 		t.Fatalf("bad position entry time: %#v", resp.Positions[0])
+	}
+	if resp.Positions[0].PricePrecision == nil || *resp.Positions[0].PricePrecision != 1 || resp.Positions[0].QuantityPrecision == nil || *resp.Positions[0].QuantityPrecision != 2 {
+		t.Fatalf("bad OKX position precision: %#v", resp.Positions[0])
 	}
 }
 
@@ -1394,6 +1405,9 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if positions.Positions[0].EntryFillTime != entryTradeTime.UTC().Format(time.RFC3339Nano) || positions.Positions[0].HoldingSeconds != int64((2*time.Hour).Seconds()) || positions.Positions[0].EntryTimeSource != entryTimeSourceBinanceTrade {
 		t.Fatalf("bad Binance position entry time: %#v", positions.Positions[0])
 	}
+	if positions.Positions[0].PricePrecision == nil || *positions.Positions[0].PricePrecision != 2 || positions.Positions[0].QuantityPrecision == nil || *positions.Positions[0].QuantityPrecision != 3 {
+		t.Fatalf("bad Binance position precision: %#v", positions.Positions[0])
+	}
 
 	pendingReq := httptest.NewRequest(http.MethodGet, "/tvbot/pending-orders?exchange=binance", nil)
 	pendingReq.SetBasicAuth("admin", "Admin123")
@@ -1408,6 +1422,9 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	}
 	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].MidPx != "50000" || pending.Orders[0].ChasePx != "49999.9" || pending.Orders[0].Margin != "998" || pending.Orders[0].PriceError != "" {
 		t.Fatalf("bad Binance pending response: %#v", pending)
+	}
+	if pending.Orders[0].PricePrecision == nil || *pending.Orders[0].PricePrecision != 2 || pending.Orders[0].QuantityPrecision == nil || *pending.Orders[0].QuantityPrecision != 3 {
+		t.Fatalf("bad Binance pending precision: %#v", pending.Orders[0])
 	}
 
 	overviewReq := httptest.NewRequest(http.MethodGet, "/tvbot/balances/overview?days=3", nil)
@@ -1516,6 +1533,9 @@ func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
 	}
 	if resp.Orders[0].InstID != "BTC-USDT-SWAP" || resp.Orders[0].OrdID != "100" || resp.Orders[0].AccFillSz != "0.1" || resp.Orders[0].MidPx != "64000" || resp.Orders[0].ChasePx != "63999.9" || resp.Orders[0].Margin != "5120" {
 		t.Fatalf("bad pending order sorting/data: %#v", resp.Orders)
+	}
+	if resp.Orders[0].PricePrecision == nil || *resp.Orders[0].PricePrecision != 1 || resp.Orders[0].QuantityPrecision == nil || *resp.Orders[0].QuantityPrecision != 0 {
+		t.Fatalf("bad OKX pending precision: %#v", resp.Orders[0])
 	}
 }
 
