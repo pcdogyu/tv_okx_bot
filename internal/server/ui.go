@@ -607,6 +607,9 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: wrap;
       margin: 0 0 14px;
     }
+    .balance-window-toolbar .balance-window-btn {
+      font-size: 16px;
+    }
     .balance-window-btn[aria-selected="true"] {
       background: var(--blue);
       border-color: var(--blue);
@@ -980,11 +983,10 @@ const tvbotHTML = `<!doctype html>
       <div class="analysis-balance-grid">
         <div class="balance-chart-card exchange-balance-card">
           <div class="section-head" style="margin-bottom:0">
-            <h3>OKX USDT 余额表</h3>
+            <h3>USDT 余额表</h3>
             <span class="muted" id="analysis-okx-balance-status">-</span>
           </div>
           <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
-            <div class="analysis-card"><div class="label">资产估值</div><div class="value" id="analysis-total-eq">-</div></div>
             <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-usdt-eq">-</div></div>
             <div class="analysis-card"><div class="label">可用权益</div><div class="value" id="analysis-avail-eq">-</div></div>
             <div class="analysis-card"><div class="label">调整权益</div><div class="value" id="analysis-adj-eq">-</div></div>
@@ -994,19 +996,19 @@ const tvbotHTML = `<!doctype html>
           <div class="balance-table-wrap">
             <table>
               <thead>
-                <tr><th>币种</th><th>权益</th><th>估值 USD</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
+                <tr><th>币种</th><th>权益</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
               </thead>
               <tbody id="analysis-balance-rows"></tbody>
             </table>
           </div>
           <div class="section-head" style="margin:2px 0 0">
-            <h3 id="analysis-okx-usdt-title">OKX USDT估值</h3>
+            <h3 id="analysis-okx-usdt-title">USDT估值</h3>
           </div>
           <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT valuation chart"></svg>
         </div>
         <div class="balance-chart-card exchange-balance-card">
           <div class="section-head" style="margin-bottom:0">
-            <h3>Binance USDT 余额表</h3>
+            <h3>USDT 余额表</h3>
             <span class="muted" id="analysis-binance-balance-status">-</span>
           </div>
           <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
@@ -1018,13 +1020,13 @@ const tvbotHTML = `<!doctype html>
           <div class="balance-table-wrap">
             <table>
               <thead>
-                <tr><th>币种</th><th>权益</th><th>估值 USD</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
+                <tr><th>币种</th><th>权益</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
               </thead>
               <tbody id="analysis-binance-balance-rows"></tbody>
             </table>
           </div>
           <div class="section-head" style="margin:2px 0 0">
-            <h3 id="analysis-binance-usdt-title">Binance USDT估值</h3>
+            <h3 id="analysis-binance-usdt-title">USDT估值</h3>
           </div>
           <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT valuation chart"></svg>
         </div>
@@ -2626,7 +2628,6 @@ const tvbotHTML = `<!doctype html>
 
     function renderAnalysisOKXBalance(item, balance) {
       const details = balance && Array.isArray(balance.details) ? balance.details : [];
-      $("analysis-total-eq").textContent = balance ? formatUSD(balance.total_eq) : "-";
       const usdt = usdtBalanceDetail(balance);
       $("analysis-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
       $("analysis-avail-eq").textContent = balance ? formatUSD(balance.avail_eq) : "-";
@@ -2634,8 +2635,8 @@ const tvbotHTML = `<!doctype html>
       $("analysis-asset-count").textContent = balance ? String(details.length) : "-";
       $("analysis-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : "-";
       $("analysis-okx-balance-status").textContent = exchangeBalanceStatusText(item, balance, "OKX");
-      $("analysis-okx-usdt-title").textContent = "OKX USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
-      $("analysis-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 OKX 资产余额");
+      $("analysis-okx-usdt-title").textContent = "USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
+      $("analysis-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 USDT 资产余额");
       const overviewPoints = item ? (item.balance_points || []) : [];
       const fallbackPoints = state.analysis ? (state.analysis.balance_points || []) : [];
       const pricePoints = state.analysis ? (state.analysis.price_points || []) : [];
@@ -2652,8 +2653,8 @@ const tvbotHTML = `<!doctype html>
       $("analysis-binance-api").textContent = item && item.api_id ? apiDisplayName(item.api_id, "binance") : "-";
       $("analysis-binance-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : (item && item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
       $("analysis-binance-balance-status").textContent = exchangeBalanceStatusText(item, balance, "Binance");
-      $("analysis-binance-usdt-title").textContent = "Binance USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
-      $("analysis-binance-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 Binance 资产余额");
+      $("analysis-binance-usdt-title").textContent = "USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
+      $("analysis-binance-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 USDT 资产余额");
       const points = usdtValuationPoints(item ? (item.balance_points || []) : [], [], balance);
       drawUSDTChart(points, "analysis-binance-usdt-chart", item && item.configured ? "暂无 Binance USDT 余额数据" : "Binance 未配置", "#138a55");
     }
@@ -2669,17 +2670,16 @@ const tvbotHTML = `<!doctype html>
     }
 
     function balanceRowsHTML(details, emptyText) {
-      const rows = (Array.isArray(details) ? details : []).map((row) => {
+      const rows = (Array.isArray(details) ? details : []).filter((row) => String(row.ccy || "").toUpperCase() === "USDT").map((row) => {
         return "<tr>" +
           "<td>" + escapeHTML(asText(row.ccy)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.eq)) + "</td>" +
-          "<td>" + escapeHTML(formatUSD(row.eq_usd)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.avail_bal || row.avail_eq)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.cash_bal)) + "</td>" +
           "<td>" + escapeHTML(formatAssetAmount(row.frozen_bal)) + "</td>" +
           "</tr>";
       });
-      return rows.join("") || '<tr><td colspan="6" class="muted">' + escapeHTML(emptyText) + '</td></tr>';
+      return rows.join("") || '<tr><td colspan="5" class="muted">' + escapeHTML(emptyText) + '</td></tr>';
     }
 
     function drawUSDTChart(points, svgID, emptyText, strokeColor) {

@@ -216,20 +216,18 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("限价单")) {
 		t.Fatalf("tvbot ui should include market/limit order type setting")
 	}
-	if !bytes.Contains(ui.Body.Bytes(), []byte("资产估值")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("USDT估值")) ||
+	if !bytes.Contains(ui.Body.Bytes(), []byte("USDT估值")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/balances/overview")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("OKX USDT 余额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance USDT 余额")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("OKX USDT 余额表")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("Binance USDT 余额表")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("USDT 余额表")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`data-balance-minutes="129600"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("重置基准")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("同步历史")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("overview-okx-usdt-chart")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("overview-binance-usdt-chart")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-total-eq")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-usdt-eq")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-asset-count")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-balance-rows")) {
 		t.Fatalf("tvbot ui should include exchange balance analysis")
