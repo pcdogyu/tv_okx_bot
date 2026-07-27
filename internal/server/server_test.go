@@ -239,9 +239,14 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-asset-count")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-balance-rows")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("币对分析")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 币对盈亏比分析")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 币对盈亏比分析")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-okx-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("成交历史")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-page-info")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysisTradePageSize = 20")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-symbol-table")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-table")) {
 		t.Fatalf("tvbot ui should include exchange balance analysis")
@@ -998,8 +1003,9 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 			}
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"0","msg":"","data":[
 				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"t1","ordId":"o1","side":"sell","fillPx":"50000","fillSz":"1","fillPnl":"2.5","fee":"-0.1","feeCcy":"USDT","fillTime":"%d"},
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"t1b","ordId":"o1","side":"sell","fillPx":"50100","fillSz":"1","fillPnl":"0.5","fee":"-0.02","feeCcy":"USDT","fillTime":"%d"},
 				{"instType":"SWAP","instId":"ETH-USDT-SWAP","tradeId":"t2","ordId":"o2","side":"buy","fillPx":"2500","fillSz":"1","fillPnl":"-1","fee":"-0.05","feeCcy":"USDT","fillTime":"%d"}
-			]}`, fillTime2, fillTime1)))
+			]}`, fillTime2, fillTime2+1000, fillTime1)))
 		default:
 			t.Fatalf("unexpected OKX path %s", r.URL.Path)
 		}
@@ -1025,7 +1031,10 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 		}
 		sawBinanceSymbols[symbol] = true
 		if symbol == "BTCUSDT" && startMS <= binanceTradeTime && endMS >= binanceTradeTime {
-			_, _ = w.Write([]byte(fmt.Sprintf(`[{"symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","price":"64000","qty":"0.01","realizedPnl":"4.2","commission":"0.2","commissionAsset":"USDT","time":%d,"id":9001,"orderId":8001}]`, binanceTradeTime)))
+			_, _ = w.Write([]byte(fmt.Sprintf(`[
+				{"symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","price":"64000","qty":"0.01","realizedPnl":"4.2","commission":"0.2","commissionAsset":"USDT","time":%d,"id":9001,"orderId":8001},
+				{"symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","price":"64010","qty":"0.02","realizedPnl":"0.8","commission":"0.05","commissionAsset":"USDT","time":%d,"id":9002,"orderId":8001}
+			]`, binanceTradeTime, binanceTradeTime+1000)))
 			return
 		}
 		_, _ = w.Write([]byte(`[]`))
@@ -1103,8 +1112,21 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if resp.Summary.TradeCount != 3 || resp.Summary.Wins != 2 || resp.Summary.Losses != 1 {
 		t.Fatalf("bad summary counts: %#v", resp.Summary)
 	}
-	if math.Abs(resp.Summary.NetPnL-5.35) > 0.0000001 || math.Abs(resp.Summary.WinRate-(2.0/3.0)) > 0.0000001 {
+	if math.Abs(resp.Summary.NetPnL-6.58) > 0.0000001 || math.Abs(resp.Summary.WinRate-(2.0/3.0)) > 0.0000001 {
 		t.Fatalf("bad summary metrics: %#v", resp.Summary)
+	}
+	if len(resp.ExchangeSummaries) != 2 {
+		t.Fatalf("expected exchange summaries: %#v", resp.ExchangeSummaries)
+	}
+	byExchange := map[string]analysisSymbolStats{}
+	for _, stats := range resp.ExchangeSummaries {
+		byExchange[stats.Exchange] = stats
+	}
+	if byExchange["okx"].TradeCount != 2 || math.Abs(byExchange["okx"].NetPnL-1.83) > 0.0000001 {
+		t.Fatalf("bad OKX exchange summary: %#v", resp.ExchangeSummaries)
+	}
+	if byExchange["binance"].TradeCount != 1 || math.Abs(byExchange["binance"].NetPnL-4.75) > 0.0000001 {
+		t.Fatalf("bad Binance exchange summary: %#v", resp.ExchangeSummaries)
 	}
 	if len(resp.Symbols) != 3 {
 		t.Fatalf("expected symbol stats: %#v", resp.Symbols)
@@ -1116,7 +1138,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if byExchangeSymbol["okx|BTC-USDT-SWAP"].TradeCount != 1 || byExchangeSymbol["binance|BTCUSDT"].TradeCount != 1 {
 		t.Fatalf("expected exchange-separated symbol stats: %#v", resp.Symbols)
 	}
-	if len(resp.Trades) != 3 || resp.Trades[0].Exchange != trading.ExchangeBinance || resp.Trades[0].InstID != "BTCUSDT" || resp.Trades[0].Fee != "-0.2" {
+	if len(resp.Trades) != 3 || resp.Trades[0].Exchange != trading.ExchangeBinance || resp.Trades[0].InstID != "BTCUSDT" || resp.Trades[0].Fee != "-0.25" || resp.Trades[0].FillCount != 2 || resp.Trades[0].FillSz != "0.03" {
 		t.Fatalf("bad trade history: %#v", resp.Trades)
 	}
 }

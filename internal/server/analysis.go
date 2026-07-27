@@ -33,23 +33,24 @@ const (
 )
 
 type analysisResponse struct {
-	OK            bool                   `json:"ok"`
-	APIID         string                 `json:"api_id"`
-	BinanceAPIID  string                 `json:"binance_api_id,omitempty"`
-	Env           string                 `json:"env"`
-	PriceDays     int                    `json:"price_days"`
-	PNLDays       int                    `json:"pnl_days"`
-	PriceInstID   string                 `json:"price_inst_id"`
-	PriceBar      string                 `json:"price_bar"`
-	RefreshedAt   time.Time              `json:"refreshed_at"`
-	Cache         analysisCacheStatus    `json:"cache"`
-	Source        analysisSourceStatus   `json:"source"`
-	Balance       analysisBalance        `json:"balance"`
-	PricePoints   []analysisPricePoint   `json:"price_points"`
-	BalancePoints []analysisBalancePoint `json:"balance_points"`
-	Summary       analysisSymbolStats    `json:"summary"`
-	Symbols       []analysisSymbolStats  `json:"symbols"`
-	Trades        []analysisTrade        `json:"trades"`
+	OK                bool                   `json:"ok"`
+	APIID             string                 `json:"api_id"`
+	BinanceAPIID      string                 `json:"binance_api_id,omitempty"`
+	Env               string                 `json:"env"`
+	PriceDays         int                    `json:"price_days"`
+	PNLDays           int                    `json:"pnl_days"`
+	PriceInstID       string                 `json:"price_inst_id"`
+	PriceBar          string                 `json:"price_bar"`
+	RefreshedAt       time.Time              `json:"refreshed_at"`
+	Cache             analysisCacheStatus    `json:"cache"`
+	Source            analysisSourceStatus   `json:"source"`
+	Balance           analysisBalance        `json:"balance"`
+	PricePoints       []analysisPricePoint   `json:"price_points"`
+	BalancePoints     []analysisBalancePoint `json:"balance_points"`
+	Summary           analysisSymbolStats    `json:"summary"`
+	ExchangeSummaries []analysisSymbolStats  `json:"exchange_summaries"`
+	Symbols           []analysisSymbolStats  `json:"symbols"`
+	Trades            []analysisTrade        `json:"trades"`
 }
 
 type analysisCacheStatus struct {
@@ -149,19 +150,20 @@ type analysisSymbolStats struct {
 }
 
 type analysisTrade struct {
-	Exchange string    `json:"exchange"`
-	APIID    string    `json:"api_id,omitempty"`
-	InstID   string    `json:"inst_id"`
-	TradeID  string    `json:"trade_id"`
-	OrdID    string    `json:"ord_id,omitempty"`
-	Side     string    `json:"side,omitempty"`
-	FillPx   string    `json:"fill_px,omitempty"`
-	FillSz   string    `json:"fill_sz,omitempty"`
-	FillPnl  string    `json:"fill_pnl,omitempty"`
-	Fee      string    `json:"fee,omitempty"`
-	FeeCcy   string    `json:"fee_ccy,omitempty"`
-	FillTime time.Time `json:"fill_time"`
-	FillTS   int64     `json:"fill_ts"`
+	Exchange  string    `json:"exchange"`
+	APIID     string    `json:"api_id,omitempty"`
+	InstID    string    `json:"inst_id"`
+	TradeID   string    `json:"trade_id"`
+	OrdID     string    `json:"ord_id,omitempty"`
+	Side      string    `json:"side,omitempty"`
+	FillPx    string    `json:"fill_px,omitempty"`
+	FillSz    string    `json:"fill_sz,omitempty"`
+	FillPnl   string    `json:"fill_pnl,omitempty"`
+	Fee       string    `json:"fee,omitempty"`
+	FeeCcy    string    `json:"fee_ccy,omitempty"`
+	FillTime  time.Time `json:"fill_time"`
+	FillTS    int64     `json:"fill_ts"`
+	FillCount int       `json:"fill_count"`
 }
 
 func (s *Server) StartUSDTBalanceSampler(ctx context.Context) {
@@ -839,19 +841,20 @@ func analysisTradeFromOKXFill(fill storage.OKXFill) (analysisTrade, bool) {
 		return analysisTrade{}, false
 	}
 	return analysisTrade{
-		Exchange: trading.ExchangeOKX,
-		APIID:    strings.TrimSpace(fill.APIID),
-		InstID:   instID,
-		TradeID:  strings.TrimSpace(fill.TradeID),
-		OrdID:    strings.TrimSpace(fill.OrdID),
-		Side:     strings.TrimSpace(fill.Side),
-		FillPx:   strings.TrimSpace(fill.FillPx),
-		FillSz:   strings.TrimSpace(fill.FillSz),
-		FillPnl:  strings.TrimSpace(fill.FillPnl),
-		Fee:      strings.TrimSpace(fill.Fee),
-		FeeCcy:   strings.TrimSpace(fill.FeeCcy),
-		FillTime: time.UnixMilli(fill.FillTime).UTC(),
-		FillTS:   fill.FillTime,
+		Exchange:  trading.ExchangeOKX,
+		APIID:     strings.TrimSpace(fill.APIID),
+		InstID:    instID,
+		TradeID:   strings.TrimSpace(fill.TradeID),
+		OrdID:     strings.TrimSpace(fill.OrdID),
+		Side:      strings.TrimSpace(fill.Side),
+		FillPx:    strings.TrimSpace(fill.FillPx),
+		FillSz:    strings.TrimSpace(fill.FillSz),
+		FillPnl:   strings.TrimSpace(fill.FillPnl),
+		Fee:       strings.TrimSpace(fill.Fee),
+		FeeCcy:    strings.TrimSpace(fill.FeeCcy),
+		FillTime:  time.UnixMilli(fill.FillTime).UTC(),
+		FillTS:    fill.FillTime,
+		FillCount: 1,
 	}, true
 }
 
@@ -862,19 +865,20 @@ func analysisTradeFromBinanceTrade(apiID string, trade binance.UserTrade) (analy
 	}
 	fee := normalizedBinanceFee(trade.Commission)
 	return analysisTrade{
-		Exchange: trading.ExchangeBinance,
-		APIID:    strings.TrimSpace(apiID),
-		InstID:   instID,
-		TradeID:  strconv.FormatInt(trade.ID, 10),
-		OrdID:    strconv.FormatInt(trade.OrderID, 10),
-		Side:     strings.TrimSpace(trade.Side),
-		FillPx:   strings.TrimSpace(trade.Price),
-		FillSz:   strings.TrimSpace(trade.Qty),
-		FillPnl:  strings.TrimSpace(trade.RealizedPnl),
-		Fee:      fee,
-		FeeCcy:   strings.TrimSpace(trade.CommissionAsset),
-		FillTime: time.UnixMilli(trade.Time).UTC(),
-		FillTS:   trade.Time,
+		Exchange:  trading.ExchangeBinance,
+		APIID:     strings.TrimSpace(apiID),
+		InstID:    instID,
+		TradeID:   strconv.FormatInt(trade.ID, 10),
+		OrdID:     strconv.FormatInt(trade.OrderID, 10),
+		Side:      strings.TrimSpace(trade.Side),
+		FillPx:    strings.TrimSpace(trade.Price),
+		FillSz:    strings.TrimSpace(trade.Qty),
+		FillPnl:   strings.TrimSpace(trade.RealizedPnl),
+		Fee:       fee,
+		FeeCcy:    strings.TrimSpace(trade.CommissionAsset),
+		FillTime:  time.UnixMilli(trade.Time).UTC(),
+		FillTS:    trade.Time,
+		FillCount: 1,
 	}, true
 }
 
@@ -894,6 +898,143 @@ func normalizedBinanceFee(commission string) string {
 		value = -value
 	}
 	return trading.NormalizeFloat(value)
+}
+
+type analysisTradeAggregate struct {
+	trade      analysisTrade
+	totalSize  float64
+	totalQuote float64
+	totalPnl   float64
+	totalFee   float64
+	feeParsed  bool
+	pnlParsed  bool
+}
+
+func aggregateAnalysisTrades(trades []analysisTrade) []analysisTrade {
+	if len(trades) == 0 {
+		return nil
+	}
+	order := []string{}
+	groups := map[string]*analysisTradeAggregate{}
+	for _, trade := range trades {
+		trade.Exchange = trading.NormalizeExchange(trade.Exchange)
+		trade.APIID = strings.TrimSpace(trade.APIID)
+		trade.InstID = strings.ToUpper(strings.TrimSpace(trade.InstID))
+		trade.OrdID = strings.TrimSpace(trade.OrdID)
+		trade.TradeID = strings.TrimSpace(trade.TradeID)
+		trade.Side = strings.TrimSpace(trade.Side)
+		if trade.InstID == "" || trade.FillTS <= 0 {
+			continue
+		}
+		if trade.FillCount <= 0 {
+			trade.FillCount = 1
+		}
+		key := analysisTradeGroupKey(trade)
+		group := groups[key]
+		if group == nil {
+			group = &analysisTradeAggregate{trade: trade}
+			group.trade.FillCount = 0
+			groups[key] = group
+			order = append(order, key)
+		} else {
+			mergeAnalysisTradeText(&group.trade, trade)
+		}
+		group.trade.FillCount += trade.FillCount
+		size, sizeOK := parsePositiveFloat(trade.FillSz)
+		price, priceOK := parsePositiveFloat(trade.FillPx)
+		if sizeOK {
+			group.totalSize += size
+			if priceOK {
+				group.totalQuote += price * size
+			}
+		}
+		if pnl, ok := parseAnyFloat(trade.FillPnl); ok {
+			group.totalPnl += pnl
+			group.pnlParsed = true
+		}
+		if fee, ok := parseAnyFloat(trade.Fee); ok {
+			group.totalFee += fee
+			group.feeParsed = true
+		}
+		if trade.FillTS > group.trade.FillTS {
+			group.trade.FillTS = trade.FillTS
+			group.trade.FillTime = trade.FillTime
+			group.trade.TradeID = trade.TradeID
+		}
+	}
+	out := make([]analysisTrade, 0, len(groups))
+	for _, key := range order {
+		group := groups[key]
+		if group == nil {
+			continue
+		}
+		trade := group.trade
+		if trade.FillCount <= 0 {
+			trade.FillCount = 1
+		}
+		if group.totalSize > 0 {
+			trade.FillSz = trading.NormalizeFloat(group.totalSize)
+			if group.totalQuote > 0 {
+				trade.FillPx = trading.NormalizeFloat(group.totalQuote / group.totalSize)
+			}
+		}
+		if group.pnlParsed {
+			trade.FillPnl = trading.NormalizeFloat(group.totalPnl)
+		}
+		if group.feeParsed {
+			trade.Fee = trading.NormalizeFloat(group.totalFee)
+		}
+		out = append(out, trade)
+	}
+	return out
+}
+
+func analysisTradeGroupKey(trade analysisTrade) string {
+	orderID := strings.TrimSpace(trade.OrdID)
+	if orderID == "" {
+		orderID = "trade:" + strings.TrimSpace(trade.TradeID)
+	}
+	return trading.NormalizeExchange(trade.Exchange) + "|" +
+		strings.TrimSpace(trade.APIID) + "|" +
+		strings.ToUpper(strings.TrimSpace(trade.InstID)) + "|" +
+		strings.ToLower(strings.TrimSpace(trade.Side)) + "|" +
+		orderID
+}
+
+func mergeAnalysisTradeText(dst *analysisTrade, src analysisTrade) {
+	if dst.OrdID == "" {
+		dst.OrdID = src.OrdID
+	}
+	if dst.Side == "" {
+		dst.Side = src.Side
+	}
+	if dst.FillPx == "" {
+		dst.FillPx = src.FillPx
+	}
+	if dst.FillSz == "" {
+		dst.FillSz = src.FillSz
+	}
+	if dst.FillPnl == "" {
+		dst.FillPnl = src.FillPnl
+	}
+	if dst.Fee == "" {
+		dst.Fee = src.Fee
+	}
+	if dst.FeeCcy == "" {
+		dst.FeeCcy = src.FeeCcy
+	} else if src.FeeCcy != "" && !strings.EqualFold(dst.FeeCcy, src.FeeCcy) {
+		dst.FeeCcy = ""
+	}
+}
+
+func parseAnyFloat(v string) (float64, bool) {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	return parsed, err == nil
+}
+
+func parsePositiveFloat(v string) (float64, bool) {
+	parsed, ok := parseAnyFloat(v)
+	return parsed, ok && parsed > 0
 }
 
 func (s *Server) analysisFromStore(apiID, binanceAPIID, envName string, priceDays, pnlDays int, now time.Time, source analysisSourceStatus, binanceTrades []analysisTrade) (analysisResponse, error) {
@@ -933,8 +1074,9 @@ func (s *Server) analysisFromStore(apiID, binanceAPIID, envName string, priceDay
 		}
 	}
 	trades = append(trades, binanceTrades...)
+	trades = aggregateAnalysisTrades(trades)
 	sortAnalysisTrades(trades)
-	summary, symbols := computeStats(trades)
+	summary, exchangeSummaries, symbols := computeStats(trades)
 	return analysisResponse{
 		OK:           true,
 		APIID:        apiID,
@@ -950,12 +1092,13 @@ func (s *Server) analysisFromStore(apiID, binanceAPIID, envName string, priceDay
 			Stale:    false,
 			CacheKey: analysisCacheKey(apiID, binanceAPIID, envName, priceDays, pnlDays),
 		},
-		Source:        source,
-		PricePoints:   points,
-		BalancePoints: balancePoints,
-		Summary:       summary,
-		Symbols:       symbols,
-		Trades:        trades,
+		Source:            source,
+		PricePoints:       points,
+		BalancePoints:     balancePoints,
+		Summary:           summary,
+		ExchangeSummaries: exchangeSummaries,
+		Symbols:           symbols,
+		Trades:            trades,
 	}, nil
 }
 
@@ -1126,8 +1269,9 @@ func snapshotValue(snapshot storage.USDTBalanceSnapshot) float64 {
 	return 0
 }
 
-func computeStats(fills []analysisTrade) (analysisSymbolStats, []analysisSymbolStats) {
+func computeStats(fills []analysisTrade) (analysisSymbolStats, []analysisSymbolStats, []analysisSymbolStats) {
 	bySymbol := map[string]*analysisSymbolStats{}
+	byExchange := map[string]*analysisSymbolStats{}
 	summary := analysisSymbolStats{InstID: "ALL"}
 	for _, fill := range fills {
 		exchange := trading.NormalizeExchange(fill.Exchange)
@@ -1141,6 +1285,11 @@ func computeStats(fills []analysisTrade) (analysisSymbolStats, []analysisSymbolS
 			stats = &analysisSymbolStats{Exchange: exchange, InstID: instID}
 			bySymbol[key] = stats
 		}
+		exchangeStats := byExchange[exchange]
+		if exchangeStats == nil {
+			exchangeStats = &analysisSymbolStats{Exchange: exchange, InstID: "ALL"}
+			byExchange[exchange] = exchangeStats
+		}
 		net := parseFloat(fill.FillPnl)
 		fee := 0.0
 		if strings.EqualFold(fill.FeeCcy, "USDT") || fill.FeeCcy == "" {
@@ -1148,6 +1297,7 @@ func computeStats(fills []analysisTrade) (analysisSymbolStats, []analysisSymbolS
 			net += fee
 		}
 		applyFillStats(stats, net, fee)
+		applyFillStats(exchangeStats, net, fee)
 		applyFillStats(&summary, net, fee)
 	}
 	symbols := make([]analysisSymbolStats, 0, len(bySymbol))
@@ -1155,9 +1305,15 @@ func computeStats(fills []analysisTrade) (analysisSymbolStats, []analysisSymbolS
 		finalizeStats(stats)
 		symbols = append(symbols, *stats)
 	}
+	exchangeSummaries := make([]analysisSymbolStats, 0, len(byExchange))
+	for _, stats := range byExchange {
+		finalizeStats(stats)
+		exchangeSummaries = append(exchangeSummaries, *stats)
+	}
 	finalizeStats(&summary)
 	sortSymbolStats(symbols)
-	return summary, symbols
+	sortExchangeSummaries(exchangeSummaries)
+	return summary, exchangeSummaries, symbols
 }
 
 func applyFillStats(stats *analysisSymbolStats, net, fee float64) {
@@ -1201,6 +1357,21 @@ func sortSymbolStats(symbols []analysisSymbolStats) {
 			}
 		}
 	}
+}
+
+func sortExchangeSummaries(summaries []analysisSymbolStats) {
+	order := map[string]int{trading.ExchangeOKX: 0, trading.ExchangeBinance: 1}
+	sort.SliceStable(summaries, func(i, j int) bool {
+		left, leftOK := order[summaries[i].Exchange]
+		right, rightOK := order[summaries[j].Exchange]
+		if leftOK && rightOK {
+			return left < right
+		}
+		if leftOK != rightOK {
+			return leftOK
+		}
+		return summaries[i].Exchange < summaries[j].Exchange
+	})
 }
 
 func sortAnalysisTrades(trades []analysisTrade) {

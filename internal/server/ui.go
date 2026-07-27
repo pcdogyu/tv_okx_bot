@@ -703,6 +703,21 @@ const tvbotHTML = `<!doctype html>
     .analysis-trade-table {
       min-width: 1280px;
     }
+    .analysis-subsection {
+      border-top: 1px solid var(--line);
+      margin-top: 16px;
+      padding-top: 12px;
+    }
+    .analysis-exchange-block + .analysis-exchange-block {
+      margin-top: 14px;
+    }
+    .analysis-pagination {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
     .positions-table {
       min-width: 1360px;
     }
@@ -1050,34 +1065,67 @@ const tvbotHTML = `<!doctype html>
           <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT valuation chart"></svg>
         </div>
       </div>
-      <div class="analysis-metrics">
-        <div class="analysis-card"><div class="label">净盈亏</div><div class="value" id="analysis-net-pnl">-</div></div>
-        <div class="analysis-card"><div class="label">胜率</div><div class="value" id="analysis-win-rate">-</div></div>
-        <div class="analysis-card"><div class="label">盈利因子</div><div class="value" id="analysis-profit-factor">-</div></div>
-        <div class="analysis-card"><div class="label">盈亏比</div><div class="value" id="analysis-payoff-ratio">-</div></div>
-        <div class="analysis-card"><div class="label">成交数</div><div class="value" id="analysis-trades">-</div></div>
+      <div class="analysis-subsection" id="analysis-symbol-section">
+        <div class="analysis-exchange-block">
+          <div class="section-head" style="margin-top:0">
+            <h3>OKX 币对盈亏比分析</h3>
+            <span class="muted" id="analysis-okx-symbol-status">-</span>
+          </div>
+          <div class="analysis-metrics">
+            <div class="analysis-card"><div class="label">净盈亏</div><div class="value" id="analysis-okx-net-pnl">-</div></div>
+            <div class="analysis-card"><div class="label">胜率</div><div class="value" id="analysis-okx-win-rate">-</div></div>
+            <div class="analysis-card"><div class="label">盈利因子</div><div class="value" id="analysis-okx-profit-factor">-</div></div>
+            <div class="analysis-card"><div class="label">盈亏比</div><div class="value" id="analysis-okx-payoff-ratio">-</div></div>
+            <div class="analysis-card"><div class="label">成交数</div><div class="value" id="analysis-okx-trades">-</div></div>
+          </div>
+          <div class="analysis-table-wrap">
+            <table class="analysis-symbol-table">
+              <thead>
+                <tr><th>币对</th><th>成交数</th><th>盈利数</th><th>亏损数</th><th>净盈亏</th><th>手续费</th><th>胜率</th><th>盈利因子</th><th>盈亏比</th></tr>
+              </thead>
+              <tbody id="analysis-okx-rows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="analysis-exchange-block">
+          <div class="section-head">
+            <h3>Binance 币对盈亏比分析</h3>
+            <span class="muted" id="analysis-binance-symbol-status">-</span>
+          </div>
+          <div class="analysis-metrics">
+            <div class="analysis-card"><div class="label">净盈亏</div><div class="value" id="analysis-binance-net-pnl">-</div></div>
+            <div class="analysis-card"><div class="label">胜率</div><div class="value" id="analysis-binance-win-rate">-</div></div>
+            <div class="analysis-card"><div class="label">盈利因子</div><div class="value" id="analysis-binance-profit-factor">-</div></div>
+            <div class="analysis-card"><div class="label">盈亏比</div><div class="value" id="analysis-binance-payoff-ratio">-</div></div>
+            <div class="analysis-card"><div class="label">成交数</div><div class="value" id="analysis-binance-trades">-</div></div>
+          </div>
+          <div class="analysis-table-wrap">
+            <table class="analysis-symbol-table">
+              <thead>
+                <tr><th>币对</th><th>成交数</th><th>盈利数</th><th>亏损数</th><th>净盈亏</th><th>手续费</th><th>胜率</th><th>盈利因子</th><th>盈亏比</th></tr>
+              </thead>
+              <tbody id="analysis-binance-rows"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
-      <div class="section-head" style="margin-top:10px">
-        <h3>币对分析</h3>
-      </div>
-      <div class="analysis-table-wrap">
-        <table class="analysis-symbol-table">
-          <thead>
-            <tr><th>交易所</th><th>币对</th><th>成交数</th><th>盈利数</th><th>亏损数</th><th>净盈亏</th><th>手续费</th><th>胜率</th><th>盈利因子</th><th>盈亏比</th></tr>
-          </thead>
-          <tbody id="analysis-rows"></tbody>
-        </table>
-      </div>
-      <div class="section-head" style="margin-top:14px">
-        <h3>成交历史</h3>
-      </div>
-      <div class="analysis-table-wrap">
-        <table class="analysis-trade-table">
-          <thead>
-            <tr><th>交易所</th><th>成交时间</th><th>币对</th><th>方向</th><th>成交价</th><th>成交量</th><th>已实现盈亏</th><th>手续费</th><th>订单 ID</th><th>成交 ID</th></tr>
-          </thead>
-          <tbody id="analysis-trade-rows"></tbody>
-        </table>
+      <div class="analysis-subsection" id="analysis-trade-history-section">
+        <div class="section-head" style="margin-top:0">
+          <h3>成交历史</h3>
+          <div class="analysis-pagination">
+            <span class="muted" id="analysis-trade-page-info">-</span>
+            <button class="btn small" type="button" id="analysis-trade-prev">上一页</button>
+            <button class="btn small" type="button" id="analysis-trade-next">下一页</button>
+          </div>
+        </div>
+        <div class="analysis-table-wrap">
+          <table class="analysis-trade-table">
+            <thead>
+              <tr><th>交易所</th><th>成交时间</th><th>币对</th><th>方向</th><th>成交价</th><th>成交量</th><th>已实现盈亏</th><th>手续费</th><th>订单 ID</th><th>成交 ID</th></tr>
+            </thead>
+            <tbody id="analysis-trade-rows"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
@@ -1281,6 +1329,7 @@ const tvbotHTML = `<!doctype html>
       pendingOrderActions: {},
       analysis: null,
       analysisError: "",
+      analysisTradePage: 1,
       balanceOverview: null,
       balanceOverviewError: "",
       balanceWindowMinutes: 60,
@@ -1295,6 +1344,7 @@ const tvbotHTML = `<!doctype html>
     let positionViewPollTimer = null;
     let positionViewPollBusy = false;
     let menuSettingsSynced = false;
+    const analysisTradePageSize = 20;
     const defaultMenuItems = [
       { tab: "dashboard", label: "总览" },
       { tab: "positions", label: "持仓" },
@@ -1897,9 +1947,11 @@ const tvbotHTML = `<!doctype html>
       try {
         state.analysis = await api("/tvbot/analysis?" + qs.toString());
         state.analysisError = "";
+        state.analysisTradePage = 1;
       } catch (err) {
         state.analysis = null;
         state.analysisError = err.message;
+        state.analysisTradePage = 1;
       }
       renderAnalysis();
     }
@@ -2638,29 +2690,44 @@ const tvbotHTML = `<!doctype html>
       if (!state.analysis) {
         $("analysis-updated").textContent = state.analysisError || "-";
         renderAnalysisExchangeBalances();
-        $("analysis-net-pnl").textContent = "-";
-        $("analysis-win-rate").textContent = "-";
-        $("analysis-profit-factor").textContent = "-";
-        $("analysis-payoff-ratio").textContent = "-";
-        $("analysis-trades").textContent = "-";
-        $("analysis-rows").innerHTML = '<tr><td colspan="10" class="muted">' + escapeHTML(state.analysisError || "-") + '</td></tr>';
-        $("analysis-trade-rows").innerHTML = '<tr><td colspan="10" class="muted">' + escapeHTML(state.analysisError || "-") + '</td></tr>';
+        renderAnalysisExchangeStats("okx", state.analysisError || "-");
+        renderAnalysisExchangeStats("binance", state.analysisError || "-");
+        renderAnalysisTradeHistory(state.analysisError || "-");
         return;
       }
-      const summary = state.analysis.summary || {};
       renderAnalysisExchangeBalances();
       const okxAPI = asText(state.analysis.api_id);
       const binanceAPI = asText(state.analysis.binance_api_id);
       const apiText = binanceAPI === "-" ? "OKX " + okxAPI : "OKX " + okxAPI + " / Binance " + binanceAPI;
       $("analysis-updated").textContent = "订单统计 " + shanghaiTime(state.analysis.refreshed_at) + " / API " + apiText;
-      $("analysis-net-pnl").textContent = formatNumber(summary.net_pnl) + " USDT";
-      $("analysis-win-rate").textContent = formatPct(summary.win_rate);
-      $("analysis-profit-factor").textContent = formatFactor(summary);
-      $("analysis-payoff-ratio").textContent = formatNumber(summary.payoff_ratio);
-      $("analysis-trades").textContent = asText(summary.trade_count);
-      const rows = (state.analysis.symbols || []).map((row) => {
+      renderAnalysisExchangeStats("okx", "");
+      renderAnalysisExchangeStats("binance", "");
+      renderAnalysisTradeHistory("");
+    }
+
+    function renderAnalysisExchangeStats(exchange, errorText) {
+      const normalized = normalizeExchange(exchange);
+      const prefix = normalized === "binance" ? "analysis-binance" : "analysis-okx";
+      if (errorText) {
+        $(prefix + "-net-pnl").textContent = "-";
+        $(prefix + "-win-rate").textContent = "-";
+        $(prefix + "-profit-factor").textContent = "-";
+        $(prefix + "-payoff-ratio").textContent = "-";
+        $(prefix + "-trades").textContent = "-";
+        $(prefix + "-symbol-status").textContent = errorText;
+        $(prefix + "-rows").innerHTML = '<tr><td colspan="9" class="muted">' + escapeHTML(errorText) + '</td></tr>';
+        return;
+      }
+      const symbols = (state.analysis && Array.isArray(state.analysis.symbols) ? state.analysis.symbols : []).filter((row) => normalizeExchange(row.exchange) === normalized);
+      const summary = analysisExchangeSummary(normalized);
+      $(prefix + "-net-pnl").textContent = formatNumber(summary.net_pnl) + " USDT";
+      $(prefix + "-win-rate").textContent = formatPct(summary.win_rate);
+      $(prefix + "-profit-factor").textContent = formatFactor(summary);
+      $(prefix + "-payoff-ratio").textContent = formatNumber(summary.payoff_ratio);
+      $(prefix + "-trades").textContent = asText(summary.trade_count || 0);
+      $(prefix + "-symbol-status").textContent = "成交数 " + asText(summary.trade_count || 0) + " / 币对 " + symbols.length;
+      const rows = symbols.map((row) => {
         return "<tr>" +
-          "<td>" + escapeHTML(exchangeLabel(row.exchange)) + "</td>" +
           "<td>" + escapeHTML(asText(row.inst_id)) + "</td>" +
           "<td>" + escapeHTML(asText(row.trade_count)) + "</td>" +
           "<td>" + escapeHTML(asText(row.wins)) + "</td>" +
@@ -2672,8 +2739,34 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(formatNumber(row.payoff_ratio)) + "</td>" +
           "</tr>";
       });
-      $("analysis-rows").innerHTML = rows.join("") || '<tr><td colspan="10" class="muted">暂无成交统计</td></tr>';
-      const tradeRows = (state.analysis.trades || []).map((row) => {
+      $(prefix + "-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">暂无 ' + escapeHTML(exchangeLabel(normalized)) + ' 成交统计</td></tr>';
+    }
+
+    function analysisExchangeSummary(exchange) {
+      const summaries = state.analysis && Array.isArray(state.analysis.exchange_summaries) ? state.analysis.exchange_summaries : [];
+      const found = summaries.find((row) => normalizeExchange(row.exchange) === normalizeExchange(exchange));
+      return found || { exchange: normalizeExchange(exchange), trade_count: 0, wins: 0, losses: 0, net_pnl: 0, fees: 0, win_rate: 0, profit_factor: 0, payoff_ratio: 0 };
+    }
+
+    function renderAnalysisTradeHistory(errorText) {
+      if (errorText) {
+        $("analysis-trade-page-info").textContent = "-";
+        $("analysis-trade-prev").disabled = true;
+        $("analysis-trade-next").disabled = true;
+        $("analysis-trade-rows").innerHTML = '<tr><td colspan="10" class="muted">' + escapeHTML(errorText) + '</td></tr>';
+        return;
+      }
+      const trades = state.analysis && Array.isArray(state.analysis.trades) ? state.analysis.trades : [];
+      const total = trades.length;
+      const totalPages = Math.max(1, Math.ceil(total / analysisTradePageSize));
+      const currentPage = Math.min(totalPages, Math.max(1, Math.floor(Number(state.analysisTradePage || 1))));
+      state.analysisTradePage = currentPage;
+      const start = total ? (currentPage - 1) * analysisTradePageSize : 0;
+      const end = total ? Math.min(total, start + analysisTradePageSize) : 0;
+      $("analysis-trade-page-info").textContent = total ? ((start + 1) + "-" + end + " / " + total) : "0 / 0";
+      $("analysis-trade-prev").disabled = currentPage <= 1 || total === 0;
+      $("analysis-trade-next").disabled = currentPage >= totalPages || total === 0;
+      const tradeRows = trades.slice(start, end).map((row) => {
         const feeText = formatNumber(row.fee) + (row.fee_ccy ? " " + row.fee_ccy : "");
         return "<tr>" +
           "<td>" + escapeHTML(exchangeLabel(row.exchange)) + "</td>" +
@@ -2685,10 +2778,17 @@ const tvbotHTML = `<!doctype html>
           signedCell(row.fill_pnl, formatNumber(row.fill_pnl)) +
           signedCell(row.fee, feeText) +
           "<td>" + escapeHTML(asText(row.ord_id)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.trade_id)) + "</td>" +
+          "<td>" + escapeHTML(analysisTradeIDText(row)) + "</td>" +
           "</tr>";
       });
       $("analysis-trade-rows").innerHTML = tradeRows.join("") || '<tr><td colspan="10" class="muted">暂无成交历史</td></tr>';
+    }
+
+    function analysisTradeIDText(row) {
+      const text = asText(row ? row.trade_id : "");
+      const fillCount = Number(row && row.fill_count ? row.fill_count : 0);
+      if (fillCount > 1) return text + " +" + (fillCount - 1);
+      return text;
     }
 
     function renderAnalysisExchangeBalances() {
@@ -3284,6 +3384,14 @@ const tvbotHTML = `<!doctype html>
     $("sync-balance-history").addEventListener("click", () => syncBalanceHistory($("sync-balance-history")).catch((err) => toast(err.message)));
     $("analysis-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
     $("refresh-analysis").addEventListener("click", () => loadAnalysis(true).then(() => toast("分析已刷新")).catch((err) => toast(err.message)));
+    $("analysis-trade-prev").addEventListener("click", () => {
+      state.analysisTradePage = Math.max(1, Number(state.analysisTradePage || 1) - 1);
+      renderAnalysisTradeHistory("");
+    });
+    $("analysis-trade-next").addEventListener("click", () => {
+      state.analysisTradePage = Number(state.analysisTradePage || 1) + 1;
+      renderAnalysisTradeHistory("");
+    });
     $("refresh-positions").addEventListener("click", () => loadPositionView().then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
     $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
