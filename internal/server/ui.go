@@ -719,7 +719,7 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: wrap;
     }
     .positions-table {
-      min-width: 1360px;
+      min-width: 1560px;
     }
     .positions-table th,
     .positions-table td {
@@ -730,7 +730,6 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-symbol-col { width: 8.5%; }
     .positions-table .pos-side-col { width: 6%; }
     .positions-table .pos-size-col { width: 7%; }
-    .positions-table .pos-available-col { width: 6%; }
     .positions-table .pos-price-col { width: 6.5%; }
     .positions-table .pos-margin-col { width: 6.8%; }
     .positions-table .pos-leverage-col { width: 4.5%; }
@@ -739,7 +738,7 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-rate-col { width: 6%; }
     .positions-table .pos-entry-time-col { width: 8%; }
     .positions-table .pos-holding-time-col { width: 6.5%; }
-    .positions-table .pos-actions-col { width: 12%; }
+    .positions-table .pos-actions-col { width: 22%; }
     .pending-order-table {
       min-width: 1280px;
     }
@@ -939,7 +938,6 @@ const tvbotHTML = `<!doctype html>
             <col class="pos-symbol-col">
             <col class="pos-side-col">
             <col class="pos-size-col">
-            <col class="pos-available-col">
             <col class="pos-price-col">
             <col class="pos-margin-col">
             <col class="pos-leverage-col">
@@ -952,7 +950,7 @@ const tvbotHTML = `<!doctype html>
             <col class="pos-actions-col">
           </colgroup>
           <thead>
-            <tr><th>交易所</th><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>保证金</th><th>杠杆</th><th>仓位金额</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>下单时间</th><th>持仓时间</th><th>操作</th></tr>
+            <tr><th>交易所</th><th>币对</th><th>方向</th><th>持仓量</th><th>均价</th><th>保证金</th><th>杠杆</th><th>仓位金额</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>下单时间</th><th>持仓时间</th><th>操作</th></tr>
           </thead>
           <tbody id="position-rows"></tbody>
         </table>
@@ -1333,7 +1331,7 @@ const tvbotHTML = `<!doctype html>
       symbolPrecisions: {},
       balanceOverview: null,
       balanceOverviewError: "",
-      balanceWindowMinutes: 60,
+      balanceWindowMinutes: 720,
       positions: null,
       positionsError: "",
       pendingOrders: null,
@@ -2646,13 +2644,10 @@ const tvbotHTML = `<!doctype html>
     }
 
     function positionReturnRatio(row) {
-      const rawRatio = positionNumber(row ? row.uplRatio : null);
-      const lever = positionNumber(row ? row.lever : null);
-      if (rawRatio !== null && lever !== null && lever !== 0) return rawRatio * lever;
       const upl = positionNumber(row ? row.upl : null);
       const margin = positionNumber(row ? row.margin : null);
       if (upl !== null && margin !== null && margin !== 0) return upl / Math.abs(margin);
-      return rawRatio;
+      return positionNumber(row ? row.uplRatio : null);
     }
 
     function positionReturnPercent(row) {
@@ -2716,9 +2711,17 @@ const tvbotHTML = `<!doctype html>
       const instID = escapeHTML(asText(row.instId));
       const posSide = escapeHTML(String(row.posSide || ""));
       const apiID = escapeHTML(row._api_id || "");
+      const baseAttrs = ' data-exchange="' + exchange + '" data-api-id="' + apiID + '" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"';
+      const percentButtons = [
+        { label: "平10%", ratio: "0.1" },
+        { label: "平25%", ratio: "0.25" },
+        { label: "平50%", ratio: "0.5" },
+        { label: "平75%", ratio: "0.75" }
+      ].map((item) => '<button class="btn small" type="button" data-position-close="limit" data-position-ratio="' + item.ratio + '"' + baseAttrs + ' title="限价平仓 ' + item.label.slice(1) + '，60秒后市价兜底"' + (closing ? " disabled" : "") + '>' + item.label + '</button>').join("");
       return '<td><div class="position-actions">' +
-        '<button class="btn small danger" type="button" data-position-close="market" data-exchange="' + exchange + '" data-api-id="' + apiID + '" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"' + (closing ? " disabled" : "") + '>市价平仓</button>' +
-        '<button class="btn small" type="button" data-position-close="limit" data-exchange="' + exchange + '" data-api-id="' + apiID + '" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"' + (closing ? " disabled" : "") + '>限价平仓</button>' +
+        percentButtons +
+        '<button class="btn small danger" type="button" data-position-close="market"' + baseAttrs + (closing ? " disabled" : "") + '>市价平仓</button>' +
+        '<button class="btn small" type="button" data-position-close="limit"' + baseAttrs + (closing ? " disabled" : "") + '>限价平仓</button>' +
         '</div></td>';
     }
 
@@ -2753,7 +2756,7 @@ const tvbotHTML = `<!doctype html>
       $("positions-notional").textContent = positionsReady ? formatUSD(positionSum(rows, "notionalUsd")) : "-";
       $("positions-updated").textContent = state.positions ? combinedStatusText(state.positions) : "-";
       if (!state.positions) {
-        $("position-rows").innerHTML = '<tr><td colspan="15" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
+        $("position-rows").innerHTML = '<tr><td colspan="14" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
         return;
       }
       const positionRows = rows.map((row) => {
@@ -2763,7 +2766,6 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
           positionSideCell(row) +
           "<td>" + escapeHTML(formatQuantityAmount(row, row.pos)) + "</td>" +
-          "<td>" + escapeHTML(formatQuantityAmount(row, row.availPos)) + "</td>" +
           "<td>" + escapeHTML(formatPriceAmount(row, row.avgPx)) + "</td>" +
           "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
           "<td>" + escapeHTML(asText(row.lever)) + "</td>" +
@@ -2776,8 +2778,8 @@ const tvbotHTML = `<!doctype html>
           positionActionCell(row) +
           "</tr>";
       }).join("");
-      const warningRow = state.positionsError ? '<tr><td colspan="15" class="muted">' + escapeHTML(state.positionsError) + '</td></tr>' : "";
-      $("position-rows").innerHTML = positionRows + warningRow || '<tr><td colspan="15" class="muted">暂无当前持仓</td></tr>';
+      const warningRow = state.positionsError ? '<tr><td colspan="14" class="muted">' + escapeHTML(state.positionsError) + '</td></tr>' : "";
+      $("position-rows").innerHTML = positionRows + warningRow || '<tr><td colspan="14" class="muted">暂无当前持仓</td></tr>';
     }
 
     function renderPendingOrders() {
@@ -3244,24 +3246,28 @@ const tvbotHTML = `<!doctype html>
       const instID = button.dataset.instId || "";
       const posSide = button.dataset.posSide || "";
       const apiID = button.dataset.apiId || "";
+      const ratio = Number(button.dataset.positionRatio || "0");
       const key = [exchange, apiID, instID.toUpperCase(), (posSide || "net").toLowerCase()].join("|");
       if (!instID || !mode || state.positionClosing[key]) return;
       state.positionClosing[key] = true;
       renderPositions();
       try {
+        const body = {
+          exchange,
+          api_id: apiID,
+          inst_id: instID,
+          pos_side: posSide,
+          mode
+        };
+        if (Number.isFinite(ratio) && ratio > 0 && ratio < 1) body.ratio = ratio;
         const result = await api("/tvbot/positions/close", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            exchange,
-            api_id: apiID,
-            inst_id: instID,
-            pos_side: posSide,
-            mode
-          })
+          body: JSON.stringify(body)
         });
-        const limitCloseText = exchange === "okx" ? "限价平仓已启动 " : "限价平仓已提交 ";
-        toast(mode === "market" ? "市价平仓已提交" : limitCloseText + asText(result.px));
+        const limitCloseText = "限价平仓已启动 ";
+        const ratioText = body.ratio ? " " + Math.round(body.ratio * 100) + "%" : "";
+        toast(mode === "market" ? "市价平仓已提交" + ratioText : limitCloseText + asText(result.px) + ratioText);
         await loadPositionView();
         window.setTimeout(() => loadPositionView().catch((err) => toast(err.message)), mode === "market" ? 1600 : 5200);
       } finally {

@@ -25,7 +25,7 @@ var (
 	errPositionNotOpen             = errors.New("position is not open")
 	errPendingOrderNoRemaining     = errors.New("pending order has no remaining size")
 	positionClosePollInterval      = 5 * time.Second
-	positionCloseLimitTimeout      = 300 * time.Second
+	positionCloseLimitTimeout      = 60 * time.Second
 	lowMarginPositionCheckInterval = time.Minute
 	lowMarginPositionThresholdUSDT = 10.0
 	positionCloseJobs              = newPositionCloseRegistry()
@@ -113,11 +113,12 @@ type symbolDisplayPrecision struct {
 }
 
 type positionCloseRequest struct {
-	Exchange string `json:"exchange"`
-	APIID    string `json:"api_id"`
-	InstID   string `json:"inst_id"`
-	PosSide  string `json:"pos_side"`
-	Mode     string `json:"mode"`
+	Exchange string  `json:"exchange"`
+	APIID    string  `json:"api_id"`
+	InstID   string  `json:"inst_id"`
+	PosSide  string  `json:"pos_side"`
+	Mode     string  `json:"mode"`
+	Ratio    float64 `json:"ratio,omitempty"`
 }
 
 type pendingOrderChaseRequest struct {
@@ -147,6 +148,7 @@ type positionCloseResponse struct {
 	APIID   string `json:"api_id"`
 	InstID  string `json:"inst_id"`
 	PosSide string `json:"pos_side,omitempty"`
+	Sz      string `json:"sz,omitempty"`
 	OrdID   string `json:"ord_id,omitempty"`
 	ClOrdID string `json:"cl_ord_id,omitempty"`
 	Px      string `json:"px,omitempty"`
@@ -157,6 +159,8 @@ type positionCloseOrder struct {
 	Position okx.Position
 	Ack      okx.OrderAck
 	Px       string
+	CloseSz  string
+	Partial  bool
 }
 
 type positionCloseRegistry struct {
@@ -613,7 +617,7 @@ func (s *Server) closeLowMarginPositionsForAPI(ctx context.Context, cfg config.C
 			continue
 		}
 		orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		order, started, err := s.startLimitPositionClose(orderCtx, apiID, cfg, client, position)
+		order, started, err := s.startLimitPositionClose(orderCtx, apiID, cfg, client, position, "")
 		cancel()
 		if err != nil {
 			if s.Logger != nil {
@@ -652,9 +656,14 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_position_close", "mode must be market or limit")
 		return
 	}
+	ratio, err := positionCloseRatio(req.Ratio)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_position_close", err.Error())
+		return
+	}
 	cfg := s.ConfigStore.Get()
 	if req.Exchange == trading.ExchangeBinance {
-		s.handleBinancePositionClose(w, r, cfg, req)
+		s.handleBinancePositionClose(w, r, cfg, req, ratio)
 		return
 	}
 	if s.OKXCredentials == nil {
@@ -677,9 +686,17 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "positions_failed", err.Error())
 		return
 	}
+	closeSz := ""
+	if ratio < 1 {
+		closeSz, err = okxPositionCloseSize(ctx, client, position, ratio)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "position_close_failed", err.Error())
+			return
+		}
+	}
 	switch req.Mode {
 	case "market":
-		order, err := placeMarketPositionClose(ctx, cfg, client, position)
+		order, err := placeMarketPositionClose(ctx, cfg, client, position, closeSz)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "position_close_failed", err.Error())
 			return
@@ -691,12 +708,13 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 			APIID:   apiID,
 			InstID:  order.Position.InstID,
 			PosSide: normalizePosSide(order.Position.PosSide),
+			Sz:      order.CloseSz,
 			OrdID:   order.Ack.OrdID,
 			ClOrdID: order.Ack.ClOrdID,
 			Message: "market close order submitted",
 		})
 	case "limit":
-		order, started, err := s.startLimitPositionClose(ctx, apiID, cfg, client, position)
+		order, started, err := s.startLimitPositionClose(ctx, apiID, cfg, client, position, closeSz)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "position_close_failed", err.Error())
 			return
@@ -712,6 +730,7 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 			APIID:   apiID,
 			InstID:  order.Position.InstID,
 			PosSide: normalizePosSide(order.Position.PosSide),
+			Sz:      order.CloseSz,
 			OrdID:   order.Ack.OrdID,
 			ClOrdID: order.Ack.ClOrdID,
 			Px:      order.Px,
@@ -720,7 +739,7 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Request, cfg config.Config, req positionCloseRequest) {
+func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Request, cfg config.Config, req positionCloseRequest, ratio float64) {
 	if s.BinanceCredentials == nil {
 		writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
 		return
@@ -745,7 +764,40 @@ func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadGateway, "positions_failed", err.Error())
 		return
 	}
-	order, err := placeBinancePositionClose(ctx, client, position, req.Mode)
+	closeSz := ""
+	if ratio < 1 {
+		closeSz, err = binancePositionCloseSize(ctx, client, position, ratio)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "position_close_failed", err.Error())
+			return
+		}
+	}
+	if req.Mode == "limit" {
+		order, started, err := s.startBinanceLimitPositionClose(ctx, apiID, client, position, closeSz)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "position_close_failed", err.Error())
+			return
+		}
+		if !started {
+			writeError(w, http.StatusConflict, "position_close_running", "limit close is already running for this position")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, positionCloseResponse{
+			OK:      true,
+			Status:  "running",
+			Mode:    req.Mode,
+			APIID:   apiID,
+			InstID:  order.Position.InstID,
+			PosSide: normalizePosSide(order.Position.PosSide),
+			Sz:      order.CloseSz,
+			OrdID:   order.Ack.OrdID,
+			ClOrdID: order.Ack.ClOrdID,
+			Px:      order.Px,
+			Message: "limit close order started",
+		})
+		return
+	}
+	order, err := placeBinancePositionClose(ctx, client, position, req.Mode, closeSz)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "position_close_failed", err.Error())
 		return
@@ -753,9 +805,6 @@ func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Reque
 	status := "submitted"
 	message := "market close order submitted"
 	code := http.StatusOK
-	if req.Mode == "limit" {
-		message = "limit close order submitted"
-	}
 	writeJSON(w, code, positionCloseResponse{
 		OK:      true,
 		Status:  status,
@@ -763,6 +812,7 @@ func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Reque
 		APIID:   apiID,
 		InstID:  order.Position.InstID,
 		PosSide: normalizePosSide(order.Position.PosSide),
+		Sz:      order.CloseSz,
 		OrdID:   order.Ack.OrdID,
 		ClOrdID: order.Ack.ClOrdID,
 		Px:      order.Px,
@@ -770,17 +820,31 @@ func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-func (s *Server) startLimitPositionClose(ctx context.Context, apiID string, cfg config.Config, client okx.Client, position okx.Position) (positionCloseOrder, bool, error) {
-	key := positionCloseKey(apiID, position.InstID, position.PosSide)
+func (s *Server) startLimitPositionClose(ctx context.Context, apiID string, cfg config.Config, client okx.Client, position okx.Position, closeSz string) (positionCloseOrder, bool, error) {
+	key := positionCloseKey(trading.ExchangeOKX, apiID, position.InstID, position.PosSide)
 	if !positionCloseJobs.start(key) {
 		return positionCloseOrder{}, false, nil
 	}
-	order, err := placeLimitPositionClose(ctx, cfg, client, position)
+	order, err := placeLimitPositionClose(ctx, cfg, client, position, closeSz)
 	if err != nil {
 		positionCloseJobs.done(key)
 		return positionCloseOrder{}, false, err
 	}
 	go s.watchLimitPositionClose(apiID, cfg, client, order)
+	return order, true, nil
+}
+
+func (s *Server) startBinanceLimitPositionClose(ctx context.Context, apiID string, client binance.Client, position okx.Position, closeSz string) (positionCloseOrder, bool, error) {
+	key := positionCloseKey(trading.ExchangeBinance, apiID, position.InstID, position.PosSide)
+	if !positionCloseJobs.start(key) {
+		return positionCloseOrder{}, false, nil
+	}
+	order, err := placeBinancePositionClose(ctx, client, position, "limit", closeSz)
+	if err != nil {
+		positionCloseJobs.done(key)
+		return positionCloseOrder{}, false, err
+	}
+	go s.watchBinanceLimitPositionClose(apiID, client, order)
 	return order, true, nil
 }
 
@@ -2008,6 +2072,23 @@ func currentBinancePendingOrder(ctx context.Context, client binance.Client, req 
 	return okx.PendingOrder{}, false, nil
 }
 
+func currentOKXPositionCloseOrder(ctx context.Context, client okx.Client, active positionCloseOrder) (okx.PendingOrder, bool, error) {
+	return currentPendingOrder(ctx, client, pendingOrderChaseRequest{
+		InstID:  active.Position.InstID,
+		OrdID:   strings.TrimSpace(active.Ack.OrdID),
+		ClOrdID: strings.TrimSpace(active.Ack.ClOrdID),
+	})
+}
+
+func currentBinancePositionCloseOrder(ctx context.Context, client binance.Client, active positionCloseOrder) (okx.PendingOrder, bool, error) {
+	return currentBinancePendingOrder(ctx, client, pendingOrderChaseRequest{
+		Exchange: trading.ExchangeBinance,
+		InstID:   active.Position.InstID,
+		OrdID:    strings.TrimSpace(active.Ack.OrdID),
+		ClOrdID:  strings.TrimSpace(active.Ack.ClOrdID),
+	})
+}
+
 func cancelPendingOrder(ctx context.Context, client okx.Client, order okx.PendingOrder) error {
 	if strings.TrimSpace(order.OrdID) == "" && strings.TrimSpace(order.ClOrdID) == "" {
 		return errors.New("pending order has no ord_id or cl_ord_id")
@@ -2440,8 +2521,8 @@ func currentOpenPosition(ctx context.Context, client okx.Client, instID, posSide
 	return okx.Position{}, fmt.Errorf("%w: %s %s", errPositionNotOpen, instID, posSide)
 }
 
-func placeMarketPositionClose(ctx context.Context, cfg config.Config, client okx.Client, position okx.Position) (positionCloseOrder, error) {
-	req, err := positionCloseOrderRequest(cfg, position, "market", "")
+func placeMarketPositionClose(ctx context.Context, cfg config.Config, client okx.Client, position okx.Position, closeSz string) (positionCloseOrder, error) {
+	req, partial, err := positionCloseOrderRequest(cfg, position, "market", "", closeSz)
 	if err != nil {
 		return positionCloseOrder{}, err
 	}
@@ -2449,15 +2530,15 @@ func placeMarketPositionClose(ctx context.Context, cfg config.Config, client okx
 	if err != nil {
 		return positionCloseOrder{}, err
 	}
-	return positionCloseOrder{Position: position, Ack: ack}, nil
+	return positionCloseOrder{Position: position, Ack: ack, CloseSz: req.Sz, Partial: partial}, nil
 }
 
-func placeLimitPositionClose(ctx context.Context, cfg config.Config, client okx.Client, position okx.Position) (positionCloseOrder, error) {
+func placeLimitPositionClose(ctx context.Context, cfg config.Config, client okx.Client, position okx.Position, closeSz string) (positionCloseOrder, error) {
 	px, err := limitClosePrice(ctx, client, position)
 	if err != nil {
 		return positionCloseOrder{}, err
 	}
-	req, err := positionCloseOrderRequest(cfg, position, "limit", px)
+	req, partial, err := positionCloseOrderRequest(cfg, position, "limit", px, closeSz)
 	if err != nil {
 		return positionCloseOrder{}, err
 	}
@@ -2465,7 +2546,7 @@ func placeLimitPositionClose(ctx context.Context, cfg config.Config, client okx.
 	if err != nil {
 		return positionCloseOrder{}, err
 	}
-	return positionCloseOrder{Position: position, Ack: ack, Px: px}, nil
+	return positionCloseOrder{Position: position, Ack: ack, Px: px, CloseSz: req.Sz, Partial: partial}, nil
 }
 
 func currentBinanceOpenPosition(ctx context.Context, client binance.Client, instID, posSide string) (okx.Position, error) {
@@ -2487,7 +2568,124 @@ func currentBinanceOpenPosition(ctx context.Context, client binance.Client, inst
 	return okx.Position{}, fmt.Errorf("%w: %s %s", errPositionNotOpen, instID, posSide)
 }
 
-func placeBinancePositionClose(ctx context.Context, client binance.Client, position okx.Position, mode string) (positionCloseOrder, error) {
+func okxPositionCloseSize(ctx context.Context, client okx.Client, position okx.Position, ratio float64) (string, error) {
+	inst, err := client.SwapInstrument(ctx, position.InstID)
+	if err != nil {
+		return "", err
+	}
+	return positionCloseSize(position.Pos, ratio, inst.LotSz, inst.MinSz)
+}
+
+func binancePositionCloseSize(ctx context.Context, client binance.Client, position okx.Position, ratio float64) (string, error) {
+	inst, err := client.SymbolInfo(ctx, position.InstID)
+	if err != nil {
+		return "", err
+	}
+	filters, err := inst.TradingFilters()
+	if err != nil {
+		return "", err
+	}
+	stepRaw := trading.NormalizeFloat(filters.StepSize)
+	return positionCloseSize(position.Pos, ratio, stepRaw, filters.MinQty)
+}
+
+func positionCloseRatio(raw float64) (float64, error) {
+	if raw == 0 {
+		return 1, nil
+	}
+	if math.IsNaN(raw) || math.IsInf(raw, 0) || raw <= 0 || raw > 1 {
+		return 0, fmt.Errorf("ratio must be greater than 0 and less than or equal to 1")
+	}
+	return raw, nil
+}
+
+func positionCloseSize(posRaw string, ratio float64, stepRaw, minRaw string) (string, error) {
+	ratio, err := positionCloseRatio(ratio)
+	if err != nil {
+		return "", err
+	}
+	if ratio >= 1 {
+		size := absolutePositionSize(posRaw)
+		if size == "" || size == "0" {
+			return "", errPositionNotOpen
+		}
+		return size, nil
+	}
+	position, err := positiveRatFromDecimal(posRaw)
+	if err != nil || position.Sign() <= 0 {
+		return "", fmt.Errorf("invalid position size %q", posRaw)
+	}
+	ratioRaw := trading.NormalizeFloat(ratio)
+	ratioRat, ok := new(big.Rat).SetString(ratioRaw)
+	if !ok || ratioRat.Sign() <= 0 {
+		return "", fmt.Errorf("invalid close ratio %q", ratioRaw)
+	}
+	target := new(big.Rat).Mul(position, ratioRat)
+	decimals := decimalPlacesForDisplay(strings.TrimLeft(strings.TrimSpace(posRaw), "-+")) + decimalPlacesForDisplay(ratioRaw)
+	if decimals < 0 {
+		decimals = 0
+	}
+	if strings.TrimSpace(stepRaw) != "" {
+		step, err := positiveRatFromDecimal(stepRaw)
+		if err != nil || step.Sign() <= 0 {
+			return "", fmt.Errorf("invalid close size step %q", stepRaw)
+		}
+		target = floorRatToStep(target, step)
+		decimals = decimalPlacesForDisplay(stepRaw)
+	}
+	if target.Sign() <= 0 {
+		return "", fmt.Errorf("close size is below minimum step")
+	}
+	if strings.TrimSpace(minRaw) != "" {
+		minimum, err := positiveRatFromDecimal(minRaw)
+		if err != nil || minimum.Sign() <= 0 {
+			return "", fmt.Errorf("invalid close minimum size %q", minRaw)
+		}
+		if target.Cmp(minimum) < 0 {
+			return "", fmt.Errorf("close size %s is below minimum size %s", trimDecimalZeros(target.FloatString(decimals)), strings.TrimSpace(minRaw))
+		}
+	}
+	return trimDecimalZeros(target.FloatString(decimals)), nil
+}
+
+func capCloseSizeToPosition(posRaw, sizeRaw string) string {
+	position, posErr := positiveRatFromDecimal(posRaw)
+	size, sizeErr := positiveRatFromDecimal(sizeRaw)
+	if posErr != nil || sizeErr != nil || position.Sign() <= 0 || size.Sign() <= 0 {
+		return ""
+	}
+	if size.Cmp(position) <= 0 {
+		return strings.TrimSpace(sizeRaw)
+	}
+	decimals := maxInt(decimalPlacesForDisplay(strings.TrimSpace(posRaw)), decimalPlacesForDisplay(strings.TrimSpace(sizeRaw)))
+	return trimDecimalZeros(position.FloatString(decimals))
+}
+
+func positiveRatFromDecimal(raw string) (*big.Rat, error) {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return nil, errors.New("empty decimal")
+	}
+	value, ok := new(big.Rat).SetString(text)
+	if !ok {
+		return nil, fmt.Errorf("invalid decimal %q", raw)
+	}
+	if value.Sign() < 0 {
+		value.Abs(value)
+	}
+	return value, nil
+}
+
+func floorRatToStep(value, step *big.Rat) *big.Rat {
+	if value == nil || step == nil || value.Sign() <= 0 || step.Sign() <= 0 {
+		return new(big.Rat)
+	}
+	scaled := new(big.Rat).Quo(value, step)
+	steps := new(big.Int).Quo(scaled.Num(), scaled.Denom())
+	return new(big.Rat).Mul(new(big.Rat).SetInt(steps), step)
+}
+
+func placeBinancePositionClose(ctx context.Context, client binance.Client, position okx.Position, mode, closeSz string) (positionCloseOrder, error) {
 	px := ""
 	if mode == "limit" {
 		var err error
@@ -2496,7 +2694,7 @@ func placeBinancePositionClose(ctx context.Context, client binance.Client, posit
 			return positionCloseOrder{}, err
 		}
 	}
-	req, err := binancePositionCloseOrderRequest(position, mode, px)
+	req, partial, err := binancePositionCloseOrderRequest(position, mode, px, closeSz)
 	if err != nil {
 		return positionCloseOrder{}, err
 	}
@@ -2510,18 +2708,24 @@ func placeBinancePositionClose(ctx context.Context, client binance.Client, posit
 			OrdID:   strconv.FormatInt(ack.OrderID, 10),
 			ClOrdID: ack.ClientOrderID,
 		},
-		Px: px,
+		Px:      px,
+		CloseSz: req.Quantity,
+		Partial: partial,
 	}, nil
 }
 
-func binancePositionCloseOrderRequest(position okx.Position, mode, px string) (binance.PlaceOrderRequest, error) {
+func binancePositionCloseOrderRequest(position okx.Position, mode, px, closeSz string) (binance.PlaceOrderRequest, bool, error) {
 	side, err := closeOrderSide(position)
 	if err != nil {
-		return binance.PlaceOrderRequest{}, err
+		return binance.PlaceOrderRequest{}, false, err
 	}
-	size := absolutePositionSize(position.Pos)
+	size := strings.TrimSpace(closeSz)
+	partial := size != ""
+	if size == "" {
+		size = absolutePositionSize(position.Pos)
+	}
 	if size == "" || size == "0" {
-		return binance.PlaceOrderRequest{}, errPositionNotOpen
+		return binance.PlaceOrderRequest{}, false, errPositionNotOpen
 	}
 	ordType := strings.ToUpper(strings.TrimSpace(mode))
 	if ordType == "" {
@@ -2542,7 +2746,7 @@ func binancePositionCloseOrderRequest(position okx.Position, mode, px string) (b
 	if req.PositionSide == "" || req.PositionSide == "BOTH" {
 		req.ReduceOnly = true
 	}
-	return req, nil
+	return req, partial, nil
 }
 
 func binanceClosePositionSide(posSide string) string {
@@ -2581,7 +2785,7 @@ func binanceLimitClosePrice(ctx context.Context, client binance.Client, position
 }
 
 func (s *Server) watchLimitPositionClose(apiID string, cfg config.Config, client okx.Client, active positionCloseOrder) {
-	key := positionCloseKey(apiID, active.Position.InstID, active.Position.PosSide)
+	key := positionCloseKey(trading.ExchangeOKX, apiID, active.Position.InstID, active.Position.PosSide)
 	defer positionCloseJobs.done(key)
 
 	poll := time.NewTicker(positionClosePollInterval)
@@ -2592,7 +2796,16 @@ func (s *Server) watchLimitPositionClose(apiID string, cfg config.Config, client
 	for {
 		select {
 		case <-poll.C:
-			next, closed, err := refreshLimitPositionClose(cfg, client, active)
+			var (
+				next   positionCloseOrder
+				closed bool
+				err    error
+			)
+			if active.Partial {
+				next, closed, err = refreshPartialLimitPositionClose(cfg, client, active)
+			} else {
+				next, closed, err = refreshLimitPositionClose(cfg, client, active)
+			}
 			if err != nil {
 				s.logPositionCloseError("limit position close refresh failed", err, active.Position)
 				continue
@@ -2602,7 +2815,13 @@ func (s *Server) watchLimitPositionClose(apiID string, cfg config.Config, client
 			}
 			active = next
 		case <-timeout.C:
-			if err := fallbackMarketPositionClose(cfg, client, active); err != nil {
+			var err error
+			if active.Partial {
+				err = fallbackPartialMarketPositionClose(cfg, client, active)
+			} else {
+				err = fallbackMarketPositionClose(cfg, client, active)
+			}
+			if err != nil {
 				s.logPositionCloseError("limit position close fallback failed", err, active.Position)
 			}
 			return
@@ -2635,7 +2854,58 @@ func refreshLimitPositionClose(cfg config.Config, client okx.Client, active posi
 		}
 		return active, false, err
 	}
-	next, err := placeLimitPositionClose(ctx, cfg, client, position)
+	next, err := placeLimitPositionClose(ctx, cfg, client, position, "")
+	if err != nil {
+		return active, false, err
+	}
+	return next, false, nil
+}
+
+func refreshPartialLimitPositionClose(cfg config.Config, client okx.Client, active positionCloseOrder) (positionCloseOrder, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	order, found, err := currentOKXPositionCloseOrder(ctx, client, active)
+	if err != nil {
+		return active, false, err
+	}
+	if !found {
+		return active, true, nil
+	}
+	remaining, err := pendingOrderRemainingSize(order)
+	if err != nil {
+		if errors.Is(err, errPendingOrderNoRemaining) {
+			return active, true, nil
+		}
+		return active, false, err
+	}
+	position, err := currentOpenPosition(ctx, client, active.Position.InstID, active.Position.PosSide)
+	if err != nil {
+		if errors.Is(err, errPositionNotOpen) {
+			return active, true, nil
+		}
+		return active, false, err
+	}
+	remaining = capCloseSizeToPosition(position.Pos, remaining)
+	if remaining == "" || remaining == "0" {
+		return active, true, nil
+	}
+	nextPx, err := limitClosePrice(ctx, client, position)
+	if err != nil {
+		return active, false, err
+	}
+	if nextPx == active.Px {
+		active.Position = position
+		active.CloseSz = remaining
+		return active, false, nil
+	}
+	if err := cancelPendingOrder(ctx, client, order); err != nil {
+		if _, stillOpen, checkErr := currentOKXPositionCloseOrder(ctx, client, active); checkErr == nil && !stillOpen {
+			return active, true, nil
+		}
+		return active, false, err
+	}
+	next, err := placeLimitPositionClose(ctx, cfg, client, position, remaining)
 	if err != nil {
 		return active, false, err
 	}
@@ -2658,7 +2928,164 @@ func fallbackMarketPositionClose(cfg config.Config, client okx.Client, active po
 		}
 		return err
 	}
-	_, err = placeMarketPositionClose(ctx, cfg, client, position)
+	_, err = placeMarketPositionClose(ctx, cfg, client, position, "")
+	return err
+}
+
+func fallbackPartialMarketPositionClose(cfg config.Config, client okx.Client, active positionCloseOrder) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	order, found, err := currentOKXPositionCloseOrder(ctx, client, active)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	remaining, err := pendingOrderRemainingSize(order)
+	if err != nil {
+		if errors.Is(err, errPendingOrderNoRemaining) {
+			return nil
+		}
+		return err
+	}
+	if err := cancelPendingOrder(ctx, client, order); err != nil {
+		if _, stillOpen, checkErr := currentOKXPositionCloseOrder(ctx, client, active); checkErr == nil && !stillOpen {
+			return nil
+		}
+		return err
+	}
+	position, err := currentOpenPosition(ctx, client, active.Position.InstID, active.Position.PosSide)
+	if err != nil {
+		if errors.Is(err, errPositionNotOpen) {
+			return nil
+		}
+		return err
+	}
+	remaining = capCloseSizeToPosition(position.Pos, remaining)
+	if remaining == "" || remaining == "0" {
+		return nil
+	}
+	_, err = placeMarketPositionClose(ctx, cfg, client, position, remaining)
+	return err
+}
+
+func (s *Server) watchBinanceLimitPositionClose(apiID string, client binance.Client, active positionCloseOrder) {
+	key := positionCloseKey(trading.ExchangeBinance, apiID, active.Position.InstID, active.Position.PosSide)
+	defer positionCloseJobs.done(key)
+
+	poll := time.NewTicker(positionClosePollInterval)
+	defer poll.Stop()
+	timeout := time.NewTimer(positionCloseLimitTimeout)
+	defer timeout.Stop()
+
+	for {
+		select {
+		case <-poll.C:
+			next, closed, err := refreshBinanceLimitPositionClose(client, active)
+			if err != nil {
+				s.logPositionCloseError("Binance limit position close refresh failed", err, active.Position)
+				continue
+			}
+			if closed {
+				return
+			}
+			active = next
+		case <-timeout.C:
+			if err := fallbackBinanceMarketPositionClose(client, active); err != nil {
+				s.logPositionCloseError("Binance limit position close fallback failed", err, active.Position)
+			}
+			return
+		}
+	}
+}
+
+func refreshBinanceLimitPositionClose(client binance.Client, active positionCloseOrder) (positionCloseOrder, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	order, found, err := currentBinancePositionCloseOrder(ctx, client, active)
+	if err != nil {
+		return active, false, err
+	}
+	if !found {
+		return active, true, nil
+	}
+	remaining, err := pendingOrderRemainingSize(order)
+	if err != nil {
+		if errors.Is(err, errPendingOrderNoRemaining) {
+			return active, true, nil
+		}
+		return active, false, err
+	}
+	position, err := currentBinanceOpenPosition(ctx, client, active.Position.InstID, active.Position.PosSide)
+	if err != nil {
+		if errors.Is(err, errPositionNotOpen) {
+			return active, true, nil
+		}
+		return active, false, err
+	}
+	remaining = capCloseSizeToPosition(position.Pos, remaining)
+	if remaining == "" || remaining == "0" {
+		return active, true, nil
+	}
+	nextPx, err := binanceLimitClosePrice(ctx, client, position)
+	if err != nil {
+		return active, false, err
+	}
+	if nextPx == active.Px {
+		active.Position = position
+		active.CloseSz = remaining
+		return active, false, nil
+	}
+	if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
+		if _, stillOpen, checkErr := currentBinancePositionCloseOrder(ctx, client, active); checkErr == nil && !stillOpen {
+			return active, true, nil
+		}
+		return active, false, err
+	}
+	next, err := placeBinancePositionClose(ctx, client, position, "limit", remaining)
+	if err != nil {
+		return active, false, err
+	}
+	return next, false, nil
+}
+
+func fallbackBinanceMarketPositionClose(client binance.Client, active positionCloseOrder) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	order, found, err := currentBinancePositionCloseOrder(ctx, client, active)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	remaining, err := pendingOrderRemainingSize(order)
+	if err != nil {
+		if errors.Is(err, errPendingOrderNoRemaining) {
+			return nil
+		}
+		return err
+	}
+	if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
+		if _, stillOpen, checkErr := currentBinancePositionCloseOrder(ctx, client, active); checkErr == nil && !stillOpen {
+			return nil
+		}
+		return err
+	}
+	position, err := currentBinanceOpenPosition(ctx, client, active.Position.InstID, active.Position.PosSide)
+	if err != nil {
+		if errors.Is(err, errPositionNotOpen) {
+			return nil
+		}
+		return err
+	}
+	remaining = capCloseSizeToPosition(position.Pos, remaining)
+	if remaining == "" || remaining == "0" {
+		return nil
+	}
+	_, err = placeBinancePositionClose(ctx, client, position, "market", remaining)
 	return err
 }
 
@@ -2687,14 +3114,18 @@ func cancelPositionCloseOrder(ctx context.Context, client okx.Client, active pos
 	return err
 }
 
-func positionCloseOrderRequest(cfg config.Config, position okx.Position, ordType, px string) (okx.PlaceOrderRequest, error) {
+func positionCloseOrderRequest(cfg config.Config, position okx.Position, ordType, px, closeSz string) (okx.PlaceOrderRequest, bool, error) {
 	side, err := closeOrderSide(position)
 	if err != nil {
-		return okx.PlaceOrderRequest{}, err
+		return okx.PlaceOrderRequest{}, false, err
 	}
-	size := absolutePositionSize(position.Pos)
+	size := strings.TrimSpace(closeSz)
+	partial := size != ""
+	if size == "" {
+		size = absolutePositionSize(position.Pos)
+	}
 	if size == "" || size == "0" {
-		return okx.PlaceOrderRequest{}, errPositionNotOpen
+		return okx.PlaceOrderRequest{}, false, errPositionNotOpen
 	}
 	tdMode := strings.ToLower(strings.TrimSpace(position.MgnMode))
 	if tdMode == "" {
@@ -2714,7 +3145,7 @@ func positionCloseOrderRequest(cfg config.Config, position okx.Position, ordType
 	if posSide != "" && posSide != "net" {
 		req.PosSide = posSide
 	}
-	return req, nil
+	return req, partial, nil
 }
 
 func limitClosePrice(ctx context.Context, client okx.Client, position okx.Position) (string, error) {
@@ -2849,12 +3280,12 @@ func pendingOrderChaseKey(req pendingOrderChaseRequest) string {
 	return trading.NormalizeExchange(req.Exchange) + "|" + strings.TrimSpace(req.APIID) + "|" + strings.ToUpper(strings.TrimSpace(req.InstID)) + "|" + id
 }
 
-func positionCloseKey(apiID, instID, posSide string) string {
+func positionCloseKey(exchange, apiID, instID, posSide string) string {
 	side := normalizePosSide(posSide)
 	if side == "" {
 		side = "net"
 	}
-	return strings.TrimSpace(apiID) + "|" + strings.ToUpper(strings.TrimSpace(instID)) + "|" + side
+	return trading.NormalizeExchange(exchange) + "|" + strings.TrimSpace(apiID) + "|" + strings.ToUpper(strings.TrimSpace(instID)) + "|" + side
 }
 
 func nextPositionCloseClOrdID() string {

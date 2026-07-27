@@ -165,8 +165,10 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionReturnRatio")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("formatHoldingSeconds")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionEntryTimeCell")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("rawRatio * lever")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`colspan="15"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("upl / Math.abs(margin)")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("平10%")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`data-position-ratio`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`colspan="14"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-margin-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-actions-col")) ||
@@ -195,6 +197,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions/close")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-position-close")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("<th>操作</th>")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte(`<th>可用</th>`)) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("pos-available-col")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>保证金模式</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>强平价</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>客户端 ID</th>")) ||
@@ -2471,6 +2475,81 @@ func TestTVBotPositionMarketClosePlacesReduceOnlyOrder(t *testing.T) {
 	}
 	if !resp.OK || resp.Status != "submitted" || resp.Mode != "market" || resp.OrdID != "market-1" {
 		t.Fatalf("bad market close response: %#v", resp)
+	}
+}
+
+func TestTVBotPositionLimitCloseRatioRoundsToLotSize(t *testing.T) {
+	oldPoll := positionClosePollInterval
+	oldTimeout := positionCloseLimitTimeout
+	oldJobs := positionCloseJobs
+	positionClosePollInterval = time.Hour
+	positionCloseLimitTimeout = time.Hour
+	positionCloseJobs = newPositionCloseRegistry()
+	t.Cleanup(func() {
+		positionClosePollInterval = oldPoll
+		positionCloseLimitTimeout = oldTimeout
+		positionCloseJobs = oldJobs
+	})
+
+	srv := newTestServer(t)
+	var sawOrder bool
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"cross","posId":"1","posSide":"net","pos":"2","availPos":"2","avgPx":"64000","markPx":"65000","upl":"500","uplRatio":"0.015","lever":"5","notionalUsd":"130000","margin":"26000","uTime":"1784880000000"}]}`))
+		case "/api/v5/public/instruments":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","tickSz":"0.1","lotSz":"0.2","minSz":"0.2","ctVal":"0.01","state":"live"}]}`))
+		case "/api/v5/market/ticker":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","bidPx":"99.9","askPx":"100.1","last":"100","ts":"1784880000000"}]}`))
+		case "/api/v5/trade/order":
+			sawOrder = true
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["side"] != "sell" || body["ordType"] != "limit" || body["px"] != "99.9" || body["sz"] != "0.4" || body["reduceOnly"] != true {
+				t.Fatalf("unexpected ratio close order: %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"ratio-1","clOrdId":"close-ratio","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reqBody := []byte(`{"api_id":"default","inst_id":"BTC-USDT-SWAP","pos_side":"net","mode":"limit","ratio":0.25}`)
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/positions/close", bytes.NewReader(reqBody))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("ratio limit close status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if !sawOrder {
+		t.Fatal("expected OKX ratio limit order")
+	}
+	var resp positionCloseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.Status != "running" || resp.Mode != "limit" || resp.Px != "99.9" || resp.Sz != "0.4" {
+		t.Fatalf("bad ratio limit close response: %#v", resp)
 	}
 }
 
