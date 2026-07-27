@@ -338,6 +338,92 @@ func TestTraderExecuteSignalKeepsSameDirectionPositionAndOrderAsAdd(t *testing.T
 	}
 }
 
+func TestTraderExecuteSignalSkipsLeverageWhenOKXRemoteMatches(t *testing.T) {
+	var leverageCalled bool
+	var entryReq PlaceOrderRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posSide":"net","pos":"0","availPos":"0","lever":"5"}]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			leverageCalled = true
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			if err := json.NewDecoder(r.Body).Decode(&entryReq); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"entry","ordId":"123","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leverageCalled {
+		t.Fatal("matching OKX remote leverage should not be set again")
+	}
+	if result.Leverage != 5 || entryReq.Side != "buy" {
+		t.Fatalf("bad result/order after leverage skip: result=%#v req=%#v", result, entryReq)
+	}
+}
+
+func TestTraderExecuteSignalSetsLeverageWhenOKXRemoteDiffers(t *testing.T) {
+	var leverageReq SetLeverageRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posSide":"net","pos":"0","availPos":"0","lever":"3"}]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			if err := json.NewDecoder(r.Body).Decode(&leverageReq); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"entry","ordId":"123","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: ts.Client()}
+	if _, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if leverageReq.InstID != "BTC-USDT-SWAP" || leverageReq.Lever != "5" || leverageReq.MgnMode != "isolated" {
+		t.Fatalf("bad OKX leverage setup request: %#v", leverageReq)
+	}
+}
+
 func TestTraderExecuteSignalCancelsReversePendingOrderBeforeNewDirection(t *testing.T) {
 	var paths []string
 	var canceled CancelOrderRequest

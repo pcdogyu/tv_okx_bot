@@ -20,42 +20,56 @@ const (
 
 var directionSwitchCloseSeq uint64
 
-func (t Trader) prepareDirectionSwitch(ctx context.Context, client Client, cfg trading.RuntimeConfig, action trading.Side, instID string) error {
+type directionSwitchState struct {
+	positions     []Position
+	pendingOrders []PendingOrder
+}
+
+func (t Trader) prepareDirectionSwitch(ctx context.Context, client Client, cfg trading.RuntimeConfig, action trading.Side, instID string) (directionSwitchState, error) {
+	var state directionSwitchState
 	opposite, ok := oppositeAction(action)
 	if !ok {
-		return nil
+		return state, nil
 	}
 	instID = strings.ToUpper(strings.TrimSpace(instID))
 	positions, _, err := client.Positions(ctx, "SWAP")
 	if err != nil {
-		return fmt.Errorf("okx query positions before direction switch: %w", err)
+		return state, fmt.Errorf("okx query positions before direction switch: %w", err)
 	}
+	state.positions = positions
 	pendingOrders, _, err := client.PendingOrders(ctx, "SWAP")
 	if err != nil {
-		return fmt.Errorf("okx query pending orders before direction switch: %w", err)
+		return state, fmt.Errorf("okx query pending orders before direction switch: %w", err)
 	}
+	state.pendingOrders = pendingOrders
 	oppositeOrders := okxPendingOrdersForDirection(pendingOrders, instID, opposite)
 	oppositePositions := okxPositionsForDirection(positions, instID, opposite)
 	if len(oppositeOrders) == 0 && len(oppositePositions) == 0 {
-		return nil
+		return state, nil
 	}
 	if err := t.cancelOKXPendingOrders(ctx, client, oppositeOrders); err != nil {
-		return err
+		return state, err
 	}
 	if err := t.cancelOKXAlgoOrdersForDirection(ctx, client, instID, opposite); err != nil {
-		return err
+		return state, err
 	}
 
 	positions, _, err = client.Positions(ctx, "SWAP")
 	if err != nil {
-		return fmt.Errorf("okx refresh positions after canceling reverse orders: %w", err)
+		return state, fmt.Errorf("okx refresh positions after canceling reverse orders: %w", err)
 	}
+	state.positions = positions
 	for _, position := range okxPositionsForDirection(positions, instID, opposite) {
 		if err := t.closeOKXReversePosition(ctx, client, cfg, position); err != nil {
-			return err
+			return state, err
 		}
 	}
-	return nil
+	positions, _, err = client.Positions(ctx, "SWAP")
+	if err != nil {
+		return state, fmt.Errorf("okx refresh positions after closing reverse positions: %w", err)
+	}
+	state.positions = positions
+	return state, nil
 }
 
 func (t Trader) cancelOKXPendingOrders(ctx context.Context, client Client, orders []PendingOrder) error {

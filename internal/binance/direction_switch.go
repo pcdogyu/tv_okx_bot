@@ -19,42 +19,56 @@ const (
 
 var directionSwitchCloseSeq uint64
 
-func (t Trader) prepareDirectionSwitch(ctx context.Context, client Client, action trading.Side, symbol string, filters TradingFilters) error {
+type directionSwitchState struct {
+	positions  []Position
+	openOrders []OpenOrder
+}
+
+func (t Trader) prepareDirectionSwitch(ctx context.Context, client Client, action trading.Side, symbol string, filters TradingFilters) (directionSwitchState, error) {
+	var state directionSwitchState
 	opposite, ok := oppositeAction(action)
 	if !ok {
-		return nil
+		return state, nil
 	}
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	positions, err := client.Positions(ctx, symbol)
 	if err != nil {
-		return fmt.Errorf("binance query positions before direction switch: %w", err)
+		return state, fmt.Errorf("binance query positions before direction switch: %w", err)
 	}
+	state.positions = positions
 	openOrders, err := client.OpenOrders(ctx, symbol)
 	if err != nil {
-		return fmt.Errorf("binance query open orders before direction switch: %w", err)
+		return state, fmt.Errorf("binance query open orders before direction switch: %w", err)
 	}
+	state.openOrders = openOrders
 	oppositeOrders := binanceOpenOrdersForDirection(openOrders, symbol, opposite)
 	oppositePositions := binancePositionsForDirection(positions, symbol, opposite)
 	if len(oppositeOrders) == 0 && len(oppositePositions) == 0 {
-		return nil
+		return state, nil
 	}
 	if err := t.cancelBinanceOpenOrders(ctx, client, oppositeOrders); err != nil {
-		return err
+		return state, err
 	}
 	if err := t.cancelBinanceAlgoOrdersForDirection(ctx, client, symbol, opposite); err != nil {
-		return err
+		return state, err
 	}
 
 	positions, err = client.Positions(ctx, symbol)
 	if err != nil {
-		return fmt.Errorf("binance refresh positions after canceling reverse orders: %w", err)
+		return state, fmt.Errorf("binance refresh positions after canceling reverse orders: %w", err)
 	}
+	state.positions = positions
 	for _, position := range binancePositionsForDirection(positions, symbol, opposite) {
 		if err := t.closeBinanceReversePosition(ctx, client, position, filters); err != nil {
-			return err
+			return state, err
 		}
 	}
-	return nil
+	positions, err = client.Positions(ctx, symbol)
+	if err != nil {
+		return state, fmt.Errorf("binance refresh positions after closing reverse positions: %w", err)
+	}
+	state.positions = positions
+	return state, nil
 }
 
 func (t Trader) cancelBinanceOpenOrders(ctx context.Context, client Client, orders []OpenOrder) error {

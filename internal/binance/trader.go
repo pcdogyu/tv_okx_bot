@@ -59,7 +59,8 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if err != nil {
 		return trading.OrderResult{}, err
 	}
-	if err := t.prepareDirectionSwitch(ctx, client, signal.Action, symbol, filters); err != nil {
+	switchState, err := t.prepareDirectionSwitch(ctx, client, signal.Action, symbol, filters)
+	if err != nil {
 		return trading.OrderResult{}, err
 	}
 	sizingPx := signal.Price.Value
@@ -73,6 +74,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if compareDecimal(quantity, filters.MinQty) < 0 {
 		return trading.OrderResult{}, fmt.Errorf("order size %s is below Binance minQty %s", quantity, filters.MinQty)
 	}
+	posSide := binancePositionSide(signal.Action, cfg.PositionMode())
 	marginType := binanceMarginType(cfg.MarginMode())
 	if err := client.ChangeMarginType(ctx, symbol, marginType); err != nil {
 		if shouldContinueAfterBinanceMarginSetupError(err) {
@@ -83,11 +85,11 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 			return trading.OrderResult{}, fmt.Errorf("binance change margin type %s to %s: %w", symbol, marginType, err)
 		}
 	}
-	if err := client.SetLeverage(ctx, symbol, signal.Leverage); err != nil {
+	usedLeverage, err := t.ensureLeverage(ctx, client, symbol, posSide, signal.Action, signal.Leverage, switchState)
+	if err != nil {
 		return trading.OrderResult{}, fmt.Errorf("binance set leverage %s to %dx: %w", symbol, signal.Leverage, err)
 	}
 	clOrdID := clientOrderID(signal)
-	posSide := binancePositionSide(signal.Action, cfg.PositionMode())
 	req := PlaceOrderRequest{
 		Symbol:           symbol,
 		Side:             binanceSide(signal.Action),
@@ -109,7 +111,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		OrdType:        req.Type,
 		Px:             req.Price,
 		OrdID:          strconv.FormatInt(ack.OrderID, 10),
-		Leverage:       signal.Leverage,
+		Leverage:       usedLeverage,
 	}
 	if err != nil {
 		return result, err
@@ -121,6 +123,56 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		t.Logger.Info("binance order submitted", "api_id", apiID, "symbol", symbol, "action", signal.Action, "client_order_id", clOrdID)
 	}
 	return result, nil
+}
+
+func (t Trader) ensureLeverage(ctx context.Context, client Client, symbol, posSide string, action trading.Side, desired int, state directionSwitchState) (int, error) {
+	if desired <= 0 {
+		return 0, fmt.Errorf("invalid leverage %d: must be positive", desired)
+	}
+	if binanceRemoteLeverageMatches(state.positions, symbol, posSide, action, desired) {
+		if t.Logger != nil {
+			t.Logger.Info("binance leverage already matches configured value", "symbol", symbol, "position_side", posSide, "leverage", desired)
+		}
+		return desired, nil
+	}
+	if err := client.SetLeverage(ctx, symbol, desired); err != nil {
+		return 0, err
+	}
+	return desired, nil
+}
+
+func binanceRemoteLeverageMatches(positions []Position, symbol, posSide string, action trading.Side, desired int) bool {
+	found := false
+	mismatch := false
+	for _, position := range positions {
+		if !strings.EqualFold(position.Symbol, symbol) || !binancePositionMatchesLeverageScope(position, posSide, action) {
+			continue
+		}
+		if strings.TrimSpace(position.Leverage) == "" {
+			continue
+		}
+		found = true
+		if !binanceLeverageValueMatches(position.Leverage, desired) {
+			mismatch = true
+		}
+	}
+	return found && !mismatch
+}
+
+func binancePositionMatchesLeverageScope(position Position, posSide string, action trading.Side) bool {
+	wantSide := normalizeBinancePositionSide(posSide)
+	if wantSide != "" {
+		return normalizeBinancePositionSide(position.PositionSide) == wantSide
+	}
+	if direction, ok := binancePositionDirection(position); ok {
+		return direction == action
+	}
+	return normalizeBinancePositionSide(position.PositionSide) == ""
+}
+
+func binanceLeverageValueMatches(raw string, desired int) bool {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	return err == nil && math.Abs(value-float64(desired)) < 1e-9
 }
 
 func (t Trader) placeRiskOrders(ctx context.Context, client Client, signal trading.Signal, order PlaceOrderRequest, entryPx, tickSize float64) error {

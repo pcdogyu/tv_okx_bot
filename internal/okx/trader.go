@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -46,7 +47,8 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if err != nil {
 		return trading.OrderResult{}, err
 	}
-	if err := t.prepareDirectionSwitch(ctx, client, cfg, signal.Action, sym.InstID); err != nil {
+	switchState, err := t.prepareDirectionSwitch(ctx, client, cfg, signal.Action, sym.InstID)
+	if err != nil {
 		return trading.OrderResult{}, err
 	}
 	orderSettings := cfg.OrderSettings().Normalize()
@@ -65,12 +67,12 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if cfg.PositionMode() == config.PositionLongShort {
 		posSide = string(signal.Action)
 	}
-	usedLeverage, err := t.setLeverageWithFallback(ctx, client, SetLeverageRequest{
+	usedLeverage, err := t.ensureLeverage(ctx, client, SetLeverageRequest{
 		InstID:  sym.InstID,
 		Lever:   strconv.Itoa(signal.Leverage),
 		MgnMode: cfg.MarginMode(),
 		PosSide: posSide,
-	})
+	}, switchState, signal.Action)
 	if err != nil {
 		return trading.OrderResult{}, err
 	}
@@ -110,13 +112,24 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	return result, nil
 }
 
-func (t Trader) setLeverageWithFallback(ctx context.Context, client Client, req SetLeverageRequest) (int, error) {
-	desired, err := strconv.Atoi(strings.TrimSpace(req.Lever))
-	if err != nil || desired <= 0 {
-		if err == nil {
-			err = fmt.Errorf("must be positive")
+func (t Trader) ensureLeverage(ctx context.Context, client Client, req SetLeverageRequest, state directionSwitchState, action trading.Side) (int, error) {
+	desired, err := parsePositiveLeverage(req.Lever)
+	if err != nil {
+		return 0, err
+	}
+	if okxRemoteLeverageMatches(state, req.InstID, req.PosSide, action, desired) {
+		if t.Logger != nil {
+			t.Logger.Info("okx leverage already matches configured value", "inst_id", req.InstID, "pos_side", req.PosSide, "leverage", desired)
 		}
-		return 0, fmt.Errorf("invalid leverage %q: %w", req.Lever, err)
+		return desired, nil
+	}
+	return t.setLeverageWithFallback(ctx, client, req)
+}
+
+func (t Trader) setLeverageWithFallback(ctx context.Context, client Client, req SetLeverageRequest) (int, error) {
+	desired, err := parsePositiveLeverage(req.Lever)
+	if err != nil {
+		return 0, err
 	}
 	var lastErr error
 	for lever := desired; lever >= 1; lever-- {
@@ -134,6 +147,77 @@ func (t Trader) setLeverageWithFallback(ctx context.Context, client Client, req 
 		}
 	}
 	return 0, fmt.Errorf("set leverage failed from %dx down to 1x: %w", desired, lastErr)
+}
+
+func parsePositiveLeverage(raw string) (int, error) {
+	desired, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || desired <= 0 {
+		if err == nil {
+			err = fmt.Errorf("must be positive")
+		}
+		return 0, fmt.Errorf("invalid leverage %q: %w", raw, err)
+	}
+	return desired, nil
+}
+
+func okxRemoteLeverageMatches(state directionSwitchState, instID, posSide string, action trading.Side, desired int) bool {
+	found := false
+	mismatch := false
+	for _, position := range state.positions {
+		if !strings.EqualFold(position.InstID, instID) || !okxPositionMatchesLeverageScope(position, posSide, action) {
+			continue
+		}
+		if strings.TrimSpace(position.Lever) == "" {
+			continue
+		}
+		found = true
+		if !leverageValueMatches(position.Lever, desired) {
+			mismatch = true
+		}
+	}
+	for _, order := range state.pendingOrders {
+		if !strings.EqualFold(order.InstID, instID) || !okxPendingOrderMatchesLeverageScope(order, posSide, action) {
+			continue
+		}
+		if strings.TrimSpace(order.Lever) == "" {
+			continue
+		}
+		found = true
+		if !leverageValueMatches(order.Lever, desired) {
+			mismatch = true
+		}
+	}
+	return found && !mismatch
+}
+
+func okxPositionMatchesLeverageScope(position Position, posSide string, action trading.Side) bool {
+	wantSide := normalizeOKXPosSide(posSide)
+	if wantSide != "" {
+		return normalizeOKXPosSide(position.PosSide) == wantSide
+	}
+	if direction, ok := okxPositionDirection(position); ok {
+		return direction == action
+	}
+	return normalizeOKXPosSide(position.PosSide) == ""
+}
+
+func okxPendingOrderMatchesLeverageScope(order PendingOrder, posSide string, action trading.Side) bool {
+	if rawJSONBool(order.ReduceOnly) {
+		return false
+	}
+	wantSide := normalizeOKXPosSide(posSide)
+	if wantSide != "" && normalizeOKXPosSide(order.PosSide) != wantSide {
+		return false
+	}
+	if direction, ok := okxPendingOrderDirection(order); ok {
+		return direction == action
+	}
+	return wantSide == "" || normalizeOKXPosSide(order.PosSide) == wantSide
+}
+
+func leverageValueMatches(raw string, desired int) bool {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	return err == nil && math.Abs(value-float64(desired)) < 1e-9
 }
 
 func isMaxLeverageError(err error) bool {

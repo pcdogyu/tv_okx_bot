@@ -218,6 +218,102 @@ func TestTraderKeepsSameDirectionPositionAndOrderAsAdd(t *testing.T) {
 	}
 }
 
+func TestTraderSkipsLeverageWhenBinanceRemoteMatches(t *testing.T) {
+	var leverageCalled bool
+	var orderForm url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0","leverage":"10"}]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			leverageCalled = true
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":10}`))
+		case "/fapi/v1/order":
+			orderForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"0.002","executedQty":"0","type":"MARKET","side":"BUY"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leverageCalled {
+		t.Fatal("matching Binance remote leverage should not be set again")
+	}
+	if result.Leverage != 10 || orderForm.Get("side") != "BUY" {
+		t.Fatalf("bad result/order after leverage skip: result=%#v form=%#v", result, orderForm)
+	}
+}
+
+func TestTraderSetsLeverageWhenBinanceRemoteDiffers(t *testing.T) {
+	var leverageForm url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0","leverage":"5"}]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			leverageForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":10}`))
+		case "/fapi/v1/order":
+			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"0.002","executedQty":"0","type":"MARKET","side":"BUY"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	if _, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if leverageForm.Get("symbol") != "BTCUSDT" || leverageForm.Get("leverage") != "10" {
+		t.Fatalf("bad leverage setup form: %#v", leverageForm)
+	}
+}
+
 func TestTraderCancelsReversePendingOrderBeforeNewDirection(t *testing.T) {
 	var paths []string
 	var canceledForm url.Values
