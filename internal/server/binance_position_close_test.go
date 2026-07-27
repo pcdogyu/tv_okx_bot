@@ -169,6 +169,11 @@ func TestTVBotBinanceLimitCloseRetriesAfterReduceOnlyConflict(t *testing.T) {
 				{"symbol":"AVAXUSDT","orderId":101,"clientOrderId":"entry","price":"6.5","origQty":"2","executedQty":"0","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880000000,"reduceOnly":false},
 				{"symbol":"AVAXUSDT","orderId":102,"clientOrderId":"other-side","price":"7","origQty":"1","executedQty":"0","side":"SELL","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880000000,"reduceOnly":true}
 			]`))
+		case "/fapi/v1/openAlgoOrders":
+			if r.URL.Query().Get("symbol") != "AVAXUSDT" || r.URL.Query().Get("algoType") != "CONDITIONAL" {
+				t.Fatalf("bad open algo orders query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[]`))
 		case "/fapi/v1/order":
 			if err := r.ParseForm(); err != nil {
 				t.Fatal(err)
@@ -221,6 +226,114 @@ func TestTVBotBinanceLimitCloseRetriesAfterReduceOnlyConflict(t *testing.T) {
 	}
 	retry := orderForms[1]
 	if retry.Get("symbol") != "AVAXUSDT" || retry.Get("side") != "BUY" || retry.Get("type") != "LIMIT" || retry.Get("quantity") != "15" || retry.Get("price") != "6.6285" || retry.Get("reduceOnly") != "true" {
+		t.Fatalf("bad retry close form: %#v", retry)
+	}
+}
+
+func TestTVBotBinanceLimitCloseRetriesAfterReduceOnlyAlgoConflict(t *testing.T) {
+	oldPoll := positionClosePollInterval
+	oldTimeout := positionCloseLimitTimeout
+	oldJobs := positionCloseJobs
+	positionClosePollInterval = time.Hour
+	positionCloseLimitTimeout = time.Hour
+	positionCloseJobs = newPositionCloseRegistry()
+	t.Cleanup(func() {
+		positionClosePollInterval = oldPoll
+		positionCloseLimitTimeout = oldTimeout
+		positionCloseJobs = oldJobs
+	})
+
+	srv := newTestServer(t)
+	var orderForms []url.Values
+	var cancelAlgoForms []url.Values
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/fapi/v1/exchangeInfo" && r.URL.Path != "/fapi/v1/ticker/bookTicker" && r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key for %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/fapi/v3/positionRisk":
+			if r.URL.Query().Get("symbol") != "AVAXUSDT" {
+				t.Fatalf("bad positions query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[{"symbol":"AVAXUSDT","positionSide":"BOTH","positionAmt":"-15","entryPrice":"6.816","markPrice":"6.6471","unRealizedProfit":"2.533067","isolatedMargin":"33.235645","notional":"99.706933","marginAsset":"USDT","leverage":"3","marginType":"isolated","updateTime":1784880000000}]`))
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"AVAXUSDT","status":"TRADING","pricePrecision":4,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0001"},{"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"}]}]}`))
+		case "/fapi/v1/ticker/bookTicker":
+			if r.URL.Query().Get("symbol") != "AVAXUSDT" {
+				t.Fatalf("bad book ticker query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"AVAXUSDT","bidPrice":"6.6470","bidQty":"1","askPrice":"6.6472","askQty":"1","time":1784880000000}`))
+		case "/fapi/v1/openOrders":
+			if r.URL.Query().Get("symbol") != "AVAXUSDT" {
+				t.Fatalf("bad open orders query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openAlgoOrders":
+			if r.URL.Query().Get("symbol") != "AVAXUSDT" || r.URL.Query().Get("algoType") != "CONDITIONAL" {
+				t.Fatalf("bad open algo orders query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[
+				{"symbol":"AVAXUSDT","algoId":900,"clientAlgoId":"old-avx-sl","side":"BUY","positionSide":"BOTH","orderType":"STOP_MARKET","algoStatus":"NEW","quantity":"15","reduceOnly":true},
+				{"symbol":"AVAXUSDT","algoId":901,"clientAlgoId":"entry-signal","side":"BUY","positionSide":"BOTH","orderType":"STOP_MARKET","algoStatus":"NEW","quantity":"2","reduceOnly":false},
+				{"symbol":"AVAXUSDT","algoId":902,"clientAlgoId":"long-protect","side":"SELL","positionSide":"BOTH","orderType":"TAKE_PROFIT_MARKET","algoStatus":"NEW","quantity":"1","reduceOnly":true}
+			]`))
+		case "/fapi/v1/algoOrder":
+			if r.Method != http.MethodDelete {
+				t.Fatalf("unexpected Binance algo method %s", r.Method)
+			}
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			cancelAlgoForms = append(cancelAlgoForms, cloneValues(r.Form))
+			_, _ = w.Write([]byte(`{"algoId":900,"clientAlgoId":"old-avx-sl","code":"200","msg":"success"}`))
+		case "/fapi/v1/order":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected Binance order method %s", r.Method)
+			}
+			orderForms = append(orderForms, cloneValues(r.Form))
+			if len(orderForms) == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-2022,"msg":"ReduceOnly Order is rejected."}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"orderId":789,"symbol":"AVAXUSDT","status":"NEW","clientOrderId":"close-1","price":"6.6472","origQty":"15","executedQty":"0","type":"LIMIT","side":"BUY","positionSide":"BOTH"}`))
+		default:
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+	}))
+	defer binanceServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.BinanceHTTPClient = binanceServer.Client()
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:          "main",
+		Active:      true,
+		Credentials: binance.Credentials{APIKey: "binance-key", SecretKey: "binance-secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"exchange":"binance","api_id":"main","inst_id":"AVAXUSDT","pos_side":"net","mode":"limit"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/positions/close", bytes.NewReader(body))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("limit close retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(orderForms) != 2 {
+		t.Fatalf("expected failed order and retry, got %#v", orderForms)
+	}
+	if len(cancelAlgoForms) != 1 || cancelAlgoForms[0].Get("algoId") != "900" {
+		t.Fatalf("expected only conflicting reduce-only close algo canceled, got %#v", cancelAlgoForms)
+	}
+	retry := orderForms[1]
+	if retry.Get("symbol") != "AVAXUSDT" || retry.Get("side") != "BUY" || retry.Get("type") != "LIMIT" || retry.Get("quantity") != "15" || retry.Get("price") != "6.6472" || retry.Get("reduceOnly") != "true" {
 		t.Fatalf("bad retry close form: %#v", retry)
 	}
 }

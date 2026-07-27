@@ -2730,9 +2730,29 @@ func retryBinanceReduceOnlyPositionClose(ctx context.Context, client binance.Cli
 	if !req.ReduceOnly || !binance.IsAPIErrorCode(originalErr, -2022) {
 		return binance.OrderAck{}, originalErr
 	}
-	orders, err := client.OpenOrders(ctx, req.Symbol)
+	canceled, err := cancelBinanceConflictingReduceOnlyOpenOrders(ctx, client, req)
 	if err != nil {
 		return binance.OrderAck{}, originalErr
+	}
+	canceledAlgos, err := cancelBinanceConflictingReduceOnlyAlgoOrders(ctx, client, req)
+	if err != nil && canceled == 0 {
+		return binance.OrderAck{}, originalErr
+	}
+	canceled += canceledAlgos
+	if canceled == 0 {
+		return binance.OrderAck{}, originalErr
+	}
+	ack, err := client.PlaceOrder(ctx, req)
+	if err != nil {
+		return binance.OrderAck{}, fmt.Errorf("Binance reduce-only close retry failed after canceling %d conflicting orders: %w", canceled, err)
+	}
+	return ack, nil
+}
+
+func cancelBinanceConflictingReduceOnlyOpenOrders(ctx context.Context, client binance.Client, req binance.PlaceOrderRequest) (int, error) {
+	orders, err := client.OpenOrders(ctx, req.Symbol)
+	if err != nil {
+		return 0, err
 	}
 	canceled := 0
 	for _, order := range orders {
@@ -2746,18 +2766,29 @@ func retryBinanceReduceOnlyPositionClose(ctx context.Context, client binance.Cli
 			cancelReq.OrigClientOrderID = strings.TrimSpace(order.ClientOrderID)
 		}
 		if _, err := client.CancelOrder(ctx, cancelReq); err != nil {
-			return binance.OrderAck{}, fmt.Errorf("cancel conflicting Binance reduce-only close order failed: %w", err)
+			return canceled, fmt.Errorf("cancel conflicting Binance reduce-only close order failed: %w", err)
 		}
 		canceled++
 	}
-	if canceled == 0 {
-		return binance.OrderAck{}, originalErr
-	}
-	ack, err := client.PlaceOrder(ctx, req)
+	return canceled, nil
+}
+
+func cancelBinanceConflictingReduceOnlyAlgoOrders(ctx context.Context, client binance.Client, req binance.PlaceOrderRequest) (int, error) {
+	orders, err := client.OpenAlgoOrders(ctx, req.Symbol)
 	if err != nil {
-		return binance.OrderAck{}, fmt.Errorf("Binance reduce-only close retry failed after canceling %d conflicting orders: %w", canceled, err)
+		return 0, err
 	}
-	return ack, nil
+	canceled := 0
+	for _, order := range orders {
+		if !binanceConflictingReduceOnlyCloseAlgoOrder(order, req) {
+			continue
+		}
+		if _, err := client.CancelAlgoOrder(ctx, order.AlgoID, strings.TrimSpace(order.ClientAlgoID)); err != nil {
+			return canceled, fmt.Errorf("cancel conflicting Binance reduce-only algo close order failed: %w", err)
+		}
+		canceled++
+	}
+	return canceled, nil
 }
 
 func binanceConflictingReduceOnlyCloseOrder(order binance.OpenOrder, req binance.PlaceOrderRequest) bool {
@@ -2765,6 +2796,15 @@ func binanceConflictingReduceOnlyCloseOrder(order binance.OpenOrder, req binance
 		return false
 	}
 	if !strings.EqualFold(strings.TrimSpace(order.Type), "LIMIT") {
+		return false
+	}
+	reqPosSide := normalizedBinanceClosePositionSide(req.PositionSide)
+	orderPosSide := normalizedBinanceClosePositionSide(order.PositionSide)
+	return reqPosSide == orderPosSide
+}
+
+func binanceConflictingReduceOnlyCloseAlgoOrder(order binance.AlgoOpenOrder, req binance.PlaceOrderRequest) bool {
+	if (!order.ReduceOnly && !order.ClosePosition) || !strings.EqualFold(order.Symbol, req.Symbol) || !strings.EqualFold(order.Side, req.Side) {
 		return false
 	}
 	reqPosSide := normalizedBinanceClosePositionSide(req.PositionSide)
