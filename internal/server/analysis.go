@@ -23,6 +23,7 @@ const (
 	defaultPNLDays      = 30
 	analysisCacheTTL    = 60 * time.Second
 	usdtSampleInterval  = time.Minute
+	maxBalanceMinutes   = 90 * 24 * 60
 )
 
 type analysisResponse struct {
@@ -105,6 +106,7 @@ type balanceOverviewResponse struct {
 	OK          bool                      `json:"ok"`
 	Env         string                    `json:"env"`
 	Days        int                       `json:"days"`
+	Minutes     int                       `json:"minutes"`
 	RefreshedAt time.Time                 `json:"refreshed_at"`
 	Exchanges   []exchangeBalanceOverview `json:"exchanges"`
 }
@@ -253,19 +255,44 @@ func (s *Server) handleBalanceOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.ConfigStore.Get()
-	days := positiveIntQuery(r, "days", defaultPriceDays)
+	minutes, days := balanceWindowQuery(r)
 	now := s.now()
 	envName := analysisEnvName(cfg)
 	writeJSON(w, http.StatusOK, balanceOverviewResponse{
 		OK:          true,
 		Env:         envName,
 		Days:        days,
+		Minutes:     minutes,
 		RefreshedAt: now.UTC(),
 		Exchanges: []exchangeBalanceOverview{
-			s.balanceOverviewForOKX(r.Context(), cfg, envName, days, now),
-			s.balanceOverviewForBinance(r.Context(), cfg, envName, days, now),
+			s.balanceOverviewForOKX(r.Context(), cfg, envName, minutes, now),
+			s.balanceOverviewForBinance(r.Context(), cfg, envName, minutes, now),
 		},
 	})
+}
+
+func balanceWindowQuery(r *http.Request) (int, int) {
+	if raw := strings.TrimSpace(r.URL.Query().Get("minutes")); raw != "" {
+		minutes, err := strconv.Atoi(raw)
+		if err != nil || minutes < 0 {
+			minutes = defaultPriceDays * 24 * 60
+		}
+		if minutes > maxBalanceMinutes {
+			minutes = maxBalanceMinutes
+		}
+		days := 0
+		if minutes > 0 {
+			days = int(math.Ceil(float64(minutes) / (24 * 60)))
+		}
+		return minutes, days
+	}
+	days := positiveIntQuery(r, "days", defaultPriceDays)
+	minutes := days * 24 * 60
+	if minutes > maxBalanceMinutes {
+		minutes = maxBalanceMinutes
+		days = maxBalanceMinutes / (24 * 60)
+	}
+	return minutes, days
 }
 
 func (s *Server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
@@ -681,7 +708,7 @@ func (s *Server) analysisFromStore(apiID, envName string, priceDays, pnlDays int
 	}, nil
 }
 
-func (s *Server) balanceOverviewForOKX(ctx context.Context, cfg config.Config, envName string, days int, now time.Time) exchangeBalanceOverview {
+func (s *Server) balanceOverviewForOKX(ctx context.Context, cfg config.Config, envName string, minutes int, now time.Time) exchangeBalanceOverview {
 	out := exchangeBalanceOverview{Exchange: trading.ExchangeOKX, Label: "OKX", Status: "not_configured", RefreshedAt: now.UTC()}
 	if s.OKXCredentials == nil {
 		out.Error = "OKX credential store is not configured"
@@ -710,11 +737,11 @@ func (s *Server) balanceOverviewForOKX(ctx context.Context, cfg config.Config, e
 		out.Status = "ok"
 		out.Balance = balance
 	}
-	out.BalancePoints = s.balanceOverviewPoints(trading.ExchangeOKX, apiID, envName, days, now)
+	out.BalancePoints = s.balanceOverviewPoints(trading.ExchangeOKX, apiID, envName, minutes, now)
 	return out
 }
 
-func (s *Server) balanceOverviewForBinance(ctx context.Context, cfg config.Config, envName string, days int, now time.Time) exchangeBalanceOverview {
+func (s *Server) balanceOverviewForBinance(ctx context.Context, cfg config.Config, envName string, minutes int, now time.Time) exchangeBalanceOverview {
 	out := exchangeBalanceOverview{Exchange: trading.ExchangeBinance, Label: "Binance", Status: "not_configured", RefreshedAt: now.UTC()}
 	if s.BinanceCredentials == nil {
 		out.Error = "Binance credential store is not configured"
@@ -743,26 +770,34 @@ func (s *Server) balanceOverviewForBinance(ctx context.Context, cfg config.Confi
 		out.Status = "ok"
 		out.Balance = balance
 	}
-	out.BalancePoints = s.balanceOverviewPoints(trading.ExchangeBinance, apiID, envName, days, now)
+	out.BalancePoints = s.balanceOverviewPoints(trading.ExchangeBinance, apiID, envName, minutes, now)
 	return out
 }
 
-func (s *Server) balanceOverviewPoints(exchange, apiID, envName string, days int, now time.Time) []analysisBalancePoint {
+func (s *Server) balanceOverviewPoints(exchange, apiID, envName string, minutes int, now time.Time) []analysisBalancePoint {
 	if s.Orders == nil || strings.TrimSpace(apiID) == "" {
 		return nil
 	}
-	limit := days*24*60 + 1
-	if limit <= 0 {
-		limit = defaultPriceDays*24*60 + 1
+	if minutes < 0 {
+		minutes = 0
 	}
-	snapshots, err := s.Orders.ListExchangeUSDTBalanceSnapshots(exchange, apiID, envName, now.AddDate(0, 0, -days), limit)
+	if minutes > maxBalanceMinutes {
+		minutes = maxBalanceMinutes
+	}
+	limit := minutes + 1
+	since := now.Add(-time.Duration(minutes) * time.Minute)
+	if minutes == 0 {
+		limit = 6
+		since = now.Add(-5 * time.Minute)
+	}
+	snapshots, err := s.Orders.ListExchangeUSDTBalanceSnapshots(exchange, apiID, envName, since, limit)
 	if err != nil {
 		if s.Logger != nil {
 			s.Logger.Warn("failed to list USDT balance snapshots", "exchange", exchange, "api_id", apiID, "env", envName, "error", err)
 		}
 		return nil
 	}
-	return balancePointsFromSnapshots(snapshots)
+	return compactBalancePoints(balancePointsFromSnapshots(snapshots), minutes)
 }
 
 func balancePointsFromSnapshots(snapshots []storage.USDTBalanceSnapshot) []analysisBalancePoint {
@@ -783,6 +818,47 @@ func balancePointsFromSnapshots(snapshots []storage.USDTBalanceSnapshot) []analy
 		})
 	}
 	return balancePoints
+}
+
+func compactBalancePoints(points []analysisBalancePoint, minutes int) []analysisBalancePoint {
+	if len(points) == 0 {
+		return nil
+	}
+	if minutes <= 0 {
+		return []analysisBalancePoint{points[len(points)-1]}
+	}
+	bucket := balancePointBucket(minutes)
+	if bucket <= time.Minute {
+		return points
+	}
+	out := make([]analysisBalancePoint, 0, len(points))
+	lastBucket := int64(-1)
+	for _, point := range points {
+		ts := point.TS
+		if ts <= 0 && !point.Time.IsZero() {
+			ts = point.Time.UnixMilli()
+		}
+		if ts <= 0 {
+			continue
+		}
+		bucketTS := time.UnixMilli(ts).UTC().Truncate(bucket).UnixMilli()
+		point.TS = bucketTS
+		point.Time = time.UnixMilli(bucketTS).UTC()
+		if len(out) > 0 && bucketTS == lastBucket {
+			out[len(out)-1] = point
+			continue
+		}
+		out = append(out, point)
+		lastBucket = bucketTS
+	}
+	return out
+}
+
+func balancePointBucket(minutes int) time.Duration {
+	if minutes >= 30*24*60 {
+		return time.Hour
+	}
+	return time.Minute
 }
 
 func snapshotValue(snapshot storage.USDTBalanceSnapshot) float64 {
