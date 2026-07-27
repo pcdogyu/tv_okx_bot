@@ -247,9 +247,10 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("overview-okx-usdt-chart")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("overview-binance-usdt-chart")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-usdt-eq")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-asset-count")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-balance-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("#analysis .mini-usdt-chart {\n      height: 360px;")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("#analysis .mini-usdt-chart { height: 346px; }")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 币对盈亏比分析")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 币对盈亏比分析")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-okx-rows")) ||
@@ -269,6 +270,17 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-symbol-table")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-table")) {
 		t.Fatalf("tvbot ui should include exchange balance analysis")
+	}
+	for _, removed := range [][]byte{
+		[]byte("analysis-avail-eq"),
+		[]byte("analysis-adj-eq"),
+		[]byte("analysis-asset-count"),
+		[]byte("analysis-binance-avail"),
+		[]byte("analysis-binance-api"),
+	} {
+		if bytes.Contains(ui.Body.Bytes(), removed) {
+			t.Fatalf("tvbot analysis balance UI should not include removed metric %q", removed)
+		}
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("chart-grid")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("chartTimeLabel")) ||

@@ -17,9 +17,10 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`.balance-table-wrap`,
 		"height: auto;\n      max-height: 188px;\n      overflow: auto;",
 		`#analysis .mini-usdt-chart`,
-		`height: 300px`,
-		`height: 288px`,
-		`miniFallbackHeight = isAnalysisChart ? 300 : 250`,
+		`height: 360px`,
+		`height: 346px`,
+		`miniMinHeight = isAnalysisChart ? 360 : 240`,
+		`miniFallbackHeight = isAnalysisChart ? 360 : 250`,
 		`function formatUSDTBalance(v)`,
 		`Math.round(n).toLocaleString`,
 		`const formatted = formatUSDTBalance(v)`,
@@ -50,14 +51,16 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`Binance USDT估值`,
 		`估值 USD`,
 		`analysis-total-eq`,
+		`analysis-avail-eq`,
+		`analysis-adj-eq`,
+		`analysis-asset-count`,
+		`analysis-binance-avail`,
+		`analysis-binance-api`,
 		".balance-table-wrap {\n      height: 188px;",
 	} {
 		if strings.Contains(tvbotHTML, old) {
 			t.Fatalf("tvbot ui should not include %s", old)
 		}
-	}
-	if !strings.Contains(tvbotHTML, `analysis-asset-count`) {
-		t.Fatal("tvbot ui should keep OKX asset count")
 	}
 	if !strings.Contains(tvbotHTML, `String(row.ccy || "").toUpperCase() === "USDT"`) {
 		t.Fatal("balance rows should filter to USDT")

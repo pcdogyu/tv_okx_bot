@@ -657,7 +657,8 @@ const tvbotHTML = `<!doctype html>
       align-content: start;
     }
     .exchange-balance-metrics {
-      min-height: 150px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      min-height: 0;
       align-content: start;
       margin: 0;
     }
@@ -688,7 +689,7 @@ const tvbotHTML = `<!doctype html>
       height: 250px;
     }
     #analysis .mini-usdt-chart {
-      height: 300px;
+      height: 360px;
     }
     .chart-grid {
       stroke: #edf1f7;
@@ -847,7 +848,7 @@ const tvbotHTML = `<!doctype html>
       #usdt-chart { height: 320px; }
       #usdt-chart.mini-usdt-chart { height: 240px; }
       .mini-usdt-chart { height: 240px; }
-      #analysis .mini-usdt-chart { height: 288px; }
+      #analysis .mini-usdt-chart { height: 346px; }
       .exchange-balance-metrics { min-height: 0; }
       .balance-table-wrap { height: auto; max-height: 260px; }
     }
@@ -1034,9 +1035,6 @@ const tvbotHTML = `<!doctype html>
           </div>
           <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
             <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-usdt-eq">-</div></div>
-            <div class="analysis-card"><div class="label">可用权益</div><div class="value" id="analysis-avail-eq">-</div></div>
-            <div class="analysis-card"><div class="label">调整权益</div><div class="value" id="analysis-adj-eq">-</div></div>
-            <div class="analysis-card"><div class="label">资产数</div><div class="value" id="analysis-asset-count">-</div></div>
             <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-balance-updated">-</div></div>
           </div>
           <div class="balance-table-wrap">
@@ -1059,8 +1057,6 @@ const tvbotHTML = `<!doctype html>
           </div>
           <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
             <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-binance-usdt-eq">-</div></div>
-            <div class="analysis-card"><div class="label">可用</div><div class="value" id="analysis-binance-avail">-</div></div>
-            <div class="analysis-card"><div class="label">交易 API</div><div class="value" id="analysis-binance-api">-</div></div>
             <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-binance-balance-updated">-</div></div>
           </div>
           <div class="balance-table-wrap">
@@ -2943,9 +2939,6 @@ const tvbotHTML = `<!doctype html>
       const details = balance && Array.isArray(balance.details) ? balance.details : [];
       const usdt = usdtBalanceDetail(balance);
       $("analysis-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
-      $("analysis-avail-eq").textContent = balance ? formatUSD(balance.avail_eq) : "-";
-      $("analysis-adj-eq").textContent = balance ? formatUSD(balance.adj_eq) : "-";
-      $("analysis-asset-count").textContent = balance ? String(details.length) : "-";
       $("analysis-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : "-";
       $("analysis-okx-balance-status").textContent = exchangeBalanceStatusText(item, balance, "OKX");
       $("analysis-okx-usdt-title").textContent = "USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
@@ -2962,8 +2955,6 @@ const tvbotHTML = `<!doctype html>
       const details = balance && Array.isArray(balance.details) ? balance.details : [];
       const usdt = usdtBalanceDetail(balance);
       $("analysis-binance-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
-      $("analysis-binance-avail").textContent = usdt ? formatUSDTBalance(usdt.avail_bal || usdt.avail_eq) + " USDT" : "-";
-      $("analysis-binance-api").textContent = item && item.api_id ? apiDisplayName(item.api_id, "binance") : "-";
       $("analysis-binance-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : (item && item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
       $("analysis-binance-balance-status").textContent = exchangeBalanceStatusText(item, balance, "Binance");
       $("analysis-binance-usdt-title").textContent = "USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
@@ -3003,8 +2994,8 @@ const tvbotHTML = `<!doctype html>
       const parentWidth = svg.parentElement ? svg.parentElement.clientWidth : 0;
       const isMini = svg.classList.contains("mini-usdt-chart");
       const isAnalysisChart = !!(svg.closest && svg.closest("#analysis"));
-      const miniMinHeight = isAnalysisChart ? 300 : 240;
-      const miniFallbackHeight = isAnalysisChart ? 300 : 250;
+      const miniMinHeight = isAnalysisChart ? 360 : 240;
+      const miniFallbackHeight = isAnalysisChart ? 360 : 250;
       const width = Math.max(isMini ? 520 : 900, Math.floor(rect.width || parentWidth || (window.innerWidth - 72) || 900));
       const height = Math.max(isMini ? miniMinHeight : 320, Math.floor(rect.height || svg.clientHeight || (isMini ? miniFallbackHeight : 420)));
       const pad = { left: 64, right: 24, top: 18, bottom: 58 };
