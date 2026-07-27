@@ -2107,6 +2107,101 @@ func TestTVBotPendingOrderChaseAmendsExistingRiskControls(t *testing.T) {
 	}
 }
 
+func TestTVBotPendingOrderChaseRebuildsExistingTrailingRiskControls(t *testing.T) {
+	oldInterval := pendingOrderChaseInterval
+	oldTimeout := pendingOrderChaseTimeout
+	oldJobs := pendingOrderChaseJobs
+	pendingOrderChaseInterval = time.Hour
+	pendingOrderChaseTimeout = time.Hour
+	pendingOrderChaseJobs = newPendingOrderChaseRegistry()
+	defer func() {
+		pendingOrderChaseInterval = oldInterval
+		pendingOrderChaseTimeout = oldTimeout
+		pendingOrderChaseJobs = oldJobs
+	}()
+
+	srv := newTestServer(t)
+	var cancelBodies []map[string]string
+	var orderBodies []map[string]any
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"TRX-USDT-SWAP","ordId":"3779916965005234176","clOrdId":"TV17851527039509FE4C27EA093","tdMode":"isolated","side":"buy","posSide":"net","ordType":"limit","px":"0.3298","sz":"1.51","accFillSz":"0","state":"live","attachAlgoOrds":[{"attachAlgoClOrdId":"TV17851527039509FE4C27EA093T","attachAlgoId":"3779916964978577408","callbackRatio":"0.035"}],"cTime":"1785152703989"}]}`))
+		case "/api/v5/public/instruments":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"TRX-USDT-SWAP","tickSz":"0.0001","ctVal":"100","lotSz":"0.01","minSz":"0.01"}]}`))
+		case "/api/v5/market/ticker":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"TRX-USDT-SWAP","bidPx":"0.3306","askPx":"0.3308","last":"0.3307"}]}`))
+		case "/api/v5/trade/cancel-order":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			cancelBodies = append(cancelBodies, body)
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"3779916965005234176","clOrdId":"TV17851527039509FE4C27EA093","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/trade/order":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			orderBodies = append(orderBodies, body)
+			clOrdID, _ := body["clOrdId"].(string)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"0","msg":"","data":[{"ordId":"new-trx","clOrdId":%q,"sCode":"0","sMsg":""}]}`, clOrdID)))
+		case "/api/v5/trade/amend-order":
+			t.Fatal("existing trailing protection should rebuild instead of amend")
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	cfg.Trading.RiskType = string(trading.RiskTrailing)
+	cfg.Trading.TrailingPct = 3.5
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:          "default",
+		Active:      true,
+		Credentials: okx.Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/chase", strings.NewReader(`{"api_id":"default","inst_id":"TRX-USDT-SWAP","ord_id":"3779916965005234176","cl_ord_id":"TV17851527039509FE4C27EA093"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("chase code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(cancelBodies) != 1 || cancelBodies[0]["instId"] != "TRX-USDT-SWAP" || cancelBodies[0]["ordId"] != "3779916965005234176" {
+		t.Fatalf("bad cancel bodies: %#v", cancelBodies)
+	}
+	if len(orderBodies) != 1 {
+		t.Fatalf("expected one replacement order, got %#v", orderBodies)
+	}
+	replacement := orderBodies[0]
+	if replacement["instId"] != "TRX-USDT-SWAP" || replacement["tdMode"] != "isolated" || replacement["side"] != "buy" || replacement["ordType"] != "limit" || replacement["px"] != "0.3306" || replacement["sz"] != "1.51" {
+		t.Fatalf("bad replacement order: %#v", replacement)
+	}
+	replacementClOrdID, _ := replacement["clOrdId"].(string)
+	key := pendingOrderChaseKey(pendingOrderChaseRequest{APIID: "default", InstID: "TRX-USDT-SWAP", OrdID: "new-trx", ClOrdID: replacementClOrdID})
+	defer pendingOrderChaseJobs.stop(key)
+	if _, ok := replacement["posSide"]; ok {
+		t.Fatalf("net-mode replacement should not send posSide: %#v", replacement)
+	}
+	attach, ok := replacement["attachAlgoOrds"].([]any)
+	if !ok || len(attach) != 1 {
+		t.Fatalf("missing trailing attach algo: %#v", replacement)
+	}
+	first, ok := attach[0].(map[string]any)
+	if !ok || first["ordType"] != "move_order_stop" || first["callbackRatio"] != "0.035" {
+		t.Fatalf("bad trailing attach algo: %#v", attach)
+	}
+}
+
 func TestTVBotPendingOrderChaseStopDoesNotCancelOrder(t *testing.T) {
 	oldInterval := pendingOrderChaseInterval
 	oldJobs := pendingOrderChaseJobs

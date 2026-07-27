@@ -2179,7 +2179,16 @@ func pendingOrderOrderRequest(cfg config.Config, order okx.PendingOrder, remaini
 }
 
 func shouldRebuildPendingOrderWithProtection(cfg config.Config, order okx.PendingOrder) bool {
-	return len(order.AttachAlgoOrds) == 0 && len(pendingOrderAttachAlgoOrders(cfg, order, "PENDINGRISK")) > 0
+	attachAlgoOrds := pendingOrderAttachAlgoOrders(cfg, order, "PENDINGRISK")
+	if len(attachAlgoOrds) == 0 {
+		return false
+	}
+	if len(order.AttachAlgoOrds) == 0 {
+		return true
+	}
+	risk := cfg.OrderSettings().Risk
+	risk.Normalize()
+	return risk.Type == trading.RiskTrailing
 }
 
 func pendingOrderAmendAttachAlgoOrders(cfg config.Config, order okx.PendingOrder, req pendingOrderChaseRequest) []map[string]string {
