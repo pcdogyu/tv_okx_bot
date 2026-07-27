@@ -111,6 +111,23 @@ type OpenOrder struct {
 	PriceMatch    string `json:"priceMatch"`
 }
 
+type UserTrade struct {
+	Buyer           bool   `json:"buyer"`
+	Commission      string `json:"commission"`
+	CommissionAsset string `json:"commissionAsset"`
+	ID              int64  `json:"id"`
+	Maker           bool   `json:"maker"`
+	OrderID         int64  `json:"orderId"`
+	Price           string `json:"price"`
+	Qty             string `json:"qty"`
+	QuoteQty        string `json:"quoteQty"`
+	RealizedPnl     string `json:"realizedPnl"`
+	Side            string `json:"side"`
+	PositionSide    string `json:"positionSide"`
+	Symbol          string `json:"symbol"`
+	Time            int64  `json:"time"`
+}
+
 type BookTicker struct {
 	Symbol   string `json:"symbol"`
 	BidPrice string `json:"bidPrice"`
@@ -349,6 +366,29 @@ func (c Client) OpenOrders(ctx context.Context, symbol string) ([]OpenOrder, err
 		return nil, err
 	}
 	var out []OpenOrder
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c Client) UserTrades(ctx context.Context, symbol string, startTime, endTime time.Time, limit int) ([]UserTrade, error) {
+	q := url.Values{}
+	q.Set("symbol", strings.ToUpper(strings.TrimSpace(symbol)))
+	if !startTime.IsZero() {
+		q.Set("startTime", strconv.FormatInt(startTime.UTC().UnixMilli(), 10))
+	}
+	if !endTime.IsZero() {
+		q.Set("endTime", strconv.FormatInt(endTime.UTC().UnixMilli(), 10))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	b, err := c.Do(ctx, http.MethodGet, "/fapi/v1/userTrades", q, true)
+	if err != nil {
+		return nil, err
+	}
+	var out []UserTrade
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, err
 	}

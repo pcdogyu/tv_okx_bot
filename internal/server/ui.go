@@ -689,8 +689,8 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-position-amount-col { width: 7.3%; }
     .positions-table .pos-pnl-col { width: 7.5%; }
     .positions-table .pos-rate-col { width: 6%; }
-    .positions-table .pos-margin-mode-col { width: 6.5%; }
-    .positions-table .pos-liquidation-col { width: 6.5%; }
+    .positions-table .pos-entry-time-col { width: 8%; }
+    .positions-table .pos-holding-time-col { width: 6.5%; }
     .positions-table .pos-actions-col { width: 12%; }
     .pending-order-table {
       min-width: 1180px;
@@ -895,12 +895,12 @@ const tvbotHTML = `<!doctype html>
             <col class="pos-price-col">
             <col class="pos-pnl-col">
             <col class="pos-rate-col">
-            <col class="pos-margin-mode-col">
-            <col class="pos-liquidation-col">
+            <col class="pos-entry-time-col">
+            <col class="pos-holding-time-col">
             <col class="pos-actions-col">
           </colgroup>
           <thead>
-            <tr><th>交易所</th><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>保证金</th><th>杠杆</th><th>仓位金额</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>保证金模式</th><th>强平价</th><th>操作</th></tr>
+            <tr><th>交易所</th><th>币对</th><th>方向</th><th>持仓量</th><th>可用</th><th>均价</th><th>保证金</th><th>杠杆</th><th>仓位金额</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>下单时间</th><th>持仓时间</th><th>操作</th></tr>
           </thead>
           <tbody id="position-rows"></tbody>
         </table>
@@ -1375,6 +1375,26 @@ const tvbotHTML = `<!doctype html>
         if (Number.isFinite(ms)) return shanghaiTime(new Date(ms).toISOString());
       }
       return shanghaiTime(raw);
+    }
+
+    function formatHoldingSeconds(value) {
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds) || seconds < 0) return "-";
+      if (seconds < 60) return "<1分钟";
+      const totalMinutes = Math.floor(seconds / 60);
+      const days = Math.floor(totalMinutes / 1440);
+      const hours = Math.floor((totalMinutes % 1440) / 60);
+      const minutes = totalMinutes % 60;
+      const hh = String(hours).padStart(2, "0");
+      const mm = String(minutes).padStart(2, "0");
+      return days > 0 ? (days + "天 " + hh + ":" + mm) : (hh + ":" + mm);
+    }
+
+    function entryTimeSourceText(value) {
+      const source = String(value || "").toLowerCase();
+      if (source === "okx_fills_history") return "OKX 成交明细";
+      if (source === "binance_user_trades") return "Binance 成交明细";
+      return asText(value);
     }
 
     function balanceAmount(v) {
@@ -2453,6 +2473,27 @@ const tvbotHTML = `<!doctype html>
         '</div></td>';
     }
 
+    function positionEntryTimeTitle(row) {
+      const parts = [];
+      if (row && row.entry_time_source) parts.push(entryTimeSourceText(row.entry_time_source));
+      if (row && row.entry_time_error) parts.push(row.entry_time_error);
+      return parts.join(" / ");
+    }
+
+    function positionEntryTimeCell(row) {
+      const title = positionEntryTimeTitle(row);
+      const attr = title ? ' title="' + escapeHTML(title) + '"' : "";
+      const text = row && row.entry_fill_time ? shanghaiTime(row.entry_fill_time) : "-";
+      return '<td class="time"' + attr + '>' + escapeHTML(text) + '</td>';
+    }
+
+    function positionHoldingTimeCell(row) {
+      const title = positionEntryTimeTitle(row);
+      const attr = title ? ' title="' + escapeHTML(title) + '"' : "";
+      const text = row && row.entry_fill_time ? formatHoldingSeconds(row.holding_seconds) : "-";
+      return '<td class="time"' + attr + '>' + escapeHTML(text) + '</td>';
+    }
+
     function renderPositions() {
       const rows = state.positions && Array.isArray(state.positions.positions) ? state.positions.positions : [];
       const totalUpl = positionSum(rows, "upl");
@@ -2481,8 +2522,8 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(formatNumber(row.markPx)) + "</td>" +
           signedCell(row.upl, formatNumber(row.upl)) +
           signedCell(positionReturnRatio(row), positionReturnPercent(row)) +
-          "<td>" + escapeHTML(asText(row.mgnMode)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.liqPx)) + "</td>" +
+          positionEntryTimeCell(row) +
+          positionHoldingTimeCell(row) +
           positionActionCell(row) +
           "</tr>";
       }).join("");

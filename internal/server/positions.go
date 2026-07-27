@@ -36,6 +36,18 @@ var (
 	pendingOrderMarketSeq          uint64
 )
 
+const (
+	positionEntryLookback       = 90 * 24 * time.Hour
+	positionEntryCacheTTL       = 15 * time.Second
+	positionEntryHistoryLimit   = 100
+	positionEntryMaxOKXPages    = 90
+	binanceUserTradesWindow     = 7 * 24 * time.Hour
+	binanceUserTradesLimit      = 1000
+	positionEntrySizeEpsilon    = 1e-9
+	entryTimeSourceOKXFills     = "okx_fills_history"
+	entryTimeSourceBinanceTrade = "binance_user_trades"
+)
+
 type positionsResponse struct {
 	OK          bool           `json:"ok"`
 	Exchange    string         `json:"exchange"`
@@ -43,7 +55,33 @@ type positionsResponse struct {
 	InstType    string         `json:"inst_type"`
 	Count       int            `json:"count"`
 	RefreshedAt time.Time      `json:"refreshed_at"`
-	Positions   []okx.Position `json:"positions"`
+	Positions   []positionView `json:"positions"`
+}
+
+type positionView struct {
+	okx.Position
+	EntryFillTime   string `json:"entry_fill_time,omitempty"`
+	HoldingSeconds  int64  `json:"holding_seconds"`
+	EntryTimeSource string `json:"entry_time_source,omitempty"`
+	EntryTimeError  string `json:"entry_time_error,omitempty"`
+}
+
+type positionEntryFill struct {
+	InstID   string
+	PosSide  string
+	Side     string
+	Size     float64
+	FillTime time.Time
+}
+
+type positionEntryFillCache struct {
+	mu    sync.Mutex
+	items map[string]positionEntryFillCacheItem
+}
+
+type positionEntryFillCacheItem struct {
+	fetchedAt time.Time
+	fills     []positionEntryFill
 }
 
 type pendingOrdersResponse struct {
@@ -758,14 +796,22 @@ func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requeste
 		}
 		return positions[i].InstID < positions[j].InstID
 	})
+	now := s.now()
+	fills, fillErr := s.cachedPositionEntryFills(
+		trading.ExchangeOKX+"|"+apiID+"|"+strings.TrimRight(client.BaseURL, "/")+"|"+strings.ToUpper(strings.TrimSpace(instType)),
+		now,
+		func() ([]positionEntryFill, error) {
+			return fetchOKXPositionEntryFills(ctx, client, instType, positions, now)
+		},
+	)
 	return positionsResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeOKX,
 		APIID:       apiID,
 		InstType:    instType,
 		Count:       len(positions),
-		RefreshedAt: s.now(),
-		Positions:   positions,
+		RefreshedAt: now,
+		Positions:   positionViewsWithEntryTimes(positions, fills, now, entryTimeSourceOKXFills, fillErr),
 	}, nil
 }
 
@@ -821,14 +867,33 @@ func (s *Server) fetchBinancePositions(ctx context.Context, cfg config.Config, r
 		}
 		return out[i].InstID < out[j].InstID
 	})
+	now := s.now()
+	fillsBySymbol := make(map[string][]positionEntryFill)
+	errorsBySymbol := make(map[string]error)
+	positionsBySymbol := positionsByInstID(out)
+	for symbol, symbolPositions := range positionsBySymbol {
+		symbol := symbol
+		symbolPositions := symbolPositions
+		fills, fillErr := s.cachedPositionEntryFills(
+			trading.ExchangeBinance+"|"+apiID+"|"+strings.TrimRight(client.BaseURL, "/")+"|"+symbol,
+			now,
+			func() ([]positionEntryFill, error) {
+				return fetchBinancePositionEntryFills(ctx, client, symbol, symbolPositions, now)
+			},
+		)
+		fillsBySymbol[symbol] = fills
+		if fillErr != nil {
+			errorsBySymbol[symbol] = fillErr
+		}
+	}
 	return positionsResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeBinance,
 		APIID:       apiID,
 		InstType:    "USDT-M",
 		Count:       len(out),
-		RefreshedAt: s.now(),
-		Positions:   out,
+		RefreshedAt: now,
+		Positions:   binancePositionViewsWithEntryTimes(out, fillsBySymbol, errorsBySymbol, now),
 	}, nil
 }
 
@@ -857,6 +922,325 @@ func (s *Server) fetchBinancePendingOrders(ctx context.Context, cfg config.Confi
 		RefreshedAt: s.now(),
 		Orders:      views,
 	}, nil
+}
+
+func (s *Server) cachedPositionEntryFills(key string, now time.Time, fetch func() ([]positionEntryFill, error)) ([]positionEntryFill, error) {
+	if fills, ok := s.positionEntryCache.get(key, now); ok {
+		return fills, nil
+	}
+	fills, err := fetch()
+	if err != nil {
+		return nil, err
+	}
+	s.positionEntryCache.set(key, now, fills)
+	return fills, nil
+}
+
+func (c *positionEntryFillCache) get(key string, now time.Time) ([]positionEntryFill, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.items == nil {
+		return nil, false
+	}
+	item, ok := c.items[key]
+	if !ok || now.Sub(item.fetchedAt) > positionEntryCacheTTL {
+		return nil, false
+	}
+	return clonePositionEntryFills(item.fills), true
+}
+
+func (c *positionEntryFillCache) set(key string, now time.Time, fills []positionEntryFill) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.items == nil {
+		c.items = map[string]positionEntryFillCacheItem{}
+	}
+	c.items[key] = positionEntryFillCacheItem{
+		fetchedAt: now,
+		fills:     clonePositionEntryFills(fills),
+	}
+}
+
+func clonePositionEntryFills(fills []positionEntryFill) []positionEntryFill {
+	if len(fills) == 0 {
+		return nil
+	}
+	out := make([]positionEntryFill, len(fills))
+	copy(out, fills)
+	return out
+}
+
+func fetchOKXPositionEntryFills(ctx context.Context, client okx.Client, instType string, positions []okx.Position, now time.Time) ([]positionEntryFill, error) {
+	if len(positions) == 0 {
+		return nil, nil
+	}
+	since := now.Add(-positionEntryLookback)
+	after := ""
+	out := []positionEntryFill{}
+	for page := 0; page < positionEntryMaxOKXPages; page++ {
+		fills, _, err := client.FillsHistory(ctx, instType, after, positionEntryHistoryLimit)
+		if err != nil {
+			return nil, err
+		}
+		if len(fills) == 0 {
+			return out, nil
+		}
+		var oldest time.Time
+		oldAfter := after
+		pageAfter := ""
+		for i, fill := range fills {
+			if i == len(fills)-1 {
+				pageAfter = strings.TrimSpace(fill.TradeID)
+				if pageAfter == "" {
+					pageAfter = strings.TrimSpace(fill.OrdID)
+				}
+			}
+			fillTimeMS, err := strconv.ParseInt(strings.TrimSpace(fill.FillTime), 10, 64)
+			if err != nil {
+				continue
+			}
+			fillTime := time.UnixMilli(fillTimeMS).UTC()
+			if oldest.IsZero() || fillTime.Before(oldest) {
+				oldest = fillTime
+			}
+			if fillTime.Before(since) {
+				continue
+			}
+			size, err := strconv.ParseFloat(strings.TrimSpace(fill.FillSz), 64)
+			if err != nil || size <= 0 {
+				continue
+			}
+			out = append(out, positionEntryFill{
+				InstID:   strings.ToUpper(strings.TrimSpace(fill.InstID)),
+				PosSide:  fill.PosSide,
+				Side:     fill.Side,
+				Size:     size,
+				FillTime: fillTime,
+			})
+		}
+		after = pageAfter
+		if allPositionEntryTimesFound(positions, out) {
+			return out, nil
+		}
+		if oldest.IsZero() || oldest.Before(since) || len(fills) < positionEntryHistoryLimit || after == "" || after == oldAfter {
+			return out, nil
+		}
+	}
+	return out, nil
+}
+
+func fetchBinancePositionEntryFills(ctx context.Context, client binance.Client, symbol string, positions []okx.Position, now time.Time) ([]positionEntryFill, error) {
+	if len(positions) == 0 {
+		return nil, nil
+	}
+	since := now.Add(-positionEntryLookback)
+	windowEnd := now.UTC()
+	out := []positionEntryFill{}
+	for windowEnd.After(since) {
+		windowStart := windowEnd.Add(-binanceUserTradesWindow)
+		if windowStart.Before(since) {
+			windowStart = since
+		}
+		trades, err := client.UserTrades(ctx, symbol, windowStart, windowEnd, binanceUserTradesLimit)
+		if err != nil {
+			return nil, err
+		}
+		for _, trade := range trades {
+			fillTime := time.UnixMilli(trade.Time).UTC()
+			if fillTime.Before(since) {
+				continue
+			}
+			size, err := strconv.ParseFloat(strings.TrimSpace(trade.Qty), 64)
+			if err != nil || size <= 0 {
+				continue
+			}
+			out = append(out, positionEntryFill{
+				InstID:   strings.ToUpper(strings.TrimSpace(trade.Symbol)),
+				PosSide:  trade.PositionSide,
+				Side:     trade.Side,
+				Size:     size,
+				FillTime: fillTime,
+			})
+		}
+		if allPositionEntryTimesFound(positions, out) {
+			return out, nil
+		}
+		if len(trades) >= binanceUserTradesLimit {
+			return out, fmt.Errorf("Binance %s 7天成交超过 %d 条，成交历史可能不足", symbol, binanceUserTradesLimit)
+		}
+		windowEnd = windowStart.Add(-time.Millisecond)
+	}
+	return out, nil
+}
+
+func positionViewsWithEntryTimes(positions []okx.Position, fills []positionEntryFill, now time.Time, source string, fillErr error) []positionView {
+	views := make([]positionView, 0, len(positions))
+	for _, position := range positions {
+		views = append(views, positionViewWithEntryTime(position, fills, now, source, fillErr))
+	}
+	return views
+}
+
+func binancePositionViewsWithEntryTimes(positions []okx.Position, fillsBySymbol map[string][]positionEntryFill, errorsBySymbol map[string]error, now time.Time) []positionView {
+	views := make([]positionView, 0, len(positions))
+	for _, position := range positions {
+		symbol := strings.ToUpper(strings.TrimSpace(position.InstID))
+		views = append(views, positionViewWithEntryTime(position, fillsBySymbol[symbol], now, entryTimeSourceBinanceTrade, errorsBySymbol[symbol]))
+	}
+	return views
+}
+
+func positionViewWithEntryTime(position okx.Position, fills []positionEntryFill, now time.Time, source string, fillErr error) positionView {
+	view := positionView{Position: position}
+	if fillErr != nil {
+		view.EntryTimeError = "成交历史读取失败: " + fillErr.Error()
+		return view
+	}
+	entryTime, ok, message := positionEntryFillTime(position, fills)
+	if !ok {
+		view.EntryTimeError = message
+		return view
+	}
+	view.EntryFillTime = entryTime.UTC().Format(time.RFC3339Nano)
+	view.EntryTimeSource = source
+	if seconds := int64(now.UTC().Sub(entryTime.UTC()).Seconds()); seconds > 0 {
+		view.HoldingSeconds = seconds
+	}
+	return view
+}
+
+func allPositionEntryTimesFound(positions []okx.Position, fills []positionEntryFill) bool {
+	for _, position := range positions {
+		if _, ok, _ := positionEntryFillTime(position, fills); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func positionEntryFillTime(position okx.Position, fills []positionEntryFill) (time.Time, bool, string) {
+	current, ok := signedPositionSize(position)
+	if !ok || nearlyZero(current) {
+		return time.Time{}, false, "当前持仓数量无效，无法计算成交起点"
+	}
+	currentSign := signOf(current)
+	relevant := make([]positionEntryFill, 0, len(fills))
+	for _, fill := range fills {
+		if !positionEntryFillMatches(position, fill) {
+			continue
+		}
+		if _, ok := signedFillSize(fill); !ok {
+			continue
+		}
+		relevant = append(relevant, fill)
+	}
+	sort.Slice(relevant, func(i, j int) bool {
+		if relevant[i].FillTime.Equal(relevant[j].FillTime) {
+			return relevant[i].Side < relevant[j].Side
+		}
+		return relevant[i].FillTime.After(relevant[j].FillTime)
+	})
+	after := current
+	for _, fill := range relevant {
+		delta, ok := signedFillSize(fill)
+		if !ok {
+			continue
+		}
+		before := after - delta
+		if signOf(after) == currentSign && (nearlyZero(before) || signOf(before) != currentSign) {
+			return fill.FillTime, true, ""
+		}
+		after = before
+	}
+	return time.Time{}, false, "90天内成交不足，无法重建当前持仓起点"
+}
+
+func positionEntryFillMatches(position okx.Position, fill positionEntryFill) bool {
+	if !strings.EqualFold(strings.TrimSpace(position.InstID), strings.TrimSpace(fill.InstID)) {
+		return false
+	}
+	positionKind := positionDirectionKind(position)
+	fillPosSide := normalizePosSide(fill.PosSide)
+	if fillPosSide == "" || fillPosSide == "net" {
+		return true
+	}
+	return fillPosSide == positionKind
+}
+
+func signedPositionSize(position okx.Position) (float64, bool) {
+	size, err := strconv.ParseFloat(strings.TrimSpace(position.Pos), 64)
+	if err != nil {
+		return 0, false
+	}
+	switch positionDirectionKind(position) {
+	case "long":
+		return math.Abs(size), true
+	case "short":
+		return -math.Abs(size), true
+	default:
+		return size, true
+	}
+}
+
+func signedFillSize(fill positionEntryFill) (float64, bool) {
+	size := math.Abs(fill.Size)
+	if size <= 0 {
+		return 0, false
+	}
+	switch strings.ToLower(strings.TrimSpace(fill.Side)) {
+	case "buy":
+		return size, true
+	case "sell":
+		return -size, true
+	default:
+		return 0, false
+	}
+}
+
+func positionDirectionKind(position okx.Position) string {
+	switch normalizePosSide(position.PosSide) {
+	case "long":
+		return "long"
+	case "short":
+		return "short"
+	}
+	size, err := strconv.ParseFloat(strings.TrimSpace(position.Pos), 64)
+	if err != nil {
+		return ""
+	}
+	if size > positionEntrySizeEpsilon {
+		return "long"
+	}
+	if size < -positionEntrySizeEpsilon {
+		return "short"
+	}
+	return ""
+}
+
+func signOf(v float64) int {
+	if v > positionEntrySizeEpsilon {
+		return 1
+	}
+	if v < -positionEntrySizeEpsilon {
+		return -1
+	}
+	return 0
+}
+
+func nearlyZero(v float64) bool {
+	return math.Abs(v) <= positionEntrySizeEpsilon
+}
+
+func positionsByInstID(positions []okx.Position) map[string][]okx.Position {
+	out := make(map[string][]okx.Position)
+	for _, position := range positions {
+		instID := strings.ToUpper(strings.TrimSpace(position.InstID))
+		if instID == "" {
+			continue
+		}
+		out[instID] = append(out[instID], position)
+	}
+	return out
 }
 
 func binancePositionToOKX(position binance.Position) okx.Position {
@@ -2253,7 +2637,7 @@ func absolutePositionSize(raw string) string {
 
 func normalizePosSide(raw string) string {
 	raw = strings.ToLower(strings.TrimSpace(raw))
-	if raw == "net" {
+	if raw == "net" || raw == "both" {
 		return ""
 	}
 	return raw

@@ -314,6 +314,7 @@ type Fill struct {
 	OrdID    string `json:"ordId"`
 	ClOrdID  string `json:"clOrdId"`
 	Side     string `json:"side"`
+	PosSide  string `json:"posSide"`
 	FillPx   string `json:"fillPx"`
 	FillSz   string `json:"fillSz"`
 	FillPnl  string `json:"fillPnl"`

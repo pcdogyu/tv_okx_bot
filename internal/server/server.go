@@ -43,6 +43,7 @@ type Server struct {
 	Now                func() time.Time
 	Upgrade            *upgrade.Manager
 	BuildInfo          BuildInfo
+	positionEntryCache positionEntryFillCache
 }
 
 const (

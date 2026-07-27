@@ -149,9 +149,15 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("font-size: 12px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-actions-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-position-amount-col")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pos-entry-time-col")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pos-holding-time-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("仓位金额")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("<th>下单时间</th>")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("<th>持仓时间</th>")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionAmount(row)")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionReturnRatio")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("formatHoldingSeconds")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("positionEntryTimeCell")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("rawRatio * lever")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`colspan="15"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
@@ -179,6 +185,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions/close")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-position-close")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("<th>操作</th>")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("<th>保证金模式</th>")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("<th>强平价</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>订单 ID</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>客户端 ID</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>更新时间</th>")) {
@@ -1113,23 +1121,36 @@ func TestUSDTBalanceSamplerStoresConfiguredAccounts(t *testing.T) {
 
 func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	srv := newTestServer(t)
-	var sawPositions bool
+	entryFillTime := srv.now().Add(-2 * time.Hour)
+	reduceFillTime := srv.now().Add(-time.Hour)
+	var sawPositions, sawFills bool
 	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v5/account/positions" {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			sawPositions = true
+			if r.URL.Query().Get("instType") != "SWAP" {
+				t.Fatalf("bad positions query: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
+				t.Fatalf("missing private OKX headers")
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posId":"1","posSide":"long","pos":"0.5","availPos":"0.5","avgPx":"64000","markPx":"65000","upl":"500","uplRatio":"0.015","lever":"5","liqPx":"51000","notionalUsd":"32500","margin":"6500","mgnRatio":"100","uTime":"1784880000000"},
+				{"instType":"SWAP","instId":"ETH-USDT-SWAP","mgnMode":"isolated","posId":"2","posSide":"short","pos":"0","availPos":"0","avgPx":"2500","markPx":"2490","upl":"0","uplRatio":"0","lever":"5","notionalUsd":"0","uTime":"1784880000000"}
+			]}`))
+		case "/api/v5/trade/fills-history":
+			sawFills = true
+			if r.URL.Query().Get("instType") != "SWAP" || r.URL.Query().Get("limit") != "100" {
+				t.Fatalf("bad fills query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"trade-2","ordId":"order-2","side":"sell","posSide":"long","fillSz":"0.2","fillTime":"%d"},
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"trade-1","ordId":"order-1","side":"buy","posSide":"long","fillSz":"0.7","fillTime":"%d"}
+			]}`, reduceFillTime.UnixMilli(), entryFillTime.UnixMilli())))
+		default:
 			t.Fatalf("unexpected OKX path %s", r.URL.Path)
 		}
-		sawPositions = true
-		if r.URL.Query().Get("instType") != "SWAP" {
-			t.Fatalf("bad positions query: %s", r.URL.RawQuery)
-		}
-		if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
-			t.Fatalf("missing private OKX headers")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
-			{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posId":"1","posSide":"long","pos":"0.5","availPos":"0.5","avgPx":"64000","markPx":"65000","upl":"500","uplRatio":"0.015","lever":"5","liqPx":"51000","notionalUsd":"32500","margin":"6500","mgnRatio":"100","uTime":"1784880000000"},
-			{"instType":"SWAP","instId":"ETH-USDT-SWAP","mgnMode":"isolated","posId":"2","posSide":"short","pos":"0","availPos":"0","avgPx":"2500","markPx":"2490","upl":"0","uplRatio":"0","lever":"5","notionalUsd":"0","uTime":"1784880000000"}
-		]}`))
 	}))
 	defer okxServer.Close()
 	cfg := srv.ConfigStore.Get()
@@ -1163,6 +1184,9 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	if !sawPositions {
 		t.Fatal("expected OKX positions call")
 	}
+	if !sawFills {
+		t.Fatal("expected OKX fills-history call")
+	}
 	var resp positionsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -1173,11 +1197,16 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	if resp.Positions[0].InstID != "BTC-USDT-SWAP" || resp.Positions[0].Upl != "500" {
 		t.Fatalf("bad position data: %#v", resp.Positions[0])
 	}
+	if resp.Positions[0].EntryFillTime != entryFillTime.UTC().Format(time.RFC3339Nano) || resp.Positions[0].HoldingSeconds != int64((2*time.Hour).Seconds()) || resp.Positions[0].EntryTimeSource != entryTimeSourceOKXFills {
+		t.Fatalf("bad position entry time: %#v", resp.Positions[0])
+	}
 }
 
 func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	srv := newTestServer(t)
 	seen := map[string]bool{}
+	entryTradeTime := srv.now().Add(-2 * time.Hour)
+	reduceTradeTime := srv.now().Add(-time.Hour)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path != "/fapi/v1/exchangeInfo" && r.URL.Path != "/fapi/v1/ticker/bookTicker" && r.Header.Get("X-MBX-APIKEY") != "binance-key" {
@@ -1192,6 +1221,14 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 			]`))
 		case "/fapi/v1/openOrders":
 			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":123456,"clientOrderId":"client-1","price":"49900","origQty":"0.2","executedQty":"0.1","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880005000}]`))
+		case "/fapi/v1/userTrades":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" || r.URL.Query().Get("limit") != "1000" {
+				t.Fatalf("bad user trades query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(fmt.Sprintf(`[
+				{"symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","qty":"0.1","time":%d,"id":2,"orderId":2},
+				{"symbol":"BTCUSDT","side":"BUY","positionSide":"BOTH","qty":"0.3","time":%d,"id":1,"orderId":1}
+			]`, reduceTradeTime.UnixMilli(), entryTradeTime.UnixMilli())))
 		case "/fapi/v1/exchangeInfo":
 			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.10"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
 		case "/fapi/v1/ticker/bookTicker":
@@ -1235,6 +1272,9 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if positions.Exchange != trading.ExchangeBinance || positions.APIID != "main" || len(positions.Positions) != 1 || positions.Positions[0].InstID != "BTCUSDT" {
 		t.Fatalf("bad Binance positions response: %#v", positions)
 	}
+	if positions.Positions[0].EntryFillTime != entryTradeTime.UTC().Format(time.RFC3339Nano) || positions.Positions[0].HoldingSeconds != int64((2*time.Hour).Seconds()) || positions.Positions[0].EntryTimeSource != entryTimeSourceBinanceTrade {
+		t.Fatalf("bad Binance position entry time: %#v", positions.Positions[0])
+	}
 
 	pendingReq := httptest.NewRequest(http.MethodGet, "/tvbot/pending-orders?exchange=binance", nil)
 	pendingReq.SetBasicAuth("admin", "Admin123")
@@ -1271,7 +1311,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if binanceOverview.Status != "ok" || binanceOverview.APIID != "main" || len(binanceOverview.BalancePoints) != 1 || binanceOverview.Balance.Details[0].Eq != "2000.5" {
 		t.Fatalf("bad Binance overview: %#v", overview)
 	}
-	for _, path := range []string{"/fapi/v3/positionRisk", "/fapi/v1/openOrders", "/fapi/v1/exchangeInfo", "/fapi/v1/ticker/bookTicker", "/fapi/v3/balance"} {
+	for _, path := range []string{"/fapi/v3/positionRisk", "/fapi/v1/userTrades", "/fapi/v1/openOrders", "/fapi/v1/exchangeInfo", "/fapi/v1/ticker/bookTicker", "/fapi/v3/balance"} {
 		if !seen[path] {
 			t.Fatalf("expected %s to be called, seen=%#v", path, seen)
 		}

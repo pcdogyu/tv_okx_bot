@@ -55,6 +55,52 @@ func TestClientSignsPrivateBalanceRequest(t *testing.T) {
 	}
 }
 
+func TestClientUserTradesSignsPrivateRequest(t *testing.T) {
+	const secret = "unit-secret"
+	now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+	start := now.Add(-2 * time.Hour)
+	end := now.Add(-time.Hour)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/userTrades" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-MBX-APIKEY") != "unit-key" {
+			t.Fatalf("missing API key header")
+		}
+		q := r.URL.Query()
+		if q.Get("symbol") != "BTCUSDT" || q.Get("startTime") != strconv.FormatInt(start.UnixMilli(), 10) || q.Get("endTime") != strconv.FormatInt(end.UnixMilli(), 10) || q.Get("limit") != "1000" {
+			t.Fatalf("bad user trades query: %s", r.URL.RawQuery)
+		}
+		if q.Get("timestamp") != strconv.FormatInt(now.UnixMilli(), 10) {
+			t.Fatalf("bad timestamp: %s", r.URL.RawQuery)
+		}
+		payload, gotSig := splitSignatureTail(t, r.URL.RawQuery)
+		if payload != qWithoutSignature(q).Encode() {
+			t.Fatalf("signature payload does not match request query got=%s query=%s", payload, qWithoutSignature(q).Encode())
+		}
+		if gotSig != sign(payload, secret) {
+			t.Fatalf("bad signature got=%s payload=%s", gotSig, payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","side":"BUY","positionSide":"BOTH","qty":"0.2","time":1784880000000,"id":100,"orderId":200}]`))
+	}))
+	defer ts.Close()
+
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "unit-key", SecretKey: secret},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return now },
+	}
+	trades, err := client.UserTrades(context.Background(), "btcusdt", start, end, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trades) != 1 || trades[0].Symbol != "BTCUSDT" || trades[0].Side != "BUY" || trades[0].Qty != "0.2" {
+		t.Fatalf("bad user trades: %#v", trades)
+	}
+}
+
 func TestClientParsesAPIError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
