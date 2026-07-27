@@ -60,10 +60,10 @@ type positionsResponse struct {
 
 type positionView struct {
 	okx.Position
-	EntryFillTime   string `json:"entry_fill_time,omitempty"`
+	EntryFillTime   string `json:"entry_fill_time"`
 	HoldingSeconds  int64  `json:"holding_seconds"`
-	EntryTimeSource string `json:"entry_time_source,omitempty"`
-	EntryTimeError  string `json:"entry_time_error,omitempty"`
+	EntryTimeSource string `json:"entry_time_source"`
+	EntryTimeError  string `json:"entry_time_error"`
 }
 
 type positionEntryFill struct {
