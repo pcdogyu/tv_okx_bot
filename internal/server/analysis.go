@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,14 +23,19 @@ const (
 	analysisPriceBar    = "1H"
 	defaultPriceDays    = 3
 	defaultPNLDays      = 30
+	maxAnalysisPNLDays  = 30
 	analysisCacheTTL    = 60 * time.Second
 	usdtSampleInterval  = time.Minute
 	maxBalanceMinutes   = 90 * 24 * 60
+
+	binanceAnalysisTradeWindow = 7 * 24 * time.Hour
+	binanceAnalysisTradeLimit  = 1000
 )
 
 type analysisResponse struct {
 	OK            bool                   `json:"ok"`
 	APIID         string                 `json:"api_id"`
+	BinanceAPIID  string                 `json:"binance_api_id,omitempty"`
 	Env           string                 `json:"env"`
 	PriceDays     int                    `json:"price_days"`
 	PNLDays       int                    `json:"pnl_days"`
@@ -42,6 +49,7 @@ type analysisResponse struct {
 	BalancePoints []analysisBalancePoint `json:"balance_points"`
 	Summary       analysisSymbolStats    `json:"summary"`
 	Symbols       []analysisSymbolStats  `json:"symbols"`
+	Trades        []analysisTrade        `json:"trades"`
 }
 
 type analysisCacheStatus struct {
@@ -124,6 +132,7 @@ type exchangeBalanceOverview struct {
 }
 
 type analysisSymbolStats struct {
+	Exchange         string  `json:"exchange,omitempty"`
 	InstID           string  `json:"inst_id"`
 	TradeCount       int     `json:"trade_count"`
 	Wins             int     `json:"wins"`
@@ -137,6 +146,22 @@ type analysisSymbolStats struct {
 	ProfitFactor     float64 `json:"profit_factor"`
 	ProfitFactorText string  `json:"profit_factor_text,omitempty"`
 	PayoffRatio      float64 `json:"payoff_ratio"`
+}
+
+type analysisTrade struct {
+	Exchange string    `json:"exchange"`
+	APIID    string    `json:"api_id,omitempty"`
+	InstID   string    `json:"inst_id"`
+	TradeID  string    `json:"trade_id"`
+	OrdID    string    `json:"ord_id,omitempty"`
+	Side     string    `json:"side,omitempty"`
+	FillPx   string    `json:"fill_px,omitempty"`
+	FillSz   string    `json:"fill_sz,omitempty"`
+	FillPnl  string    `json:"fill_pnl,omitempty"`
+	Fee      string    `json:"fee,omitempty"`
+	FeeCcy   string    `json:"fee_ccy,omitempty"`
+	FillTime time.Time `json:"fill_time"`
+	FillTS   int64     `json:"fill_ts"`
 }
 
 func (s *Server) StartUSDTBalanceSampler(ctx context.Context) {
@@ -310,6 +335,9 @@ func (s *Server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
 	}
 	priceDays := positiveIntQuery(r, "price_days", defaultPriceDays)
 	pnlDays := positiveIntQuery(r, "pnl_days", defaultPNLDays)
+	if pnlDays > maxAnalysisPNLDays {
+		pnlDays = maxAnalysisPNLDays
+	}
 	refresh := strings.EqualFold(r.URL.Query().Get("refresh"), "true")
 	apiID := strings.TrimSpace(r.URL.Query().Get("api_id"))
 	cfg := s.ConfigStore.Get()
@@ -322,13 +350,17 @@ func (s *Server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requestedAPIID string, priceDays, pnlDays int, refresh bool) (analysisResponse, error) {
+	if pnlDays > maxAnalysisPNLDays {
+		pnlDays = maxAnalysisPNLDays
+	}
 	creds, apiID, err := s.OKXCredentials.OKXCredentials(requestedAPIID)
 	if err != nil {
 		return analysisResponse{}, err
 	}
 	now := s.now()
 	envName := analysisEnvName(cfg)
-	cacheKey := analysisCacheKey(apiID, envName, priceDays, pnlDays)
+	binanceCreds, binanceAPIID, binanceConfigured := s.analysisBinanceCredentials()
+	cacheKey := analysisCacheKey(apiID, binanceAPIID, envName, priceDays, pnlDays)
 	if !refresh {
 		if cached, ok, err := s.Orders.CachedPayload(cacheKey); err != nil {
 			return analysisResponse{}, err
@@ -350,6 +382,17 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		return analysisResponse{}, err
 	}
 	source := analysisSourceStatus{Balance: "okx", Price: "okx", Fills: "okx"}
+	binanceTrades := []analysisTrade{}
+	if binanceConfigured {
+		source.Fills = "okx+binance"
+		binanceTrades, err = s.fetchBinanceAnalysisTrades(ctx, s.analysisBinanceClient(cfg, binanceCreds), binanceAPIID, cfg, pnlDays, now)
+		if err != nil {
+			source.Fills = "okx+binance_error"
+			if s.Logger != nil {
+				s.Logger.Warn("failed to fetch Binance analysis trades", "api_id", binanceAPIID, "env", envName, "error", err)
+			}
+		}
+	}
 	if err := s.refreshAnalysisData(ctx, client, apiID, priceDays, pnlDays, now); err != nil {
 		cached, ok, cacheErr := s.Orders.CachedPayload(cacheKey)
 		if cacheErr == nil && ok {
@@ -365,7 +408,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		}
 		return analysisResponse{}, err
 	}
-	resp, err := s.analysisFromStore(apiID, envName, priceDays, pnlDays, now, source)
+	resp, err := s.analysisFromStore(apiID, binanceAPIID, envName, priceDays, pnlDays, now, source, binanceTrades)
 	if err != nil {
 		return analysisResponse{}, err
 	}
@@ -375,6 +418,24 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		s.Logger.Warn("failed to write analysis cache", "error", err)
 	}
 	return resp, nil
+}
+
+func (s *Server) analysisBinanceCredentials() (binance.Credentials, string, bool) {
+	if s.BinanceCredentials == nil {
+		return binance.Credentials{}, "", false
+	}
+	status := s.BinanceCredentials.Status()
+	if !status.Configured {
+		return binance.Credentials{}, strings.TrimSpace(status.ActiveID), false
+	}
+	creds, apiID, err := s.BinanceCredentials.BinanceCredentials("")
+	if err != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("failed to resolve Binance analysis credentials", "error", err)
+		}
+		return binance.Credentials{}, strings.TrimSpace(status.ActiveID), false
+	}
+	return creds, apiID, true
 }
 
 func (s *Server) analysisOKXClient(cfg config.Config, creds okx.Credentials) okx.Client {
@@ -402,8 +463,8 @@ func analysisEnvName(cfg config.Config) string {
 	return envName
 }
 
-func analysisCacheKey(apiID, envName string, priceDays, pnlDays int) string {
-	return "analysis|" + apiID + "|" + envName + "|" + strconv.Itoa(priceDays) + "|" + strconv.Itoa(pnlDays)
+func analysisCacheKey(apiID, binanceAPIID, envName string, priceDays, pnlDays int) string {
+	return "analysis|" + apiID + "|binance:" + binanceAPIID + "|" + envName + "|" + strconv.Itoa(priceDays) + "|" + strconv.Itoa(pnlDays)
 }
 
 func (s *Server) refreshAnalysisData(ctx context.Context, client okx.Client, apiID string, priceDays, pnlDays int, now time.Time) error {
@@ -656,7 +717,186 @@ func (s *Server) refreshFills(ctx context.Context, client okx.Client, apiID stri
 	return nil
 }
 
-func (s *Server) analysisFromStore(apiID, envName string, priceDays, pnlDays int, now time.Time, source analysisSourceStatus) (analysisResponse, error) {
+func (s *Server) fetchBinanceAnalysisTrades(ctx context.Context, client binance.Client, apiID string, cfg config.Config, pnlDays int, now time.Time) ([]analysisTrade, error) {
+	if pnlDays <= 0 {
+		pnlDays = defaultPNLDays
+	}
+	if pnlDays > maxAnalysisPNLDays {
+		pnlDays = maxAnalysisPNLDays
+	}
+	since := now.AddDate(0, 0, -pnlDays).UTC()
+	symbols := s.analysisBinanceSymbols(cfg, since)
+	if len(symbols) == 0 {
+		return nil, nil
+	}
+	out := []analysisTrade{}
+	for _, symbol := range symbols {
+		trades, err := fetchBinanceAnalysisSymbolTrades(ctx, client, apiID, symbol, since, now.UTC())
+		if err != nil {
+			return out, err
+		}
+		out = append(out, trades...)
+	}
+	return out, nil
+}
+
+func fetchBinanceAnalysisSymbolTrades(ctx context.Context, client binance.Client, apiID, symbol string, since, until time.Time) ([]analysisTrade, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	if symbol == "" {
+		return nil, nil
+	}
+	out := []analysisTrade{}
+	windowEnd := until.UTC()
+	if windowEnd.IsZero() {
+		windowEnd = time.Now().UTC()
+	}
+	for windowEnd.After(since) {
+		windowStart := windowEnd.Add(-binanceAnalysisTradeWindow)
+		if windowStart.Before(since) {
+			windowStart = since
+		}
+		trades, err := client.UserTrades(ctx, symbol, windowStart, windowEnd, binanceAnalysisTradeLimit)
+		if err != nil {
+			return out, err
+		}
+		for _, trade := range trades {
+			row, ok := analysisTradeFromBinanceTrade(apiID, trade)
+			if !ok || row.FillTime.Before(since) || row.FillTime.After(until) {
+				continue
+			}
+			out = append(out, row)
+		}
+		if len(trades) >= binanceAnalysisTradeLimit {
+			return out, fmt.Errorf("Binance %s 7d trades reached %d limit; analysis trade history may be incomplete", symbol, binanceAnalysisTradeLimit)
+		}
+		windowEnd = windowStart.Add(-time.Millisecond)
+	}
+	return out, nil
+}
+
+func (s *Server) analysisBinanceSymbols(cfg config.Config, since time.Time) []string {
+	seen := map[string]bool{}
+	add := func(symbol string) {
+		symbol = strings.ToUpper(strings.TrimSpace(symbol))
+		if symbol == "" || seen[symbol] {
+			return
+		}
+		seen[symbol] = true
+	}
+	for key, sym := range cfg.Symbols {
+		if symbol, ok := deriveBinanceAnalysisSymbol(sym.Coinpair, key, ""); ok {
+			add(symbol)
+		}
+	}
+	if s.Orders != nil {
+		for _, rec := range s.Orders.List(10000) {
+			if rec.AcceptedAt.Before(since) && rec.UpdatedAt.Before(since) {
+				continue
+			}
+			if trading.NormalizeExchange(rec.TargetExchange) != trading.ExchangeBinance {
+				continue
+			}
+			if symbol, ok := deriveBinanceAnalysisSymbol(rec.Result.InstID, rec.Coinpair, rec.Ticker); ok {
+				add(symbol)
+			}
+		}
+	}
+	symbols := make([]string, 0, len(seen))
+	for symbol := range seen {
+		symbols = append(symbols, symbol)
+	}
+	sort.Strings(symbols)
+	return symbols
+}
+
+func deriveBinanceAnalysisSymbol(candidates ...string) (string, bool) {
+	for _, candidate := range candidates {
+		raw := strings.ToUpper(strings.TrimSpace(candidate))
+		if raw == "" {
+			continue
+		}
+		if strings.Contains(raw, "-") {
+			parts := strings.Split(raw, "-")
+			if len(parts) >= 2 && parts[1] == "USDT" {
+				raw = parts[0] + "USDT"
+			}
+		}
+		symbol, err := binance.DeriveUSDMSymbol(raw, raw)
+		if err != nil {
+			continue
+		}
+		symbol = strings.ToUpper(strings.TrimSpace(symbol))
+		if strings.HasSuffix(symbol, "USDT") {
+			return symbol, true
+		}
+	}
+	return "", false
+}
+
+func analysisTradeFromOKXFill(fill storage.OKXFill) (analysisTrade, bool) {
+	instID := strings.ToUpper(strings.TrimSpace(fill.InstID))
+	if instID == "" || fill.FillTime <= 0 {
+		return analysisTrade{}, false
+	}
+	return analysisTrade{
+		Exchange: trading.ExchangeOKX,
+		APIID:    strings.TrimSpace(fill.APIID),
+		InstID:   instID,
+		TradeID:  strings.TrimSpace(fill.TradeID),
+		OrdID:    strings.TrimSpace(fill.OrdID),
+		Side:     strings.TrimSpace(fill.Side),
+		FillPx:   strings.TrimSpace(fill.FillPx),
+		FillSz:   strings.TrimSpace(fill.FillSz),
+		FillPnl:  strings.TrimSpace(fill.FillPnl),
+		Fee:      strings.TrimSpace(fill.Fee),
+		FeeCcy:   strings.TrimSpace(fill.FeeCcy),
+		FillTime: time.UnixMilli(fill.FillTime).UTC(),
+		FillTS:   fill.FillTime,
+	}, true
+}
+
+func analysisTradeFromBinanceTrade(apiID string, trade binance.UserTrade) (analysisTrade, bool) {
+	instID := strings.ToUpper(strings.TrimSpace(trade.Symbol))
+	if instID == "" || trade.Time <= 0 {
+		return analysisTrade{}, false
+	}
+	fee := normalizedBinanceFee(trade.Commission)
+	return analysisTrade{
+		Exchange: trading.ExchangeBinance,
+		APIID:    strings.TrimSpace(apiID),
+		InstID:   instID,
+		TradeID:  strconv.FormatInt(trade.ID, 10),
+		OrdID:    strconv.FormatInt(trade.OrderID, 10),
+		Side:     strings.TrimSpace(trade.Side),
+		FillPx:   strings.TrimSpace(trade.Price),
+		FillSz:   strings.TrimSpace(trade.Qty),
+		FillPnl:  strings.TrimSpace(trade.RealizedPnl),
+		Fee:      fee,
+		FeeCcy:   strings.TrimSpace(trade.CommissionAsset),
+		FillTime: time.UnixMilli(trade.Time).UTC(),
+		FillTS:   trade.Time,
+	}, true
+}
+
+func normalizedBinanceFee(commission string) string {
+	raw := strings.TrimSpace(commission)
+	if raw == "" || raw == "0" {
+		return raw
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		if strings.HasPrefix(raw, "-") {
+			return raw
+		}
+		return "-" + raw
+	}
+	if value > 0 {
+		value = -value
+	}
+	return trading.NormalizeFloat(value)
+}
+
+func (s *Server) analysisFromStore(apiID, binanceAPIID, envName string, priceDays, pnlDays int, now time.Time, source analysisSourceStatus, binanceTrades []analysisTrade) (analysisResponse, error) {
 	priceLimit := priceDays * 24
 	balanceLimit := priceDays*24*60 + 1
 	priceSince := now.AddDate(0, 0, -priceDays)
@@ -685,26 +925,37 @@ func (s *Server) analysisFromStore(apiID, envName string, priceDays, pnlDays int
 	if err != nil {
 		return analysisResponse{}, err
 	}
-	summary, symbols := computeStats(fills)
+	trades := make([]analysisTrade, 0, len(fills)+len(binanceTrades))
+	for _, fill := range fills {
+		trade, ok := analysisTradeFromOKXFill(fill)
+		if ok {
+			trades = append(trades, trade)
+		}
+	}
+	trades = append(trades, binanceTrades...)
+	sortAnalysisTrades(trades)
+	summary, symbols := computeStats(trades)
 	return analysisResponse{
-		OK:          true,
-		APIID:       apiID,
-		Env:         envName,
-		PriceDays:   priceDays,
-		PNLDays:     pnlDays,
-		PriceInstID: analysisPriceInstID,
-		PriceBar:    analysisPriceBar,
-		RefreshedAt: now.UTC(),
+		OK:           true,
+		APIID:        apiID,
+		BinanceAPIID: binanceAPIID,
+		Env:          envName,
+		PriceDays:    priceDays,
+		PNLDays:      pnlDays,
+		PriceInstID:  analysisPriceInstID,
+		PriceBar:     analysisPriceBar,
+		RefreshedAt:  now.UTC(),
 		Cache: analysisCacheStatus{
 			Hit:      false,
 			Stale:    false,
-			CacheKey: analysisCacheKey(apiID, envName, priceDays, pnlDays),
+			CacheKey: analysisCacheKey(apiID, binanceAPIID, envName, priceDays, pnlDays),
 		},
 		Source:        source,
 		PricePoints:   points,
 		BalancePoints: balancePoints,
 		Summary:       summary,
 		Symbols:       symbols,
+		Trades:        trades,
 	}, nil
 }
 
@@ -875,14 +1126,20 @@ func snapshotValue(snapshot storage.USDTBalanceSnapshot) float64 {
 	return 0
 }
 
-func computeStats(fills []storage.OKXFill) (analysisSymbolStats, []analysisSymbolStats) {
+func computeStats(fills []analysisTrade) (analysisSymbolStats, []analysisSymbolStats) {
 	bySymbol := map[string]*analysisSymbolStats{}
 	summary := analysisSymbolStats{InstID: "ALL"}
 	for _, fill := range fills {
-		stats := bySymbol[fill.InstID]
+		exchange := trading.NormalizeExchange(fill.Exchange)
+		instID := strings.ToUpper(strings.TrimSpace(fill.InstID))
+		if instID == "" {
+			continue
+		}
+		key := exchange + "|" + instID
+		stats := bySymbol[key]
 		if stats == nil {
-			stats = &analysisSymbolStats{InstID: fill.InstID}
-			bySymbol[fill.InstID] = stats
+			stats = &analysisSymbolStats{Exchange: exchange, InstID: instID}
+			bySymbol[key] = stats
 		}
 		net := parseFloat(fill.FillPnl)
 		fee := 0.0
@@ -937,11 +1194,28 @@ func finalizeStats(stats *analysisSymbolStats) {
 func sortSymbolStats(symbols []analysisSymbolStats) {
 	for i := 0; i < len(symbols); i++ {
 		for j := i + 1; j < len(symbols); j++ {
-			if symbols[j].NetPnL > symbols[i].NetPnL {
+			if symbols[j].NetPnL > symbols[i].NetPnL ||
+				(symbols[j].NetPnL == symbols[i].NetPnL && symbols[j].Exchange < symbols[i].Exchange) ||
+				(symbols[j].NetPnL == symbols[i].NetPnL && symbols[j].Exchange == symbols[i].Exchange && symbols[j].InstID < symbols[i].InstID) {
 				symbols[i], symbols[j] = symbols[j], symbols[i]
 			}
 		}
 	}
+}
+
+func sortAnalysisTrades(trades []analysisTrade) {
+	sort.SliceStable(trades, func(i, j int) bool {
+		if trades[i].FillTS == trades[j].FillTS {
+			if trades[i].Exchange == trades[j].Exchange {
+				if trades[i].InstID == trades[j].InstID {
+					return trades[i].TradeID > trades[j].TradeID
+				}
+				return trades[i].InstID < trades[j].InstID
+			}
+			return trades[i].Exchange < trades[j].Exchange
+		}
+		return trades[i].FillTS > trades[j].FillTS
+	})
 }
 
 func parseFloat(v string) float64 {

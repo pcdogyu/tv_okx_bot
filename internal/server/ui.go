@@ -694,6 +694,15 @@ const tvbotHTML = `<!doctype html>
     .symbol-table {
       min-width: 980px;
     }
+    .analysis-table-wrap {
+      overflow-x: auto;
+    }
+    .analysis-symbol-table {
+      min-width: 1080px;
+    }
+    .analysis-trade-table {
+      min-width: 1280px;
+    }
     .positions-table {
       min-width: 1360px;
     }
@@ -1048,12 +1057,28 @@ const tvbotHTML = `<!doctype html>
         <div class="analysis-card"><div class="label">盈亏比</div><div class="value" id="analysis-payoff-ratio">-</div></div>
         <div class="analysis-card"><div class="label">成交数</div><div class="value" id="analysis-trades">-</div></div>
       </div>
-      <table>
-        <thead>
-          <tr><th>币对</th><th>成交数</th><th>盈利数</th><th>亏损数</th><th>净盈亏</th><th>手续费</th><th>胜率</th><th>盈利因子</th><th>盈亏比</th></tr>
-        </thead>
-        <tbody id="analysis-rows"></tbody>
-      </table>
+      <div class="section-head" style="margin-top:10px">
+        <h3>币对分析</h3>
+      </div>
+      <div class="analysis-table-wrap">
+        <table class="analysis-symbol-table">
+          <thead>
+            <tr><th>交易所</th><th>币对</th><th>成交数</th><th>盈利数</th><th>亏损数</th><th>净盈亏</th><th>手续费</th><th>胜率</th><th>盈利因子</th><th>盈亏比</th></tr>
+          </thead>
+          <tbody id="analysis-rows"></tbody>
+        </table>
+      </div>
+      <div class="section-head" style="margin-top:14px">
+        <h3>成交历史</h3>
+      </div>
+      <div class="analysis-table-wrap">
+        <table class="analysis-trade-table">
+          <thead>
+            <tr><th>交易所</th><th>成交时间</th><th>币对</th><th>方向</th><th>成交价</th><th>成交量</th><th>已实现盈亏</th><th>手续费</th><th>订单 ID</th><th>成交 ID</th></tr>
+          </thead>
+          <tbody id="analysis-trade-rows"></tbody>
+        </table>
+      </div>
     </section>
 
     <section id="apiKeys">
@@ -2618,12 +2643,16 @@ const tvbotHTML = `<!doctype html>
         $("analysis-profit-factor").textContent = "-";
         $("analysis-payoff-ratio").textContent = "-";
         $("analysis-trades").textContent = "-";
-        $("analysis-rows").innerHTML = '<tr><td colspan="9" class="muted">' + escapeHTML(state.analysisError || "-") + '</td></tr>';
+        $("analysis-rows").innerHTML = '<tr><td colspan="10" class="muted">' + escapeHTML(state.analysisError || "-") + '</td></tr>';
+        $("analysis-trade-rows").innerHTML = '<tr><td colspan="10" class="muted">' + escapeHTML(state.analysisError || "-") + '</td></tr>';
         return;
       }
       const summary = state.analysis.summary || {};
       renderAnalysisExchangeBalances();
-      $("analysis-updated").textContent = "订单统计 " + shanghaiTime(state.analysis.refreshed_at) + " / API " + asText(state.analysis.api_id);
+      const okxAPI = asText(state.analysis.api_id);
+      const binanceAPI = asText(state.analysis.binance_api_id);
+      const apiText = binanceAPI === "-" ? "OKX " + okxAPI : "OKX " + okxAPI + " / Binance " + binanceAPI;
+      $("analysis-updated").textContent = "订单统计 " + shanghaiTime(state.analysis.refreshed_at) + " / API " + apiText;
       $("analysis-net-pnl").textContent = formatNumber(summary.net_pnl) + " USDT";
       $("analysis-win-rate").textContent = formatPct(summary.win_rate);
       $("analysis-profit-factor").textContent = formatFactor(summary);
@@ -2631,6 +2660,7 @@ const tvbotHTML = `<!doctype html>
       $("analysis-trades").textContent = asText(summary.trade_count);
       const rows = (state.analysis.symbols || []).map((row) => {
         return "<tr>" +
+          "<td>" + escapeHTML(exchangeLabel(row.exchange)) + "</td>" +
           "<td>" + escapeHTML(asText(row.inst_id)) + "</td>" +
           "<td>" + escapeHTML(asText(row.trade_count)) + "</td>" +
           "<td>" + escapeHTML(asText(row.wins)) + "</td>" +
@@ -2642,7 +2672,23 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(formatNumber(row.payoff_ratio)) + "</td>" +
           "</tr>";
       });
-      $("analysis-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">暂无 OKX 成交历史</td></tr>';
+      $("analysis-rows").innerHTML = rows.join("") || '<tr><td colspan="10" class="muted">暂无成交统计</td></tr>';
+      const tradeRows = (state.analysis.trades || []).map((row) => {
+        const feeText = formatNumber(row.fee) + (row.fee_ccy ? " " + row.fee_ccy : "");
+        return "<tr>" +
+          "<td>" + escapeHTML(exchangeLabel(row.exchange)) + "</td>" +
+          '<td class="time">' + escapeHTML(shanghaiTime(row.fill_time)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.inst_id)) + "</td>" +
+          "<td>" + escapeHTML(tradeSideText(row.side)) + "</td>" +
+          "<td>" + escapeHTML(formatNumber(row.fill_px)) + "</td>" +
+          "<td>" + escapeHTML(formatAssetAmount(row.fill_sz)) + "</td>" +
+          signedCell(row.fill_pnl, formatNumber(row.fill_pnl)) +
+          signedCell(row.fee, feeText) +
+          "<td>" + escapeHTML(asText(row.ord_id)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.trade_id)) + "</td>" +
+          "</tr>";
+      });
+      $("analysis-trade-rows").innerHTML = tradeRows.join("") || '<tr><td colspan="10" class="muted">暂无成交历史</td></tr>';
     }
 
     function renderAnalysisExchangeBalances() {

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -196,7 +197,6 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("<th>操作</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>保证金模式</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>强平价</th>")) ||
-		bytes.Contains(ui.Body.Bytes(), []byte("<th>订单 ID</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>客户端 ID</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>更新时间</th>")) {
 		t.Fatalf("tvbot ui should include current positions tab")
@@ -238,7 +238,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-usdt-eq")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-asset-count")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-balance-rows")) {
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-balance-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("币对分析")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("成交历史")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-symbol-table")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-table")) {
 		t.Fatalf("tvbot ui should include exchange balance analysis")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("chart-grid")) ||
@@ -953,13 +958,15 @@ func TestTVBotBinanceAPIKeysSaveAndTest(t *testing.T) {
 	}
 }
 
-func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
+func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T) {
 	srv := newTestServer(t)
 	fillTime1 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
 	fillTime2 := time.Date(2026, 7, 23, 4, 0, 0, 0, time.UTC).UnixMilli()
+	binanceTradeTime := time.Date(2026, 7, 23, 5, 0, 0, 0, time.UTC).UnixMilli()
 	candleTime1 := time.Date(2026, 7, 23, 2, 0, 0, 0, time.UTC).UnixMilli()
 	candleTime2 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
 	var sawBalance, sawCandles, sawFills bool
+	sawBinanceSymbols := map[string]bool{}
 	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -998,10 +1005,38 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 		}
 	}))
 	defer okxServer.Close()
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/fapi/v1/userTrades" {
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key")
+		}
+		query := r.URL.Query()
+		symbol := query.Get("symbol")
+		if symbol == "" || query.Get("limit") != "1000" {
+			t.Fatalf("bad Binance user trades query: %s", r.URL.RawQuery)
+		}
+		startMS, _ := strconv.ParseInt(query.Get("startTime"), 10, 64)
+		endMS, _ := strconv.ParseInt(query.Get("endTime"), 10, 64)
+		if startMS <= 0 || endMS <= 0 || endMS-startMS > int64((7*24*time.Hour).Milliseconds()) {
+			t.Fatalf("bad Binance analysis time window: %s", r.URL.RawQuery)
+		}
+		sawBinanceSymbols[symbol] = true
+		if symbol == "BTCUSDT" && startMS <= binanceTradeTime && endMS >= binanceTradeTime {
+			_, _ = w.Write([]byte(fmt.Sprintf(`[{"symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","price":"64000","qty":"0.01","realizedPnl":"4.2","commission":"0.2","commissionAsset":"USDT","time":%d,"id":9001,"orderId":8001}]`, binanceTradeTime)))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer binanceServer.Close()
 	cfg := srv.ConfigStore.Get()
 	cfg.Trading.BaseURL = okxServer.URL
+	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
 	srv.ConfigStore = config.NewStore("", cfg)
 	srv.OKXHTTPClient = okxServer.Client()
+	srv.BinanceHTTPClient = binanceServer.Client()
 	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
 		ID:     "default",
 		Active: true,
@@ -1013,13 +1048,23 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:     "binance-main",
+		Active: true,
+		Credentials: binance.Credentials{
+			APIKey:    "binance-key",
+			SecretKey: "binance-secret",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	unauth := httptest.NewRecorder()
 	srv.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/tvbot/analysis", nil))
 	if unauth.Code != http.StatusUnauthorized {
 		t.Fatalf("analysis without auth code=%d", unauth.Code)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/tvbot/analysis?refresh=true", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/analysis?refresh=true&pnl_days=60", nil)
 	req.SetBasicAuth("admin", "Admin123")
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
@@ -1029,9 +1074,15 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 	if !sawBalance || !sawCandles || !sawFills {
 		t.Fatalf("expected OKX balance, candle and fills calls balance=%v candles=%v fills=%v", sawBalance, sawCandles, sawFills)
 	}
+	if !sawBinanceSymbols["BTCUSDT"] || !sawBinanceSymbols["ETHUSDT"] {
+		t.Fatalf("expected Binance configured symbols to be queried, seen=%#v", sawBinanceSymbols)
+	}
 	var resp analysisResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
+	}
+	if resp.PNLDays != maxAnalysisPNLDays || resp.BinanceAPIID != "binance-main" {
+		t.Fatalf("bad analysis API/window metadata: %#v", resp)
 	}
 	if resp.Balance.TotalEq != "80078.07" || len(resp.Balance.Details) != 2 || resp.Balance.Details[0].Ccy != "BTC" {
 		t.Fatalf("bad balance data: %#v", resp.Balance)
@@ -1049,14 +1100,24 @@ func TestTVBotAnalysisRequiresAdminAndReturnsOKXStats(t *testing.T) {
 	if len(snapshots) != 1 || snapshots[0].EqUsd != "4996.65" || snapshots[0].BucketTS != time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC).UnixMilli() {
 		t.Fatalf("analysis did not write USDT balance snapshot: %#v", snapshots)
 	}
-	if resp.Summary.TradeCount != 2 || resp.Summary.Wins != 1 || resp.Summary.Losses != 1 {
+	if resp.Summary.TradeCount != 3 || resp.Summary.Wins != 2 || resp.Summary.Losses != 1 {
 		t.Fatalf("bad summary counts: %#v", resp.Summary)
 	}
-	if math.Abs(resp.Summary.NetPnL-1.35) > 0.0000001 || resp.Summary.WinRate != 0.5 {
+	if math.Abs(resp.Summary.NetPnL-5.35) > 0.0000001 || math.Abs(resp.Summary.WinRate-(2.0/3.0)) > 0.0000001 {
 		t.Fatalf("bad summary metrics: %#v", resp.Summary)
 	}
-	if len(resp.Symbols) != 2 {
+	if len(resp.Symbols) != 3 {
 		t.Fatalf("expected symbol stats: %#v", resp.Symbols)
+	}
+	byExchangeSymbol := map[string]analysisSymbolStats{}
+	for _, stats := range resp.Symbols {
+		byExchangeSymbol[stats.Exchange+"|"+stats.InstID] = stats
+	}
+	if byExchangeSymbol["okx|BTC-USDT-SWAP"].TradeCount != 1 || byExchangeSymbol["binance|BTCUSDT"].TradeCount != 1 {
+		t.Fatalf("expected exchange-separated symbol stats: %#v", resp.Symbols)
+	}
+	if len(resp.Trades) != 3 || resp.Trades[0].Exchange != trading.ExchangeBinance || resp.Trades[0].InstID != "BTCUSDT" || resp.Trades[0].Fee != "-0.2" {
+		t.Fatalf("bad trade history: %#v", resp.Trades)
 	}
 }
 
