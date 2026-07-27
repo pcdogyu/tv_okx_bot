@@ -648,7 +648,8 @@ const tvbotHTML = `<!doctype html>
       margin: 0;
     }
     .balance-table-wrap {
-      height: 188px;
+      height: auto;
+      max-height: 188px;
       overflow: auto;
     }
     .exchange-balance-card table {
@@ -671,6 +672,9 @@ const tvbotHTML = `<!doctype html>
     }
     #usdt-chart.mini-usdt-chart {
       height: 250px;
+    }
+    #analysis .mini-usdt-chart {
+      height: 300px;
     }
     .chart-grid {
       stroke: #edf1f7;
@@ -805,6 +809,7 @@ const tvbotHTML = `<!doctype html>
       #usdt-chart { height: 320px; }
       #usdt-chart.mini-usdt-chart { height: 240px; }
       .mini-usdt-chart { height: 240px; }
+      #analysis .mini-usdt-chart { height: 288px; }
       .exchange-balance-metrics { min-height: 0; }
       .balance-table-wrap { height: auto; max-height: 260px; }
     }
@@ -2701,8 +2706,11 @@ const tvbotHTML = `<!doctype html>
       const rect = svg.getBoundingClientRect();
       const parentWidth = svg.parentElement ? svg.parentElement.clientWidth : 0;
       const isMini = svg.classList.contains("mini-usdt-chart");
+      const isAnalysisChart = !!(svg.closest && svg.closest("#analysis"));
+      const miniMinHeight = isAnalysisChart ? 300 : 240;
+      const miniFallbackHeight = isAnalysisChart ? 300 : 250;
       const width = Math.max(isMini ? 520 : 900, Math.floor(rect.width || parentWidth || (window.innerWidth - 72) || 900));
-      const height = Math.max(isMini ? 240 : 320, Math.floor(rect.height || svg.clientHeight || (isMini ? 250 : 420)));
+      const height = Math.max(isMini ? miniMinHeight : 320, Math.floor(rect.height || svg.clientHeight || (isMini ? miniFallbackHeight : 420)));
       const pad = { left: 64, right: 24, top: 18, bottom: 58 };
       const plotWidth = width - pad.left - pad.right;
       const plotHeight = height - pad.top - pad.bottom;

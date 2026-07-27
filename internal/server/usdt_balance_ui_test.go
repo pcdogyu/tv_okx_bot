@@ -15,6 +15,11 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 	for _, marker := range []string{
 		`.exchange-balance-metrics`,
 		`.balance-table-wrap`,
+		"height: auto;\n      max-height: 188px;\n      overflow: auto;",
+		`#analysis .mini-usdt-chart`,
+		`height: 300px`,
+		`height: 288px`,
+		`miniFallbackHeight = isAnalysisChart ? 300 : 250`,
 		`.balance-window-toolbar .balance-window-btn`,
 		`font-size: 16px`,
 		`data-balance-minutes="15"`,
@@ -38,6 +43,7 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`Binance USDT估值`,
 		`估值 USD`,
 		`analysis-total-eq`,
+		".balance-table-wrap {\n      height: 188px;",
 	} {
 		if strings.Contains(tvbotHTML, old) {
 			t.Fatalf("tvbot ui should not include %s", old)
