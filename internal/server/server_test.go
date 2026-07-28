@@ -184,6 +184,14 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(`tableColumnCount("pending_orders")`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("当前挂单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("renderPendingOrders")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pendingOrdersSummaryText")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("normal_count")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("algo_count")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("total_count")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 普通单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("算法订单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 普通单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("算法单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("renderTableStructure")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("saveTableColumnOrder")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("initTableColumnDrag")) ||
@@ -217,7 +225,8 @@ func TestRoutes(t *testing.T) {
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>保证金模式</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>强平价</th>")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>客户端 ID</th>")) ||
-		bytes.Contains(ui.Body.Bytes(), []byte("<th>更新时间</th>")) {
+		bytes.Contains(ui.Body.Bytes(), []byte("<th>更新时间</th>")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("挂单数 ")) {
 		t.Fatalf("tvbot ui should include current positions tab")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("币对配置")) ||
@@ -1419,6 +1428,14 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 			]`))
 		case "/fapi/v1/openOrders":
 			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":123456,"clientOrderId":"client-1","price":"49900","origQty":"0.2","executedQty":"0.1","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"NEW","time":1784880000000,"updateTime":1784880005000}]`))
+		case "/fapi/v1/openAlgoOrders":
+			if r.URL.Query().Get("algoType") != "CONDITIONAL" {
+				t.Fatalf("bad Binance open algo query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[
+				{"symbol":"BTCUSDT","algoId":900,"clientAlgoId":"tp-900","algoType":"CONDITIONAL","orderType":"TAKE_PROFIT_MARKET","side":"SELL","positionSide":"BOTH","quantity":"0.1","algoStatus":"NEW","reduceOnly":true},
+				{"symbol":"ETHUSDT","algoId":901,"clientAlgoId":"sl-901","algoType":"CONDITIONAL","orderType":"STOP_MARKET","side":"BUY","positionSide":"BOTH","quantity":"0.2","algoStatus":"NEW","reduceOnly":true}
+			]`))
 		case "/fapi/v1/userTrades":
 			if r.URL.Query().Get("symbol") != "BTCUSDT" || r.URL.Query().Get("limit") != "1000" {
 				t.Fatalf("bad user trades query: %s", r.URL.RawQuery)
@@ -1488,7 +1505,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if err := json.Unmarshal(pendingRR.Body.Bytes(), &pending); err != nil {
 		t.Fatal(err)
 	}
-	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].MidPx != "50000" || pending.Orders[0].ChasePx != "49999.9" || pending.Orders[0].Margin != "998" || pending.Orders[0].PriceError != "" {
+	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || pending.Count != 1 || pending.NormalCount != 1 || pending.AlgoCount != 2 || pending.TotalCount != 3 || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].MidPx != "50000" || pending.Orders[0].ChasePx != "49999.9" || pending.Orders[0].Margin != "998" || pending.Orders[0].PriceError != "" {
 		t.Fatalf("bad Binance pending response: %#v", pending)
 	}
 	if pending.Orders[0].PricePrecision == nil || *pending.Orders[0].PricePrecision != 2 || pending.Orders[0].QuantityPrecision == nil || *pending.Orders[0].QuantityPrecision != 3 {
@@ -1515,7 +1532,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if binanceOverview.Status != "ok" || binanceOverview.APIID != "main" || len(binanceOverview.BalancePoints) != 1 || binanceOverview.Balance.Details[0].Eq != "2000.5" {
 		t.Fatalf("bad Binance overview: %#v", overview)
 	}
-	for _, path := range []string{"/fapi/v3/positionRisk", "/fapi/v1/userTrades", "/fapi/v1/openOrders", "/fapi/v1/exchangeInfo", "/fapi/v1/ticker/bookTicker", "/fapi/v3/balance"} {
+	for _, path := range []string{"/fapi/v3/positionRisk", "/fapi/v1/userTrades", "/fapi/v1/openOrders", "/fapi/v1/openAlgoOrders", "/fapi/v1/exchangeInfo", "/fapi/v1/ticker/bookTicker", "/fapi/v3/balance"} {
 		if !seen[path] {
 			t.Fatalf("expected %s to be called, seen=%#v", path, seen)
 		}
@@ -1524,7 +1541,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 
 func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
 	srv := newTestServer(t)
-	var sawPendingOrders bool
+	var sawPendingOrders, sawAlgoOrders bool
 	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -1539,6 +1556,14 @@ func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
 				{"instType":"SWAP","instId":"ETH-USDT-SWAP","ordId":"200","clOrdId":"client-200","tdMode":"cross","side":"sell","posSide":"short","ordType":"limit","px":"2500","sz":"1","accFillSz":"0","state":"live","lever":"5","cTime":"1784880060000","uTime":"1784880060000"},
 				{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"buy","posSide":"long","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0.1","avgPx":"63950","state":"partially_filled","lever":"5","cTime":"1784880000000","uTime":"1784880060000"}
+			]}`))
+		case "/api/v5/trade/orders-algo-pending":
+			sawAlgoOrders = true
+			if r.URL.Query().Get("instType") != "SWAP" {
+				t.Fatalf("bad pending algo query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","algoId":"900","algoClOrdId":"algo-900","side":"sell","posSide":"long","ordType":"conditional","sz":"1","state":"live"}
 			]}`))
 		case "/api/v5/public/instruments":
 			instID := r.URL.Query().Get("instId")
@@ -1592,11 +1617,14 @@ func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
 	if !sawPendingOrders {
 		t.Fatal("expected OKX pending orders call")
 	}
+	if !sawAlgoOrders {
+		t.Fatal("expected OKX pending algo orders call")
+	}
 	var resp pendingOrdersResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if !resp.OK || resp.APIID != "default" || resp.Count != 2 || len(resp.Orders) != 2 {
+	if !resp.OK || resp.APIID != "default" || resp.Count != 2 || resp.NormalCount != 2 || resp.AlgoCount != 1 || resp.TotalCount != 3 || len(resp.Orders) != 2 {
 		t.Fatalf("bad pending orders response: %#v", resp)
 	}
 	if resp.Orders[0].InstID != "BTC-USDT-SWAP" || resp.Orders[0].OrdID != "100" || resp.Orders[0].AccFillSz != "0.1" || resp.Orders[0].MidPx != "64000" || resp.Orders[0].ChasePx != "63999.9" || resp.Orders[0].Margin != "5120" {

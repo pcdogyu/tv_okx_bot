@@ -2316,6 +2316,8 @@ const tvbotHTML = `<!doctype html>
     async function loadPendingOrders() {
       const results = await Promise.all(positionExchanges.map((exchange) => loadPendingOrdersExchange(exchange)));
       const rows = [];
+      let normalCount = 0;
+      let algoCount = 0;
       results.forEach((result) => {
         const exchange = normalizeExchange(result.exchange);
         const apiID = result.api_id || "";
@@ -2324,10 +2326,15 @@ const tvbotHTML = `<!doctype html>
           rememberSymbolPrecision(exchange, view);
           rows.push(view);
         });
+        normalCount += pendingOrderNormalCount(result);
+        algoCount += pendingOrderAlgoCount(result);
       });
       state.pendingOrders = {
         ok: results.some((result) => result.ok),
-        count: rows.length,
+        count: normalCount,
+        normal_count: normalCount,
+        algo_count: algoCount,
+        total_count: normalCount + algoCount,
         refreshed_at: combinedRefreshedAt(results),
         exchanges: results,
         orders: rows
@@ -2360,6 +2367,9 @@ const tvbotHTML = `<!doctype html>
       } catch (err) {
         const result = positionExchangeError(exchange, err);
         result.orders = [];
+        result.normal_count = 0;
+        result.algo_count = 0;
+        result.total_count = 0;
         return result;
       }
     }
@@ -2370,6 +2380,9 @@ const tvbotHTML = `<!doctype html>
         exchange: normalizeExchange(exchange),
         api_id: "",
         count: 0,
+        normal_count: 0,
+        algo_count: 0,
+        total_count: 0,
         refreshed_at: "",
         positions: [],
         error: err && err.message ? err.message : String(err || "读取失败")
@@ -2400,6 +2413,35 @@ const tvbotHTML = `<!doctype html>
         if (result && result.error) return label + " 失败";
         return label + " -";
       }).join(" / ");
+    }
+
+    function pendingOrderCountValue(result, key, fallback) {
+      const value = Number(result && result[key]);
+      if (Number.isFinite(value)) return Math.max(0, Math.trunc(value));
+      return Math.max(0, Math.trunc(Number(fallback || 0)));
+    }
+
+    function pendingOrderNormalCount(result) {
+      const orderCount = Array.isArray(result && result.orders) ? result.orders.length : 0;
+      return pendingOrderCountValue(result, "normal_count", pendingOrderCountValue(result, "count", orderCount));
+    }
+
+    function pendingOrderAlgoCount(result) {
+      return pendingOrderCountValue(result, "algo_count", 0);
+    }
+
+    function pendingOrdersSummaryText(response) {
+      const exchanges = response && Array.isArray(response.exchanges) ? response.exchanges : [];
+      if (exchanges.length === 0) return "-";
+      return positionExchanges.map((exchange) => {
+        const result = exchanges.find((item) => normalizeExchange(item && item.exchange) === exchange);
+        const label = exchangeLabel(exchange);
+        if (!result) return label + " -";
+        if (!result.ok || result.error) return label + " 失败";
+        if (exchange === "okx") return "OKX 普通单 " + pendingOrderNormalCount(result) + " / 算法订单 " + pendingOrderAlgoCount(result);
+        if (exchange === "binance") return "Binance 普通单 " + pendingOrderNormalCount(result) + " / 算法单 " + pendingOrderAlgoCount(result);
+        return label + " 普通单 " + pendingOrderNormalCount(result) + " / 算法单 " + pendingOrderAlgoCount(result);
+      }).join(" . ");
     }
 
     async function loadPositionView() {
@@ -2995,7 +3037,7 @@ const tvbotHTML = `<!doctype html>
         return;
       }
       const pendingReady = state.pendingOrders && state.pendingOrders.ok;
-      $("pending-orders-updated").textContent = "挂单数 " + (pendingReady ? asText(state.pendingOrders.count || rows.length) : "-") + " / " + combinedStatusText(state.pendingOrders);
+      $("pending-orders-updated").textContent = pendingReady ? pendingOrdersSummaryText(state.pendingOrders) : state.pendingOrdersError || "-";
       const orderRows = rows.map((row) => {
         return "<tr>" + columnDefs.map((col) => col.cell(row)).join("") + "</tr>";
       }).join("");

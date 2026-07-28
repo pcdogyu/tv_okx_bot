@@ -92,6 +92,9 @@ type pendingOrdersResponse struct {
 	APIID       string             `json:"api_id"`
 	InstType    string             `json:"inst_type"`
 	Count       int                `json:"count"`
+	NormalCount int                `json:"normal_count"`
+	AlgoCount   int                `json:"algo_count"`
+	TotalCount  int                `json:"total_count"`
 	RefreshedAt time.Time          `json:"refreshed_at"`
 	Orders      []pendingOrderView `json:"orders"`
 }
@@ -901,6 +904,10 @@ func (s *Server) fetchPendingOrders(ctx context.Context, cfg config.Config, requ
 	if err != nil {
 		return pendingOrdersResponse{}, err
 	}
+	algoOrders, _, err := client.PendingAlgoOrders(ctx, instType, "")
+	if err != nil {
+		return pendingOrdersResponse{}, err
+	}
 	sort.Slice(orders, func(i, j int) bool {
 		if orders[i].InstID == orders[j].InstID {
 			if orders[i].CTime == orders[j].CTime {
@@ -911,12 +918,17 @@ func (s *Server) fetchPendingOrders(ctx context.Context, cfg config.Config, requ
 		return orders[i].InstID < orders[j].InstID
 	})
 	views := s.pendingOrderViews(ctx, cfg, client, apiID, orders)
+	normalCount := len(orders)
+	algoCount := len(algoOrders)
 	return pendingOrdersResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeOKX,
 		APIID:       apiID,
 		InstType:    instType,
-		Count:       len(orders),
+		Count:       normalCount,
+		NormalCount: normalCount,
+		AlgoCount:   algoCount,
+		TotalCount:  normalCount + algoCount,
 		RefreshedAt: s.now(),
 		Orders:      views,
 	}, nil
@@ -986,6 +998,10 @@ func (s *Server) fetchBinancePendingOrders(ctx context.Context, cfg config.Confi
 	if err != nil {
 		return pendingOrdersResponse{}, err
 	}
+	algoOrders, err := client.OpenAlgoOrders(ctx, "")
+	if err != nil {
+		return pendingOrdersResponse{}, err
+	}
 	sort.Slice(orders, func(i, j int) bool {
 		if orders[i].Symbol == orders[j].Symbol {
 			return orders[i].Time > orders[j].Time
@@ -993,12 +1009,17 @@ func (s *Server) fetchBinancePendingOrders(ctx context.Context, cfg config.Confi
 		return orders[i].Symbol < orders[j].Symbol
 	})
 	views := s.binancePendingOrderViews(ctx, cfg, client, apiID, orders)
+	normalCount := len(views)
+	algoCount := len(algoOrders)
 	return pendingOrdersResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeBinance,
 		APIID:       apiID,
 		InstType:    "USDT-M",
-		Count:       len(views),
+		Count:       normalCount,
+		NormalCount: normalCount,
+		AlgoCount:   algoCount,
+		TotalCount:  normalCount + algoCount,
 		RefreshedAt: s.now(),
 		Orders:      views,
 	}, nil
