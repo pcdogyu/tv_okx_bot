@@ -281,8 +281,6 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("overview-okx-usdt-chart")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("overview-binance-usdt-chart")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-usdt-eq")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-balance-rows")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-balance-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("#analysis .mini-usdt-chart {\n      height: 360px;")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("#analysis .mini-usdt-chart { height: 346px; }")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("balance-pnl-block")) ||
@@ -318,6 +316,10 @@ func TestRoutes(t *testing.T) {
 		[]byte("analysis-binance-rows"),
 		[]byte("analysis-symbol-table"),
 		[]byte("analysis-table-wrap"),
+		[]byte("analysis-balance-rows"),
+		[]byte("analysis-binance-balance-rows"),
+		[]byte("balance-table-wrap"),
+		[]byte("balanceRowsHTML"),
 	} {
 		if bytes.Contains(ui.Body.Bytes(), removed) {
 			t.Fatalf("tvbot analysis balance UI should not include removed metric %q", removed)

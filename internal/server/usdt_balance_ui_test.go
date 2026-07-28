@@ -9,9 +9,6 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 	if got := strings.Count(tvbotHTML, `class="analysis-metrics symbol-metrics exchange-balance-metrics"`); got != 2 {
 		t.Fatalf("exchange balance metric blocks=%d, want 2", got)
 	}
-	if got := strings.Count(tvbotHTML, `class="balance-table-wrap"`); got != 2 {
-		t.Fatalf("balance table wrappers=%d, want 2", got)
-	}
 	if got := strings.Count(tvbotHTML, `class="analysis-exchange-block balance-pnl-block"`); got != 2 {
 		t.Fatalf("embedded pnl blocks=%d, want 2", got)
 	}
@@ -28,8 +25,6 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`USDT 权益图`,
 		`id="analysis-okx-net-pnl"`,
 		`id="analysis-binance-net-pnl"`,
-		`.balance-table-wrap`,
-		"height: auto;\n      max-height: 188px;\n      overflow: auto;",
 		`#analysis .mini-usdt-chart`,
 		`height: 360px`,
 		`height: 346px`,
@@ -38,10 +33,6 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`function formatUSDTBalance(v)`,
 		`Math.round(n).toLocaleString`,
 		`const formatted = formatUSDTBalance(v)`,
-		`formatUSDTBalance(row.eq)`,
-		`formatUSDTBalance(row.avail_bal || row.avail_eq)`,
-		`formatUSDTBalance(row.cash_bal)`,
-		`formatUSDTBalance(row.frozen_bal)`,
 		`function usdtBalanceRawValue(row)`,
 		`const raw = row && row.eq`,
 		`value: Number(usdtBalanceRawValue(point))`,
@@ -94,6 +85,10 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`analysis-binance-rows`,
 		`analysis-symbol-table`,
 		`analysis-table-wrap`,
+		`analysis-balance-rows`,
+		`analysis-binance-balance-rows`,
+		`balance-table-wrap`,
+		`balanceRowsHTML`,
 		`for (const key of ["eq_usd", "eq", "cash_bal", "avail_bal"])`,
 		".balance-table-wrap {\n      height: 188px;",
 	} {
@@ -112,28 +107,22 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 	}
 	okxOrder := strings.Index(tvbotHTML, `OKX 订单`)
 	binanceOrder := strings.Index(tvbotHTML, `Binance 订单`)
-	okxBalanceRows := strings.Index(tvbotHTML, `id="analysis-balance-rows"`)
-	binanceBalanceRows := strings.Index(tvbotHTML, `id="analysis-binance-balance-rows"`)
+	okxValuation := strings.Index(tvbotHTML, `id="analysis-usdt-eq"`)
+	binanceValuation := strings.Index(tvbotHTML, `id="analysis-binance-usdt-eq"`)
 	okxChart := strings.Index(tvbotHTML, `id="usdt-chart" class="mini-usdt-chart"`)
 	binanceChart := strings.Index(tvbotHTML, `id="analysis-binance-usdt-chart" class="mini-usdt-chart"`)
 	okxPNL := strings.Index(tvbotHTML, `id="analysis-okx-net-pnl"`)
 	binancePNL := strings.Index(tvbotHTML, `id="analysis-binance-net-pnl"`)
-	if okxOrder < 0 || binanceOrder < 0 || okxBalanceRows < 0 || binanceBalanceRows < 0 || okxChart < 0 || binanceChart < 0 || okxPNL < 0 || binancePNL < 0 {
+	if okxOrder < 0 || binanceOrder < 0 || okxValuation < 0 || binanceValuation < 0 || okxChart < 0 || binanceChart < 0 || okxPNL < 0 || binancePNL < 0 {
 		t.Fatal("analysis layout markers are missing")
 	}
 	if !(okxOrder < binanceOrder) {
 		t.Fatal("OKX and Binance order columns should be rendered side by side in order")
 	}
-	if !(okxBalanceRows < okxPNL && okxPNL < okxChart) {
-		t.Fatal("OKX column should show USDT valuation table, pnl analysis, then equity chart")
+	if !(okxValuation < okxPNL && okxPNL < okxChart) {
+		t.Fatal("OKX column should show USDT valuation cards, pnl summary, then equity chart")
 	}
-	if !(binanceBalanceRows < binancePNL && binancePNL < binanceChart) {
-		t.Fatal("Binance column should show USDT valuation table, pnl analysis, then equity chart")
-	}
-	if !strings.Contains(tvbotHTML, `String(row.ccy || "").toUpperCase() === "USDT"`) {
-		t.Fatal("balance rows should filter to USDT")
-	}
-	if !strings.Contains(tvbotHTML, `colspan="5"`) {
-		t.Fatal("empty balance row should match five visible columns")
+	if !(binanceValuation < binancePNL && binancePNL < binanceChart) {
+		t.Fatal("Binance column should show USDT valuation cards, pnl summary, then equity chart")
 	}
 }
