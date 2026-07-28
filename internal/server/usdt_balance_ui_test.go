@@ -18,6 +18,9 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 	for _, marker := range []string{
 		`.exchange-balance-metrics`,
 		`.balance-pnl-block`,
+		`#analysis-trade-history-section`,
+		`grid-column: 1 / -1`,
+		`.analysis-usdt-chart-card`,
 		`OKX 盈亏分析`,
 		`Binance 盈亏分析`,
 		`.balance-table-wrap`,
@@ -81,6 +84,26 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 	}
 	if binancePNL := strings.Index(tvbotHTML, `Binance 盈亏分析`); binancePNL < 0 || binancePNL > strings.Index(tvbotHTML, `id="analysis-binance-balance-rows"`) {
 		t.Fatal("Binance pnl analysis should be inside the Binance balance card before the balance rows")
+	}
+	okxBalanceRows := strings.Index(tvbotHTML, `id="analysis-balance-rows"`)
+	binanceBalanceRows := strings.Index(tvbotHTML, `id="analysis-binance-balance-rows"`)
+	tradeSection := strings.Index(tvbotHTML, `id="analysis-trade-history-section"`)
+	okxChart := strings.Index(tvbotHTML, `id="usdt-chart" class="mini-usdt-chart"`)
+	binanceChart := strings.Index(tvbotHTML, `id="analysis-binance-usdt-chart" class="mini-usdt-chart"`)
+	if okxBalanceRows < 0 || binanceBalanceRows < 0 || tradeSection < 0 || okxChart < 0 || binanceChart < 0 {
+		t.Fatal("analysis layout markers are missing")
+	}
+	if tradeSection < okxBalanceRows || tradeSection < binanceBalanceRows {
+		t.Fatal("trade history should appear after both USDT balance tables")
+	}
+	if tradeSection > okxChart || tradeSection > binanceChart {
+		t.Fatal("trade history should appear before the USDT balance charts")
+	}
+	if got := strings.Count(tvbotHTML, `id="analysis-trade-history-section"`); got != 1 {
+		t.Fatalf("trade history sections=%d, want 1", got)
+	}
+	if got := strings.Count(tvbotHTML, `class="analysis-trade-table"`); got != 1 {
+		t.Fatalf("trade history tables=%d, want 1", got)
 	}
 	if !strings.Contains(tvbotHTML, `String(row.ccy || "").toUpperCase() === "USDT"`) {
 		t.Fatal("balance rows should filter to USDT")

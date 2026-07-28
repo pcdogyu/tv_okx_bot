@@ -758,6 +758,13 @@ const tvbotHTML = `<!doctype html>
       margin-top: 16px;
       padding-top: 12px;
     }
+    #analysis-trade-history-section {
+      grid-column: 1 / -1;
+      margin-top: 0;
+    }
+    .analysis-usdt-chart-card {
+      min-height: 0;
+    }
     .analysis-exchange-block + .analysis-exchange-block {
       margin-top: 14px;
     }
@@ -1079,10 +1086,6 @@ const tvbotHTML = `<!doctype html>
               <tbody id="analysis-balance-rows"></tbody>
             </table>
           </div>
-          <div class="section-head" style="margin:2px 0 0">
-            <h3 id="analysis-okx-usdt-title">USDT余额</h3>
-          </div>
-          <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT balance chart"></svg>
         </div>
         <div class="balance-chart-card exchange-balance-card">
           <div class="section-head" style="margin-bottom:0">
@@ -1122,28 +1125,36 @@ const tvbotHTML = `<!doctype html>
               <tbody id="analysis-binance-balance-rows"></tbody>
             </table>
           </div>
+        </div>
+        <div class="analysis-subsection" id="analysis-trade-history-section">
+          <div class="section-head" style="margin-top:0">
+            <h3>成交历史</h3>
+            <div class="analysis-pagination">
+              <span class="muted" id="analysis-trade-page-info">-</span>
+              <button class="btn small" type="button" id="analysis-trade-prev">上一页</button>
+              <button class="btn small" type="button" id="analysis-trade-next">下一页</button>
+            </div>
+          </div>
+          <div class="analysis-table-wrap">
+            <table class="analysis-trade-table">
+              <thead>
+                <tr><th>交易所</th><th>成交时间</th><th>币对</th><th>方向</th><th>成交价</th><th>成交量</th><th>已实现盈亏</th><th>手续费</th><th>订单 ID</th><th>成交 ID</th></tr>
+              </thead>
+              <tbody id="analysis-trade-rows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="balance-chart-card exchange-balance-card analysis-usdt-chart-card">
+          <div class="section-head" style="margin:2px 0 0">
+            <h3 id="analysis-okx-usdt-title">USDT余额</h3>
+          </div>
+          <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT balance chart"></svg>
+        </div>
+        <div class="balance-chart-card exchange-balance-card analysis-usdt-chart-card">
           <div class="section-head" style="margin:2px 0 0">
             <h3 id="analysis-binance-usdt-title">USDT余额</h3>
           </div>
           <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT balance chart"></svg>
-        </div>
-      </div>
-      <div class="analysis-subsection" id="analysis-trade-history-section">
-        <div class="section-head" style="margin-top:0">
-          <h3>成交历史</h3>
-          <div class="analysis-pagination">
-            <span class="muted" id="analysis-trade-page-info">-</span>
-            <button class="btn small" type="button" id="analysis-trade-prev">上一页</button>
-            <button class="btn small" type="button" id="analysis-trade-next">下一页</button>
-          </div>
-        </div>
-        <div class="analysis-table-wrap">
-          <table class="analysis-trade-table">
-            <thead>
-              <tr><th>交易所</th><th>成交时间</th><th>币对</th><th>方向</th><th>成交价</th><th>成交量</th><th>已实现盈亏</th><th>手续费</th><th>订单 ID</th><th>成交 ID</th></tr>
-            </thead>
-            <tbody id="analysis-trade-rows"></tbody>
-          </table>
         </div>
       </div>
     </section>
