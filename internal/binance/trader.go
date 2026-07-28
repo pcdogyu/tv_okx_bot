@@ -16,6 +16,8 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
+const maxBinanceLeverageFallback = 50
+
 type Trader struct {
 	Credentials        Credentials
 	CredentialProvider CredentialProvider
@@ -135,10 +137,83 @@ func (t Trader) ensureLeverage(ctx context.Context, client Client, symbol, posSi
 		}
 		return desired, nil
 	}
-	if err := client.SetLeverage(ctx, symbol, desired); err != nil {
-		return 0, err
+	return t.setLeverageWithFallback(ctx, client, symbol, desired)
+}
+
+func (t Trader) setLeverageWithFallback(ctx context.Context, client Client, symbol string, desired int) (int, error) {
+	attempts := binanceLeverageAttempts(desired)
+	var lastErr error
+	for idx, leverage := range attempts {
+		err := client.SetLeverage(ctx, symbol, leverage)
+		if err == nil {
+			return leverage, nil
+		}
+		lastErr = err
+		if !isBinanceLeverageFallbackError(err) {
+			return 0, err
+		}
+		if t.Logger != nil && idx+1 < len(attempts) {
+			t.Logger.Warn("binance leverage rejected, trying fallback leverage", "symbol", symbol, "leverage", leverage, "next_leverage", attempts[idx+1], "error", err)
+		}
 	}
-	return desired, nil
+	return 0, fmt.Errorf("set leverage failed after trying %s: %w", binanceLeverageAttemptsText(attempts), lastErr)
+}
+
+func binanceLeverageAttempts(desired int) []int {
+	if desired <= 0 {
+		return nil
+	}
+	attempts := make([]int, 0, maxBinanceLeverageFallback)
+	seen := map[int]bool{}
+	add := func(leverage int) {
+		if leverage <= 0 || seen[leverage] {
+			return
+		}
+		attempts = append(attempts, leverage)
+		seen[leverage] = true
+	}
+	add(desired)
+	for leverage := minInt(desired-1, maxBinanceLeverageFallback); leverage >= 1; leverage-- {
+		add(leverage)
+	}
+	for leverage := desired + 1; leverage <= maxBinanceLeverageFallback; leverage++ {
+		add(leverage)
+	}
+	return attempts
+}
+
+func binanceLeverageAttemptsText(attempts []int) string {
+	parts := make([]string, 0, len(attempts))
+	for _, leverage := range attempts {
+		parts = append(parts, strconv.Itoa(leverage)+"x")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func isBinanceLeverageFallbackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if IsAPIErrorCode(err, -4028) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	if !strings.Contains(text, "leverage") {
+		return false
+	}
+	return strings.Contains(text, "not valid") ||
+		strings.Contains(text, "invalid") ||
+		strings.Contains(text, "maximum") ||
+		strings.Contains(text, "exceed") ||
+		strings.Contains(text, "less than") ||
+		strings.Contains(text, "greater than")
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func binanceRemoteLeverageMatches(positions []Position, symbol, posSide string, action trading.Side, desired int) bool {

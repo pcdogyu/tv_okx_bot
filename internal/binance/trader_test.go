@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -311,6 +312,74 @@ func TestTraderSetsLeverageWhenBinanceRemoteDiffers(t *testing.T) {
 	}
 	if leverageForm.Get("symbol") != "BTCUSDT" || leverageForm.Get("leverage") != "10" {
 		t.Fatalf("bad leverage setup form: %#v", leverageForm)
+	}
+}
+
+func TestBinanceLeverageAttemptsTryConfiguredDownThenUp(t *testing.T) {
+	got := binanceLeverageAttempts(10)
+	wantPrefix := []int{10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 11, 12}
+	if len(got) != maxBinanceLeverageFallback || !reflect.DeepEqual(got[:len(wantPrefix)], wantPrefix) || got[len(got)-1] != 50 {
+		t.Fatalf("leverage attempts = %#v", got)
+	}
+}
+
+func TestTraderFallsBackBinanceLeverageBeforeOrder(t *testing.T) {
+	leverageAttempts := []string{}
+	var orderForm url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"MONUSDT","status":"TRADING","pricePrecision":4,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0001"},{"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			leverage := r.Form.Get("leverage")
+			leverageAttempts = append(leverageAttempts, leverage)
+			if leverage != "6" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-4028,"msg":"Leverage ` + leverage + ` is not valid"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"symbol":"MONUSDT","leverage":6}`))
+		case "/fapi/v1/order":
+			orderForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"MONUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"100","executedQty":"0","type":"MARKET","side":"BUY"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "MONUSDT",
+		Price:    trading.NewFlexibleFloat(1),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(leverageAttempts, []string{"10", "9", "8", "7", "6"}) {
+		t.Fatalf("leverage attempts = %#v", leverageAttempts)
+	}
+	if result.Leverage != 6 {
+		t.Fatalf("result leverage = %d, want 6", result.Leverage)
+	}
+	if orderForm.Get("symbol") != "MONUSDT" || orderForm.Get("side") != "BUY" || orderForm.Get("quantity") != "100" {
+		t.Fatalf("bad order form after leverage fallback: %#v", orderForm)
 	}
 }
 
