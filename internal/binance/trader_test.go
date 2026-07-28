@@ -161,6 +161,125 @@ func TestTraderPlacesMarketOrderAndTrailingAlgoOrder(t *testing.T) {
 	}
 }
 
+func TestTraderSplitsMarketOrderAboveBinanceMaxQty(t *testing.T) {
+	orderForms := []url.Values{}
+	algoForms := []url.Values{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"DYMUSDT","status":"TRADING","pricePrecision":4,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0001"},{"filterType":"LOT_SIZE","minQty":"1","maxQty":"50000","stepSize":"1"},{"filterType":"MARKET_LOT_SIZE","minQty":"1","maxQty":"10000","stepSize":"1"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			_, _ = w.Write([]byte(`{"symbol":"DYMUSDT","leverage":10}`))
+		case "/fapi/v1/order":
+			if compareDecimal(r.Form.Get("quantity"), "10000") > 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-4005,"msg":"Quantity greater than max quantity."}`))
+				return
+			}
+			orderForms = append(orderForms, cloneValues(r.Form))
+			_, _ = w.Write([]byte(`{"orderId":` + strconv.Itoa(800+len(orderForms)) + `,"symbol":"DYMUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"` + r.Form.Get("quantity") + `","executedQty":"0","type":"MARKET","side":"SELL"}`))
+		case "/fapi/v1/algoOrder":
+			if compareDecimal(r.Form.Get("quantity"), "10000") > 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-4005,"msg":"Quantity greater than max quantity."}`))
+				return
+			}
+			algoForms = append(algoForms, cloneValues(r.Form))
+			_, _ = w.Write([]byte(`{"algoId":` + strconv.Itoa(900+len(algoForms)) + `,"clientAlgoId":"algo","algoType":"CONDITIONAL","orderType":"` + r.Form.Get("type") + `","symbol":"DYMUSDT","side":"BUY","quantity":"` + r.Form.Get("quantity") + `","algoStatus":"NEW","triggerPrice":"` + r.Form.Get("triggerPrice") + `"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskTPSL)
+	cfg.Trading.TakeProfitPct = 2
+	cfg.Trading.StopLossPct = 1
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "DYMUSDT",
+		Price:    trading.NewFlexibleFloat(0.25),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(6250),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OrdID != "801 / 802 / 803" || result.ClOrdID == "" {
+		t.Fatalf("bad split result: %#v", result)
+	}
+	if len(orderForms) != 3 {
+		t.Fatalf("expected three split main orders, got %#v", orderForms)
+	}
+	wantQty := []string{"10000", "10000", "5000"}
+	for i, form := range orderForms {
+		if form.Get("symbol") != "DYMUSDT" || form.Get("side") != "SELL" || form.Get("type") != "MARKET" || form.Get("quantity") != wantQty[i] || form.Get("newClientOrderId") == "" {
+			t.Fatalf("bad split main order %d: %#v", i, form)
+		}
+		if i > 0 && form.Get("newClientOrderId") == orderForms[i-1].Get("newClientOrderId") {
+			t.Fatalf("split main order client ids should be unique: %#v", orderForms)
+		}
+	}
+	if len(algoForms) != 6 {
+		t.Fatalf("expected TP and SL for each split main order, got %#v", algoForms)
+	}
+	byTypeQty := map[string][]string{}
+	for _, form := range algoForms {
+		byTypeQty[form.Get("type")] = append(byTypeQty[form.Get("type")], form.Get("quantity"))
+		if form.Get("symbol") != "DYMUSDT" || form.Get("side") != "BUY" || form.Get("workingType") != "MARK_PRICE" {
+			t.Fatalf("bad split risk order: %#v", form)
+		}
+	}
+	if !reflect.DeepEqual(byTypeQty["TAKE_PROFIT_MARKET"], wantQty) || !reflect.DeepEqual(byTypeQty["STOP_MARKET"], wantQty) {
+		t.Fatalf("bad split risk quantities: %#v", byTypeQty)
+	}
+}
+
+func TestSplitBinanceAlgoOrderUsesMarketMaxQty(t *testing.T) {
+	reqs, err := splitBinanceAlgoOrderRequest(AlgoOrderRequest{
+		Symbol:           "DYMUSDT",
+		Side:             "BUY",
+		Type:             "STOP_MARKET",
+		Quantity:         "25000",
+		NewClientOrderID: "TV1780000000000BASESL",
+	}, TradingFilters{
+		StepSize:       1,
+		MinQty:         "1",
+		MaxQty:         "50000",
+		MarketStepSize: 1,
+		MarketMinQty:   "1",
+		MarketMaxQty:   "10000",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"10000", "10000", "5000"}
+	if len(reqs) != len(want) {
+		t.Fatalf("split len=%d reqs=%#v", len(reqs), reqs)
+	}
+	for i, req := range reqs {
+		if req.Quantity != want[i] || req.NewClientOrderID == "" {
+			t.Fatalf("bad split algo part %d: %#v", i, req)
+		}
+		if i > 0 && req.NewClientOrderID == reqs[i-1].NewClientOrderID {
+			t.Fatalf("split algo client ids should be unique: %#v", reqs)
+		}
+	}
+}
+
 func TestTraderKeepsSameDirectionPositionAndOrderAsAdd(t *testing.T) {
 	var entryForm url.Values
 	var cancelCalled bool

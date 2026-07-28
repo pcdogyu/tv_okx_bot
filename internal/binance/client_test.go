@@ -332,7 +332,7 @@ func TestExchangeInfoFiltersAndSymbolDerivation(t *testing.T) {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.10"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.10"},{"filterType":"LOT_SIZE","minQty":"0.001","maxQty":"100","stepSize":"0.001"},{"filterType":"MARKET_LOT_SIZE","minQty":"0.01","maxQty":"50","stepSize":"0.01"}]}]}`))
 	}))
 	defer ts.Close()
 	client := Client{BaseURL: ts.URL, HTTPClient: ts.Client()}
@@ -344,8 +344,11 @@ func TestExchangeInfoFiltersAndSymbolDerivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filters.TickSize != 0.10 || filters.StepSize != 0.001 || filters.MinQty != "0.001" {
+	if filters.TickSize != 0.10 || filters.StepSize != 0.001 || filters.MinQty != "0.001" || filters.MaxQty != "100" || filters.MarketStepSize != 0.01 || filters.MarketMinQty != "0.01" || filters.MarketMaxQty != "50" {
 		t.Fatalf("bad filters: %#v", filters)
+	}
+	if filters.StepSizeForOrderType("MARKET") != 0.01 || filters.MinQtyForOrderType("MARKET") != "0.01" || filters.MaxQtyForOrderType("MARKET") != "50" || filters.MaxQtyForOrderType("LIMIT") != "100" {
+		t.Fatalf("bad order-specific filters: %#v", filters)
 	}
 	symbol, err := DeriveUSDMSymbol("BINANCE:ETHUSDT.P", "")
 	if err != nil || symbol != "ETHUSDT" {

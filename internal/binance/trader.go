@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -16,7 +17,10 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
-const maxBinanceLeverageFallback = 50
+const (
+	maxBinanceLeverageFallback = 50
+	maxBinanceOrderSplits      = 50
+)
 
 type Trader struct {
 	Credentials        Credentials
@@ -72,9 +76,11 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		sizingPx = orderSettings.LimitPrice(signal.Action, signal.Price.Value)
 		orderPx = formatStep(sizingPx, filters.TickSize, signal.Action == trading.ActionShort)
 	}
-	quantity := formatStep(signal.Amount.Value/sizingPx, filters.StepSize, false)
-	if compareDecimal(quantity, filters.MinQty) < 0 {
-		return trading.OrderResult{}, fmt.Errorf("order size %s is below Binance minQty %s", quantity, filters.MinQty)
+	orderStep := filters.StepSizeForOrderType(orderType)
+	orderMinQty := filters.MinQtyForOrderType(orderType)
+	quantity := formatStep(signal.Amount.Value/sizingPx, orderStep, false)
+	if compareDecimal(quantity, orderMinQty) < 0 {
+		return trading.OrderResult{}, fmt.Errorf("order size %s is below Binance minQty %s", quantity, orderMinQty)
 	}
 	posSide := binancePositionSide(signal.Action, cfg.PositionMode())
 	marginType := binanceMarginType(cfg.MarginMode())
@@ -104,27 +110,49 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if orderSettings.OrderType == trading.OrderTypeLimit {
 		req.TimeInForce = "GTC"
 	}
-	ack, usedLeverage, err := t.placeOrderWithLeverageFallback(ctx, client, req, usedLeverage)
+	orderRequests, err := splitBinancePlaceOrderRequest(req, filters)
+	if err != nil {
+		return trading.OrderResult{}, err
+	}
+	if len(orderRequests) > 1 && t.Logger != nil {
+		t.Logger.Warn("binance order quantity exceeds maxQty, splitting main order", "symbol", symbol, "quantity", req.Quantity, "parts", len(orderRequests))
+	}
+	acks, usedLeverage, err := t.placeOrderRequestsWithLeverageFallback(ctx, client, orderRequests, usedLeverage)
 	result := trading.OrderResult{
 		APIID:          apiID,
 		TargetExchange: trading.ExchangeBinance,
 		InstID:         symbol,
-		ClOrdID:        clOrdID,
+		ClOrdID:        joinBinancePlaceOrderClientIDs(orderRequests),
 		OrdType:        req.Type,
 		Px:             req.Price,
-		OrdID:          strconv.FormatInt(ack.OrderID, 10),
+		OrdID:          joinBinanceOrderAckIDs(acks),
 		Leverage:       usedLeverage,
 	}
 	if err != nil {
 		return result, err
 	}
-	if err := t.placeRiskOrders(ctx, client, signal, req, sizingPx, filters.TickSize); err != nil {
-		return result, err
+	for _, orderReq := range orderRequests {
+		if err := t.placeRiskOrders(ctx, client, signal, orderReq, sizingPx, filters); err != nil {
+			return result, err
+		}
 	}
 	if t.Logger != nil {
 		t.Logger.Info("binance order submitted", "api_id", apiID, "symbol", symbol, "action", signal.Action, "client_order_id", clOrdID)
 	}
 	return result, nil
+}
+
+func (t Trader) placeOrderRequestsWithLeverageFallback(ctx context.Context, client Client, reqs []PlaceOrderRequest, currentLeverage int) ([]OrderAck, int, error) {
+	acks := make([]OrderAck, 0, len(reqs))
+	for i, req := range reqs {
+		ack, usedLeverage, err := t.placeOrderWithLeverageFallback(ctx, client, req, currentLeverage)
+		currentLeverage = usedLeverage
+		if err != nil {
+			return acks, currentLeverage, fmt.Errorf("binance place order part %d/%d quantity %s: %w", i+1, len(reqs), req.Quantity, err)
+		}
+		acks = append(acks, ack)
+	}
+	return acks, currentLeverage, nil
 }
 
 func (t Trader) placeOrderWithLeverageFallback(ctx context.Context, client Client, req PlaceOrderRequest, currentLeverage int) (OrderAck, int, error) {
@@ -159,6 +187,22 @@ func (t Trader) placeOrderWithLeverageFallback(ctx context.Context, client Clien
 		}
 	}
 	return OrderAck{}, 1, fmt.Errorf("binance order exceeded maximum allowable position after trying leverage %s: %w", binanceLeverageAttemptsText(attempted), lastErr)
+}
+
+func (t Trader) placeSplitAlgoOrder(ctx context.Context, client Client, req AlgoOrderRequest, filters TradingFilters) error {
+	reqs, err := splitBinanceAlgoOrderRequest(req, filters)
+	if err != nil {
+		return err
+	}
+	if len(reqs) > 1 && t.Logger != nil {
+		t.Logger.Warn("binance algo order quantity exceeds maxQty, splitting algo order", "symbol", req.Symbol, "type", req.Type, "quantity", req.Quantity, "parts", len(reqs))
+	}
+	for i, part := range reqs {
+		if _, err := client.NewAlgoOrder(ctx, part); err != nil {
+			return fmt.Errorf("binance place algo order part %d/%d quantity %s: %w", i+1, len(reqs), part.Quantity, err)
+		}
+	}
+	return nil
 }
 
 func (t Trader) ensureLeverage(ctx context.Context, client Client, symbol, posSide string, action trading.Side, desired int, state directionSwitchState) (int, error) {
@@ -288,14 +332,14 @@ func binanceLeverageValueMatches(raw string, desired int) bool {
 	return err == nil && math.Abs(value-float64(desired)) < 1e-9
 }
 
-func (t Trader) placeRiskOrders(ctx context.Context, client Client, signal trading.Signal, order PlaceOrderRequest, entryPx, tickSize float64) error {
+func (t Trader) placeRiskOrders(ctx context.Context, client Client, signal trading.Signal, order PlaceOrderRequest, entryPx float64, filters TradingFilters) error {
 	risk := signal.Risk
 	risk.Normalize()
 	switch risk.Type {
 	case trading.RiskNone:
 		return nil
 	case trading.RiskTrailing:
-		return t.placeTrailingStop(ctx, client, signal, order)
+		return t.placeTrailingStop(ctx, client, signal, order, filters)
 	case trading.RiskTPSL:
 	default:
 		return nil
@@ -310,30 +354,30 @@ func (t Trader) placeRiskOrders(ctx context.Context, client Client, signal tradi
 	tpPx, slPx := riskTriggerPrices(signal.Action, entryPx, risk.TPPct.Value, risk.SLPct.Value)
 	tpID := trimClientID(order.NewClientOrderID, 32-2) + "TP"
 	slID := trimClientID(order.NewClientOrderID, 32-2) + "SL"
-	if _, err := client.NewAlgoOrder(ctx, AlgoOrderRequest{
+	if err := t.placeSplitAlgoOrder(ctx, client, AlgoOrderRequest{
 		Symbol:           order.Symbol,
 		Side:             closeSide,
 		PositionSide:     order.PositionSide,
 		Type:             "TAKE_PROFIT_MARKET",
 		Quantity:         order.Quantity,
-		TriggerPrice:     formatStep(tpPx, tickSize, signal.Action == trading.ActionLong),
+		TriggerPrice:     formatStep(tpPx, filters.TickSize, signal.Action == trading.ActionLong),
 		WorkingType:      "MARK_PRICE",
 		NewClientOrderID: tpID,
 		ReduceOnly:       order.PositionSide == "",
-	}); err != nil {
+	}, filters); err != nil {
 		return err
 	}
-	if _, err := client.NewAlgoOrder(ctx, AlgoOrderRequest{
+	if err := t.placeSplitAlgoOrder(ctx, client, AlgoOrderRequest{
 		Symbol:           order.Symbol,
 		Side:             closeSide,
 		PositionSide:     order.PositionSide,
 		Type:             "STOP_MARKET",
 		Quantity:         order.Quantity,
-		TriggerPrice:     formatStep(slPx, tickSize, signal.Action == trading.ActionShort),
+		TriggerPrice:     formatStep(slPx, filters.TickSize, signal.Action == trading.ActionShort),
 		WorkingType:      "MARK_PRICE",
 		NewClientOrderID: slID,
 		ReduceOnly:       order.PositionSide == "",
-	}); err != nil {
+	}, filters); err != nil {
 		return err
 	}
 	return nil
@@ -353,7 +397,7 @@ func validateBinanceRisk(risk trading.Risk) error {
 	return nil
 }
 
-func (t Trader) placeTrailingStop(ctx context.Context, client Client, signal trading.Signal, order PlaceOrderRequest) error {
+func (t Trader) placeTrailingStop(ctx context.Context, client Client, signal trading.Signal, order PlaceOrderRequest, filters TradingFilters) error {
 	risk := signal.Risk
 	risk.Normalize()
 	if risk.TrailingPct == nil || !risk.TrailingPct.Set {
@@ -368,7 +412,7 @@ func (t Trader) placeTrailingStop(ctx context.Context, client Client, signal tra
 		closeSide = "BUY"
 	}
 	trailingID := trimClientID(order.NewClientOrderID, 32-2) + "TS"
-	_, err := client.NewAlgoOrder(ctx, AlgoOrderRequest{
+	return t.placeSplitAlgoOrder(ctx, client, AlgoOrderRequest{
 		Symbol:           order.Symbol,
 		Side:             closeSide,
 		PositionSide:     order.PositionSide,
@@ -378,8 +422,7 @@ func (t Trader) placeTrailingStop(ctx context.Context, client Client, signal tra
 		WorkingType:      "MARK_PRICE",
 		NewClientOrderID: trailingID,
 		ReduceOnly:       order.PositionSide == "",
-	})
-	return err
+	}, filters)
 }
 
 func (t Trader) Check(ctx context.Context, cfg trading.RuntimeConfig) (map[string]any, error) {
@@ -464,9 +507,13 @@ func (t Trader) credentials(apiID string) (Credentials, string, error) {
 }
 
 type TradingFilters struct {
-	TickSize float64
-	StepSize float64
-	MinQty   string
+	TickSize       float64
+	StepSize       float64
+	MarketStepSize float64
+	MinQty         string
+	MarketMinQty   string
+	MaxQty         string
+	MarketMaxQty   string
 }
 
 func (s SymbolInfo) TradingFilters() (TradingFilters, error) {
@@ -486,6 +533,14 @@ func (s SymbolInfo) TradingFilters() (TradingFilters, error) {
 			}
 			out.StepSize = step
 			out.MinQty = strings.TrimSpace(filter.MinQty)
+			out.MaxQty = strings.TrimSpace(filter.MaxQty)
+		case "MARKET_LOT_SIZE":
+			step, err := strconv.ParseFloat(strings.TrimSpace(filter.StepSize), 64)
+			if err == nil && step > 0 {
+				out.MarketStepSize = step
+			}
+			out.MarketMinQty = strings.TrimSpace(filter.MinQty)
+			out.MarketMaxQty = strings.TrimSpace(filter.MaxQty)
 		}
 	}
 	if out.TickSize <= 0 {
@@ -498,6 +553,30 @@ func (s SymbolInfo) TradingFilters() (TradingFilters, error) {
 		out.MinQty = formatStep(out.StepSize, out.StepSize, false)
 	}
 	return out, nil
+}
+
+func (f TradingFilters) StepSizeForOrderType(orderType string) float64 {
+	if strings.EqualFold(strings.TrimSpace(orderType), "MARKET") && f.MarketStepSize > 0 {
+		return f.MarketStepSize
+	}
+	return f.StepSize
+}
+
+func (f TradingFilters) MinQtyForOrderType(orderType string) string {
+	if strings.EqualFold(strings.TrimSpace(orderType), "MARKET") && positiveDecimalString(f.MarketMinQty) {
+		return strings.TrimSpace(f.MarketMinQty)
+	}
+	return strings.TrimSpace(f.MinQty)
+}
+
+func (f TradingFilters) MaxQtyForOrderType(orderType string) string {
+	if strings.EqualFold(strings.TrimSpace(orderType), "MARKET") && positiveDecimalString(f.MarketMaxQty) {
+		return strings.TrimSpace(f.MarketMaxQty)
+	}
+	if positiveDecimalString(f.MaxQty) {
+		return strings.TrimSpace(f.MaxQty)
+	}
+	return ""
 }
 
 func DeriveUSDMSymbol(coinpair, ticker string) (string, error) {
@@ -549,6 +628,123 @@ func binanceMarginType(mode string) string {
 
 func shouldContinueAfterBinanceMarginSetupError(err error) bool {
 	return IsAPIErrorCode(err, -4047, -4048, -4067, -4068)
+}
+
+func splitBinancePlaceOrderRequest(req PlaceOrderRequest, filters TradingFilters) ([]PlaceOrderRequest, error) {
+	chunks, err := splitBinanceQuantityByMax(req.Quantity, filters.MaxQtyForOrderType(req.Type), filters.StepSizeForOrderType(req.Type), filters.MinQtyForOrderType(req.Type))
+	if err != nil {
+		return nil, err
+	}
+	if len(chunks) <= 1 {
+		return []PlaceOrderRequest{req}, nil
+	}
+	out := make([]PlaceOrderRequest, 0, len(chunks))
+	for i, qty := range chunks {
+		part := req
+		part.Quantity = qty
+		part.NewClientOrderID = splitBinanceClientOrderID(req.NewClientOrderID, i+1)
+		out = append(out, part)
+	}
+	return out, nil
+}
+
+func splitBinanceAlgoOrderRequest(req AlgoOrderRequest, filters TradingFilters) ([]AlgoOrderRequest, error) {
+	chunks, err := splitBinanceQuantityByMax(req.Quantity, filters.MaxQtyForOrderType("MARKET"), filters.StepSizeForOrderType("MARKET"), filters.MinQtyForOrderType("MARKET"))
+	if err != nil {
+		return nil, err
+	}
+	if len(chunks) <= 1 {
+		return []AlgoOrderRequest{req}, nil
+	}
+	out := make([]AlgoOrderRequest, 0, len(chunks))
+	for i, qty := range chunks {
+		part := req
+		part.Quantity = qty
+		part.NewClientOrderID = splitBinanceClientOrderID(req.NewClientOrderID, i+1)
+		out = append(out, part)
+	}
+	return out, nil
+}
+
+func splitBinanceQuantityByMax(quantityRaw, maxQtyRaw string, step float64, minQtyRaw string) ([]string, error) {
+	quantityRaw = strings.TrimSpace(quantityRaw)
+	maxQtyRaw = strings.TrimSpace(maxQtyRaw)
+	if quantityRaw == "" {
+		return nil, errors.New("Binance order quantity is required")
+	}
+	if !positiveDecimalString(maxQtyRaw) || compareDecimal(quantityRaw, maxQtyRaw) <= 0 {
+		return []string{quantityRaw}, nil
+	}
+	quantity, err := strconv.ParseFloat(quantityRaw, 64)
+	if err != nil || quantity <= 0 {
+		return nil, fmt.Errorf("invalid Binance order quantity %q", quantityRaw)
+	}
+	maxQty, err := strconv.ParseFloat(maxQtyRaw, 64)
+	if err != nil || maxQty <= 0 {
+		return nil, fmt.Errorf("invalid Binance maxQty %q", maxQtyRaw)
+	}
+	chunks := []string{}
+	remaining := quantity
+	for remaining > 0 {
+		if len(chunks) >= maxBinanceOrderSplits {
+			return nil, fmt.Errorf("Binance order quantity %s exceeds maxQty %s and requires more than %d split orders", quantityRaw, maxQtyRaw, maxBinanceOrderSplits)
+		}
+		part := math.Min(remaining, maxQty)
+		partRaw := formatStep(part, step, false)
+		if compareDecimal(partRaw, "0") <= 0 {
+			return nil, fmt.Errorf("Binance split order quantity rounded to zero from %s", trading.NormalizeFloat(part))
+		}
+		if minQtyRaw = strings.TrimSpace(minQtyRaw); minQtyRaw != "" && compareDecimal(partRaw, minQtyRaw) < 0 {
+			return nil, fmt.Errorf("Binance split order quantity %s is below minQty %s", partRaw, minQtyRaw)
+		}
+		chunks = append(chunks, partRaw)
+		placed, err := strconv.ParseFloat(partRaw, 64)
+		if err != nil || placed <= 0 {
+			return nil, fmt.Errorf("invalid Binance split order quantity %q", partRaw)
+		}
+		remaining -= placed
+		if step > 0 && remaining < step/2 {
+			break
+		}
+		if remaining < 1e-12 {
+			break
+		}
+	}
+	return chunks, nil
+}
+
+func splitBinanceClientOrderID(base string, part int) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return ""
+	}
+	suffix := fmt.Sprintf("P%02d", part)
+	return trimClientID(base, 32-len(suffix)) + suffix
+}
+
+func joinBinancePlaceOrderClientIDs(reqs []PlaceOrderRequest) string {
+	ids := make([]string, 0, len(reqs))
+	for _, req := range reqs {
+		if id := strings.TrimSpace(req.NewClientOrderID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return strings.Join(ids, " / ")
+}
+
+func joinBinanceOrderAckIDs(acks []OrderAck) string {
+	ids := make([]string, 0, len(acks))
+	for _, ack := range acks {
+		if ack.OrderID != 0 {
+			ids = append(ids, strconv.FormatInt(ack.OrderID, 10))
+		}
+	}
+	return strings.Join(ids, " / ")
+}
+
+func positiveDecimalString(raw string) bool {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	return err == nil && value > 0
 }
 
 func riskTriggerPrices(action trading.Side, entryPx, tpPct, slPct float64) (float64, float64) {

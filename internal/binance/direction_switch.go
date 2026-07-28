@@ -116,11 +116,17 @@ func (t Trader) closeBinanceReversePosition(ctx context.Context, client Client, 
 	if err != nil {
 		return err
 	}
-	if _, err := client.PlaceOrder(ctx, req); err != nil {
-		return fmt.Errorf("binance close reverse position %s %s: %w", position.Symbol, position.PositionSide, err)
+	reqs, err := splitBinancePlaceOrderRequest(req, filters)
+	if err != nil {
+		return err
 	}
-	if t.Logger != nil {
-		t.Logger.Info("binance reverse position close submitted", "symbol", position.Symbol, "position_side", position.PositionSide, "quantity", req.Quantity)
+	for i, part := range reqs {
+		if _, err := client.PlaceOrder(ctx, part); err != nil {
+			return fmt.Errorf("binance close reverse position %s %s part %d/%d: %w", position.Symbol, position.PositionSide, i+1, len(reqs), err)
+		}
+		if t.Logger != nil {
+			t.Logger.Info("binance reverse position close submitted", "symbol", position.Symbol, "position_side", position.PositionSide, "quantity", part.Quantity)
+		}
 	}
 	if err := waitBinancePositionClosed(ctx, client, position); err != nil {
 		return err
@@ -154,7 +160,7 @@ func binanceMarketCloseRequest(position Position, filters TradingFilters) (Place
 	if err != nil {
 		return PlaceOrderRequest{}, err
 	}
-	size := binanceAbsoluteSize(position.PositionAmt, filters.StepSize)
+	size := binanceAbsoluteSize(position.PositionAmt, filters.StepSizeForOrderType("MARKET"))
 	if size == "" || size == "0" {
 		return PlaceOrderRequest{}, fmt.Errorf("binance position is not open: %s %s", position.Symbol, position.PositionSide)
 	}
