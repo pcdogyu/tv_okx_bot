@@ -220,11 +220,37 @@ type PlaceOrderRequest struct {
 	AttachAlgoOrds []map[string]string `json:"attachAlgoOrds,omitempty"`
 }
 
+type PlaceAlgoOrderRequest struct {
+	InstID          string `json:"instId"`
+	TDMode          string `json:"tdMode"`
+	AlgoClOrdID     string `json:"algoClOrdId,omitempty"`
+	Side            string `json:"side"`
+	PosSide         string `json:"posSide,omitempty"`
+	OrdType         string `json:"ordType"`
+	Sz              string `json:"sz"`
+	ReduceOnly      bool   `json:"reduceOnly,omitempty"`
+	TPTriggerPx     string `json:"tpTriggerPx,omitempty"`
+	TPOrdPx         string `json:"tpOrdPx,omitempty"`
+	TPTriggerPxType string `json:"tpTriggerPxType,omitempty"`
+	SLTriggerPx     string `json:"slTriggerPx,omitempty"`
+	SLOrdPx         string `json:"slOrdPx,omitempty"`
+	SLTriggerPxType string `json:"slTriggerPxType,omitempty"`
+	CallbackRatio   string `json:"callbackRatio,omitempty"`
+	ActivePx        string `json:"activePx,omitempty"`
+}
+
 type OrderAck struct {
 	ClOrdID string `json:"clOrdId"`
 	OrdID   string `json:"ordId"`
 	SCode   string `json:"sCode"`
 	SMsg    string `json:"sMsg"`
+}
+
+type PlaceAlgoOrderAck struct {
+	AlgoID      string `json:"algoId"`
+	AlgoClOrdID string `json:"algoClOrdId"`
+	SCode       string `json:"sCode"`
+	SMsg        string `json:"sMsg"`
 }
 
 type CancelOrderRequest struct {
@@ -420,6 +446,24 @@ func (c Client) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (OrderAck
 	}
 	if data[0].SCode != "" && data[0].SCode != "0" {
 		return data[0], env, fmt.Errorf("okx order rejected %s: %s", data[0].SCode, data[0].SMsg)
+	}
+	return data[0], env, nil
+}
+
+func (c Client) PlaceAlgoOrder(ctx context.Context, req PlaceAlgoOrderRequest) (PlaceAlgoOrderAck, Envelope, error) {
+	env, err := c.Do(ctx, http.MethodPost, "/api/v5/trade/order-algo", nil, req, true)
+	if err != nil {
+		return PlaceAlgoOrderAck{}, env, err
+	}
+	var data []PlaceAlgoOrderAck
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return PlaceAlgoOrderAck{}, env, err
+	}
+	if len(data) == 0 {
+		return PlaceAlgoOrderAck{}, env, errors.New("okx algo order response data is empty")
+	}
+	if data[0].SCode != "" && data[0].SCode != "0" {
+		return data[0], env, fmt.Errorf("okx algo order rejected %s: %s", data[0].SCode, data[0].SMsg)
 	}
 	return data[0], env, nil
 }

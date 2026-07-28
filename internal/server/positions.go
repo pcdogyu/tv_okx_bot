@@ -33,6 +33,7 @@ var (
 	pendingOrderChaseTimeout       = 60 * time.Second
 	pendingOrderChaseJobs          = newPendingOrderChaseRegistry()
 	positionCloseSeq               uint64
+	positionProtectionSeq          uint64
 	pendingOrderMarketSeq          uint64
 )
 
@@ -46,6 +47,9 @@ const (
 	positionEntrySizeEpsilon    = 1e-9
 	entryTimeSourceOKXFills     = "okx_fills_history"
 	entryTimeSourceBinanceTrade = "binance_user_trades"
+	positionProtectionTP        = "tp"
+	positionProtectionSL        = "sl"
+	positionProtectionTrailing  = "trailing"
 )
 
 type positionsResponse struct {
@@ -124,6 +128,14 @@ type positionCloseRequest struct {
 	Ratio    float64 `json:"ratio,omitempty"`
 }
 
+type positionProtectionRequest struct {
+	Exchange string `json:"exchange"`
+	APIID    string `json:"api_id"`
+	InstID   string `json:"inst_id"`
+	PosSide  string `json:"pos_side"`
+	Kind     string `json:"kind"`
+}
+
 type pendingOrderChaseRequest struct {
 	Exchange string `json:"exchange"`
 	APIID    string `json:"api_id"`
@@ -156,6 +168,22 @@ type positionCloseResponse struct {
 	ClOrdID string `json:"cl_ord_id,omitempty"`
 	Px      string `json:"px,omitempty"`
 	Message string `json:"message,omitempty"`
+}
+
+type positionProtectionResponse struct {
+	OK            bool   `json:"ok"`
+	Status        string `json:"status"`
+	Exchange      string `json:"exchange"`
+	APIID         string `json:"api_id"`
+	InstID        string `json:"inst_id"`
+	PosSide       string `json:"pos_side,omitempty"`
+	Kind          string `json:"kind"`
+	Sz            string `json:"sz,omitempty"`
+	AlgoID        string `json:"algo_id,omitempty"`
+	AlgoClOrdID   string `json:"algo_cl_ord_id,omitempty"`
+	TriggerPx     string `json:"trigger_px,omitempty"`
+	CallbackRatio string `json:"callback_ratio,omitempty"`
+	Message       string `json:"message,omitempty"`
 }
 
 type positionCloseOrder struct {
@@ -740,6 +768,96 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 			Message: "limit close order started",
 		})
 	}
+}
+
+func (s *Server) handlePositionProtection(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
+		return
+	}
+	var req positionProtectionRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	req.Exchange = trading.NormalizeExchange(req.Exchange)
+	req.APIID = strings.TrimSpace(req.APIID)
+	req.InstID = strings.ToUpper(strings.TrimSpace(req.InstID))
+	req.PosSide = normalizePosSide(req.PosSide)
+	req.Kind = strings.ToLower(strings.TrimSpace(req.Kind))
+	if req.InstID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_position_protection", "inst_id is required")
+		return
+	}
+	if !validPositionProtectionKind(req.Kind) {
+		writeError(w, http.StatusBadRequest, "invalid_position_protection", "kind must be tp, sl, or trailing")
+		return
+	}
+	cfg := s.ConfigStore.Get()
+	if req.Exchange == trading.ExchangeBinance {
+		s.handleBinancePositionProtection(w, r, cfg, req)
+		return
+	}
+	if s.OKXCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+		return
+	}
+	client, apiID, err := s.okxClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	position, err := currentOpenPosition(ctx, client, req.InstID, req.PosSide)
+	if err != nil {
+		if errors.Is(err, errPositionNotOpen) {
+			writeError(w, http.StatusConflict, "position_not_open", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, "positions_failed", err.Error())
+		return
+	}
+	resp, err := placeOKXPositionProtection(ctx, cfg, client, apiID, position, req.Kind)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "position_protection_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleBinancePositionProtection(w http.ResponseWriter, r *http.Request, cfg config.Config, req positionProtectionRequest) {
+	if s.BinanceCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+		return
+	}
+	if !cfg.BinanceLiveTradingAllowedByEnvironment() {
+		writeError(w, http.StatusForbidden, "live_trading_disabled", "Binance live trading is not allowed by environment")
+		return
+	}
+	client, apiID, err := s.binanceClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	position, err := currentBinanceOpenPosition(ctx, client, req.InstID, req.PosSide)
+	if err != nil {
+		if errors.Is(err, errPositionNotOpen) {
+			writeError(w, http.StatusConflict, "position_not_open", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, "positions_failed", err.Error())
+		return
+	}
+	resp, err := placeBinancePositionProtection(ctx, cfg, client, apiID, position, req.Kind)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "position_protection_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Request, cfg config.Config, req positionCloseRequest, ratio float64) {
@@ -2579,6 +2697,174 @@ func placeLimitPositionClose(ctx context.Context, cfg config.Config, client okx.
 	return positionCloseOrder{Position: position, Ack: ack, Px: px, CloseSz: req.Sz, Partial: partial}, nil
 }
 
+func placeOKXPositionProtection(ctx context.Context, cfg config.Config, client okx.Client, apiID string, position okx.Position, kind string) (positionProtectionResponse, error) {
+	req, triggerPx, callbackRatio, err := okxPositionProtectionRequest(ctx, cfg, client, position, kind)
+	if err != nil {
+		return positionProtectionResponse{}, err
+	}
+	ack, _, err := client.PlaceAlgoOrder(ctx, req)
+	if err != nil {
+		return positionProtectionResponse{}, err
+	}
+	return positionProtectionResponse{
+		OK:            true,
+		Status:        "submitted",
+		Exchange:      trading.ExchangeOKX,
+		APIID:         apiID,
+		InstID:        req.InstID,
+		PosSide:       normalizePosSide(position.PosSide),
+		Kind:          kind,
+		Sz:            req.Sz,
+		AlgoID:        ack.AlgoID,
+		AlgoClOrdID:   ack.AlgoClOrdID,
+		TriggerPx:     triggerPx,
+		CallbackRatio: callbackRatio,
+		Message:       positionProtectionMessage(kind),
+	}, nil
+}
+
+func okxPositionProtectionRequest(ctx context.Context, cfg config.Config, client okx.Client, position okx.Position, kind string) (okx.PlaceAlgoOrderRequest, string, string, error) {
+	side, err := closeOrderSide(position)
+	if err != nil {
+		return okx.PlaceAlgoOrderRequest{}, "", "", err
+	}
+	size := absolutePositionSize(position.Pos)
+	if size == "" || size == "0" {
+		return okx.PlaceAlgoOrderRequest{}, "", "", errPositionNotOpen
+	}
+	tdMode := strings.ToLower(strings.TrimSpace(position.MgnMode))
+	if tdMode == "" {
+		tdMode = cfg.MarginMode()
+	}
+	req := okx.PlaceAlgoOrderRequest{
+		InstID:      strings.ToUpper(strings.TrimSpace(position.InstID)),
+		TDMode:      tdMode,
+		AlgoClOrdID: nextPositionProtectionClOrdID(kind),
+		Side:        side,
+		OrdType:     "conditional",
+		Sz:          size,
+		ReduceOnly:  true,
+	}
+	if posSide := normalizePosSide(position.PosSide); posSide != "" {
+		req.PosSide = posSide
+	}
+	switch kind {
+	case positionProtectionTP, positionProtectionSL:
+		inst, err := client.SwapInstrument(ctx, position.InstID)
+		if err != nil {
+			return okx.PlaceAlgoOrderRequest{}, "", "", err
+		}
+		triggerPx, err := positionProtectionTriggerPrice(position, kind, inst.TickSz, cfg.Trading.TakeProfitPct, cfg.Trading.StopLossPct)
+		if err != nil {
+			return okx.PlaceAlgoOrderRequest{}, "", "", err
+		}
+		if kind == positionProtectionTP {
+			req.TPTriggerPx = triggerPx
+			req.TPOrdPx = "-1"
+			req.TPTriggerPxType = "mark"
+		} else {
+			req.SLTriggerPx = triggerPx
+			req.SLOrdPx = "-1"
+			req.SLTriggerPxType = "mark"
+		}
+		return req, triggerPx, "", nil
+	case positionProtectionTrailing:
+		callbackRatio, err := okxPositionProtectionCallbackRatio(cfg.Trading.TrailingPct)
+		if err != nil {
+			return okx.PlaceAlgoOrderRequest{}, "", "", err
+		}
+		req.OrdType = "move_order_stop"
+		req.CallbackRatio = callbackRatio
+		return req, "", callbackRatio, nil
+	default:
+		return okx.PlaceAlgoOrderRequest{}, "", "", fmt.Errorf("unsupported position protection kind %q", kind)
+	}
+}
+
+func placeBinancePositionProtection(ctx context.Context, cfg config.Config, client binance.Client, apiID string, position okx.Position, kind string) (positionProtectionResponse, error) {
+	req, triggerPx, callbackRate, err := binancePositionProtectionRequest(ctx, cfg, client, position, kind)
+	if err != nil {
+		return positionProtectionResponse{}, err
+	}
+	ack, err := client.NewAlgoOrder(ctx, req)
+	if err != nil {
+		return positionProtectionResponse{}, err
+	}
+	algoID := ""
+	if ack.AlgoID != 0 {
+		algoID = strconv.FormatInt(ack.AlgoID, 10)
+	}
+	return positionProtectionResponse{
+		OK:            true,
+		Status:        "submitted",
+		Exchange:      trading.ExchangeBinance,
+		APIID:         apiID,
+		InstID:        req.Symbol,
+		PosSide:       normalizePosSide(position.PosSide),
+		Kind:          kind,
+		Sz:            req.Quantity,
+		AlgoID:        algoID,
+		AlgoClOrdID:   ack.ClientAlgoID,
+		TriggerPx:     triggerPx,
+		CallbackRatio: callbackRate,
+		Message:       positionProtectionMessage(kind),
+	}, nil
+}
+
+func binancePositionProtectionRequest(ctx context.Context, cfg config.Config, client binance.Client, position okx.Position, kind string) (binance.AlgoOrderRequest, string, string, error) {
+	side, err := closeOrderSide(position)
+	if err != nil {
+		return binance.AlgoOrderRequest{}, "", "", err
+	}
+	size := absolutePositionSize(position.Pos)
+	if size == "" || size == "0" {
+		return binance.AlgoOrderRequest{}, "", "", errPositionNotOpen
+	}
+	req := binance.AlgoOrderRequest{
+		Symbol:           strings.ToUpper(strings.TrimSpace(position.InstID)),
+		Side:             strings.ToUpper(side),
+		PositionSide:     binanceClosePositionSide(position.PosSide),
+		Quantity:         size,
+		WorkingType:      "MARK_PRICE",
+		NewClientOrderID: nextPositionProtectionClOrdID(kind),
+	}
+	if req.PositionSide == "" || req.PositionSide == "BOTH" {
+		req.ReduceOnly = true
+	}
+	switch kind {
+	case positionProtectionTP, positionProtectionSL:
+		inst, err := client.SymbolInfo(ctx, position.InstID)
+		if err != nil {
+			return binance.AlgoOrderRequest{}, "", "", err
+		}
+		tickRaw, err := binanceTickSizeRaw(inst)
+		if err != nil {
+			return binance.AlgoOrderRequest{}, "", "", err
+		}
+		triggerPx, err := positionProtectionTriggerPrice(position, kind, tickRaw, cfg.Trading.TakeProfitPct, cfg.Trading.StopLossPct)
+		if err != nil {
+			return binance.AlgoOrderRequest{}, "", "", err
+		}
+		if kind == positionProtectionTP {
+			req.Type = "TAKE_PROFIT_MARKET"
+		} else {
+			req.Type = "STOP_MARKET"
+		}
+		req.TriggerPrice = triggerPx
+		return req, triggerPx, "", nil
+	case positionProtectionTrailing:
+		callbackRate, err := binancePositionProtectionCallbackRate(cfg.Trading.TrailingPct)
+		if err != nil {
+			return binance.AlgoOrderRequest{}, "", "", err
+		}
+		req.Type = "TRAILING_STOP_MARKET"
+		req.CallbackRate = callbackRate
+		return req, "", callbackRate, nil
+	default:
+		return binance.AlgoOrderRequest{}, "", "", fmt.Errorf("unsupported position protection kind %q", kind)
+	}
+}
+
 func currentBinanceOpenPosition(ctx context.Context, client binance.Client, instID, posSide string) (okx.Position, error) {
 	instID = strings.ToUpper(strings.TrimSpace(instID))
 	posSide = normalizePosSide(posSide)
@@ -3415,9 +3701,107 @@ func positionCloseKey(exchange, apiID, instID, posSide string) string {
 	return trading.NormalizeExchange(exchange) + "|" + strings.TrimSpace(apiID) + "|" + strings.ToUpper(strings.TrimSpace(instID)) + "|" + side
 }
 
+func validPositionProtectionKind(kind string) bool {
+	switch kind {
+	case positionProtectionTP, positionProtectionSL, positionProtectionTrailing:
+		return true
+	default:
+		return false
+	}
+}
+
+func positionProtectionMessage(kind string) string {
+	switch kind {
+	case positionProtectionTP:
+		return "take profit protection order submitted"
+	case positionProtectionSL:
+		return "stop loss protection order submitted"
+	case positionProtectionTrailing:
+		return "trailing stop protection order submitted"
+	default:
+		return "position protection order submitted"
+	}
+}
+
+func positionProtectionTriggerPrice(position okx.Position, kind, tickRaw string, takeProfitPct, stopLossPct float64) (string, error) {
+	entry, err := strconv.ParseFloat(strings.TrimSpace(position.AvgPx), 64)
+	if err != nil || entry <= 0 {
+		return "", fmt.Errorf("position avgPx is required for protection orders")
+	}
+	side, err := closeOrderSide(position)
+	if err != nil {
+		return "", err
+	}
+	longPosition := side == "sell"
+	var target float64
+	var roundUp bool
+	switch kind {
+	case positionProtectionTP:
+		if math.IsNaN(takeProfitPct) || math.IsInf(takeProfitPct, 0) || takeProfitPct <= 0 {
+			return "", fmt.Errorf("take_profit_pct must be positive")
+		}
+		if longPosition {
+			target = entry * (1 + takeProfitPct/100)
+			roundUp = true
+		} else {
+			target = entry * (1 - takeProfitPct/100)
+			roundUp = false
+		}
+	case positionProtectionSL:
+		if math.IsNaN(stopLossPct) || math.IsInf(stopLossPct, 0) || stopLossPct <= 0 {
+			return "", fmt.Errorf("stop_loss_pct must be positive")
+		}
+		if longPosition {
+			target = entry * (1 - stopLossPct/100)
+			roundUp = false
+		} else {
+			target = entry * (1 + stopLossPct/100)
+			roundUp = true
+		}
+	default:
+		return "", fmt.Errorf("unsupported position protection kind %q", kind)
+	}
+	tick, err := strconv.ParseFloat(strings.TrimSpace(tickRaw), 64)
+	if err != nil || tick <= 0 {
+		return "", fmt.Errorf("invalid tick size %q", tickRaw)
+	}
+	return formatPriceToTick(target, tick, tickRaw, roundUp)
+}
+
+func okxPositionProtectionCallbackRatio(trailingPct float64) (string, error) {
+	if math.IsNaN(trailingPct) || math.IsInf(trailingPct, 0) || trailingPct <= 0 {
+		return "", fmt.Errorf("trailing_pct must be positive")
+	}
+	return trading.NormalizeFloat(trailingPct / 100), nil
+}
+
+func binancePositionProtectionCallbackRate(trailingPct float64) (string, error) {
+	if math.IsNaN(trailingPct) || math.IsInf(trailingPct, 0) || trailingPct <= 0 {
+		return "", fmt.Errorf("Binance trailing_pct must be positive")
+	}
+	if trailingPct < 0.1 || trailingPct > 10 {
+		return "", fmt.Errorf("Binance trailing_pct must be between 0.1 and 10, got %s", trading.NormalizeFloat(trailingPct))
+	}
+	return trading.NormalizeFloat(trailingPct), nil
+}
+
 func nextPositionCloseClOrdID() string {
 	seq := atomic.AddUint64(&positionCloseSeq, 1) % 1000000
 	return fmt.Sprintf("PC%d%06d", time.Now().UTC().UnixMilli(), seq)
+}
+
+func nextPositionProtectionClOrdID(kind string) string {
+	suffix := "PR"
+	switch kind {
+	case positionProtectionTP:
+		suffix = "TP"
+	case positionProtectionSL:
+		suffix = "SL"
+	case positionProtectionTrailing:
+		suffix = "TS"
+	}
+	seq := atomic.AddUint64(&positionProtectionSeq, 1) % 1000000
+	return fmt.Sprintf("PP%d%06d%s", time.Now().UTC().UnixMilli(), seq, suffix)
 }
 
 func nextPendingOrderLimitClOrdID() string {

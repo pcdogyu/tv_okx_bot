@@ -499,7 +499,11 @@ const tvbotHTML = `<!doctype html>
       padding: 2px 7px;
     }
     .positions-table .position-actions {
-      gap: 8px;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .position-protection-btn {
+      min-width: 42px;
     }
     .position-percent-close-btn {
       width: 36px;
@@ -1341,6 +1345,7 @@ const tvbotHTML = `<!doctype html>
       orders: [],
       retrying: {},
       positionClosing: {},
+      positionProtecting: {},
       pendingOrderActions: {},
       analysis: null,
       analysisError: "",
@@ -2969,13 +2974,22 @@ const tvbotHTML = `<!doctype html>
       const posSide = escapeHTML(String(row.posSide || ""));
       const apiID = escapeHTML(row._api_id || "");
       const baseAttrs = ' data-exchange="' + exchange + '" data-api-id="' + apiID + '" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"';
+      const protectionButtons = [
+        { label: "止盈", kind: "tp" },
+        { label: "止损", kind: "sl" },
+        { label: "移动", kind: "trailing" }
+      ].map((item) => {
+        const protecting = !!state.positionProtecting[key + "|" + item.kind];
+        return '<button class="btn small position-protection-btn" type="button" data-position-protection="' + item.kind + '"' + baseAttrs + (protecting ? " disabled" : "") + '>' + item.label + '</button>';
+      }).join("");
       const percentButtons = [
-        { label: "平10%", ratio: "0.1" },
-        { label: "平25%", ratio: "0.25" },
-        { label: "平50%", ratio: "0.5" },
-        { label: "平75%", ratio: "0.75" }
-      ].map((item) => '<button class="btn small position-percent-close-btn" type="button" data-position-close="limit" data-position-ratio="' + item.ratio + '"' + baseAttrs + ' title="限价平仓 ' + item.label.slice(1) + '，60秒后市价兜底"' + (closing ? " disabled" : "") + '>' + item.label + '</button>').join("");
+        { label: "10%", ratio: "0.1" },
+        { label: "25%", ratio: "0.25" },
+        { label: "50%", ratio: "0.5" },
+        { label: "75%", ratio: "0.75" }
+      ].map((item) => '<button class="btn small position-percent-close-btn" type="button" data-position-close="limit" data-position-ratio="' + item.ratio + '"' + baseAttrs + ' title="限价平仓 ' + item.label + '，60秒后市价兜底"' + (closing ? " disabled" : "") + '>' + item.label + '</button>').join("");
       return '<td><div class="position-actions">' +
+        protectionButtons +
         percentButtons +
         '<button class="btn small danger" type="button" data-position-close="market"' + baseAttrs + (closing ? " disabled" : "") + '>市价平仓</button>' +
         '<button class="btn small" type="button" data-position-close="limit"' + baseAttrs + (closing ? " disabled" : "") + '>限价平仓</button>' +
@@ -3502,6 +3516,39 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
+    async function protectPosition(button) {
+      const exchange = normalizeExchange(button.dataset.exchange || "okx");
+      const kind = button.dataset.positionProtection;
+      const instID = button.dataset.instId || "";
+      const posSide = button.dataset.posSide || "";
+      const apiID = button.dataset.apiId || "";
+      const key = [exchange, apiID, instID.toUpperCase(), (posSide || "net").toLowerCase(), kind].join("|");
+      if (!instID || !kind || state.positionProtecting[key]) return;
+      state.positionProtecting[key] = true;
+      renderPositions();
+      try {
+        const result = await api("/tvbot/positions/protection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            exchange,
+            api_id: apiID,
+            inst_id: instID,
+            pos_side: posSide,
+            kind
+          })
+        });
+        const labels = { tp: "止盈单已提交", sl: "止损单已提交", trailing: "移动止损已提交" };
+        const detail = result.trigger_px ? " " + asText(result.trigger_px) : (result.callback_ratio ? " " + asText(result.callback_ratio) : "");
+        toast((labels[kind] || "保护单已提交") + detail);
+        await loadPositionView();
+        window.setTimeout(() => loadPositionView().catch((err) => toast(err.message)), 1600);
+      } finally {
+        delete state.positionProtecting[key];
+        renderPositions();
+      }
+    }
+
     async function chasePendingOrder(button) {
       const exchange = normalizeExchange(button.dataset.exchange || "okx");
       const mode = button.dataset.pendingChase;
@@ -3779,6 +3826,11 @@ const tvbotHTML = `<!doctype html>
       retryOrder(button.dataset.retryId).catch((err) => toast(err.message));
     });
     $("position-rows").addEventListener("click", (event) => {
+      const protectionButton = event.target.closest("button[data-position-protection]");
+      if (protectionButton) {
+        protectPosition(protectionButton).catch((err) => toast(err.message));
+        return;
+      }
       const button = event.target.closest("button[data-position-close]");
       if (!button) return;
       closePosition(button).catch((err) => toast(err.message));

@@ -166,14 +166,20 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("formatHoldingSeconds")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionEntryTimeCell")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("upl / Math.abs(margin)")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("平10%")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`{ label: "10%", ratio: "0.1" }`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-position-protection")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("position-protection-btn")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("止盈")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("止损")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("移动")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions/protection")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`data-position-ratio`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-percent-close-btn")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("width: 36px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("border-radius: 999px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("font-size: 7px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .position-actions")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("gap: 8px")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("gap: 6px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .pos-actions-col { width: 25%; }")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionTableColumnDefs")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`tableColumnCount("positions")`)) ||
@@ -347,6 +353,16 @@ func TestRoutes(t *testing.T) {
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("Code by Yuhao@jiansutech.com - 2026-07-24T03:00:00Z - testhash - testbranch")) {
 		t.Fatalf("tvbot ui should include build footer")
+	}
+	for _, removed := range [][]byte{
+		[]byte(`{ label: "平10%"`),
+		[]byte(`{ label: "平25%"`),
+		[]byte(`{ label: "平50%"`),
+		[]byte(`{ label: "平75%"`),
+	} {
+		if bytes.Contains(ui.Body.Bytes(), removed) {
+			t.Fatalf("tvbot position percent close button should not include removed text %q", removed)
+		}
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("data-retry-id")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/retry")) {

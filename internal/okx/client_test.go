@@ -329,6 +329,59 @@ func TestClientPlaceOrderSendsReduceOnly(t *testing.T) {
 	}
 }
 
+func TestClientPlaceAlgoOrderSignsPrivateRequest(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
+	secret := "secret"
+	reqBody := PlaceAlgoOrderRequest{
+		InstID:          "BTC-USDT-SWAP",
+		TDMode:          "isolated",
+		AlgoClOrdID:     "PP1784880000000000001TP",
+		Side:            "sell",
+		PosSide:         "long",
+		OrdType:         "conditional",
+		Sz:              "2",
+		ReduceOnly:      true,
+		TPTriggerPx:     "66000",
+		TPOrdPx:         "-1",
+		TPTriggerPxType: "mark",
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/trade/order-algo" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+		timestamp := fixedNow.UTC().Format("2006-01-02T15:04:05.000Z")
+		wantSign := sign(timestamp, http.MethodPost, "/api/v5/trade/order-algo", string(bodyBytes), secret)
+		if r.Header.Get("OK-ACCESS-TIMESTAMP") != timestamp || r.Header.Get("OK-ACCESS-SIGN") != wantSign {
+			t.Fatal("invalid OKX signature headers")
+		}
+		if body["instId"] != "BTC-USDT-SWAP" || body["algoClOrdId"] != reqBody.AlgoClOrdID || body["ordType"] != "conditional" || body["tpTriggerPx"] != "66000" || body["tpOrdPx"] != "-1" || body["reduceOnly"] != true {
+			t.Fatalf("unexpected algo body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"algoId":"900","algoClOrdId":"PP1784880000000000001TP","sCode":"0","sMsg":""}]}`))
+	}))
+	defer ts.Close()
+
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "key", SecretKey: secret, Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return fixedNow },
+	}
+	ack, _, err := client.PlaceAlgoOrder(context.Background(), reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.AlgoID != "900" || ack.AlgoClOrdID != reqBody.AlgoClOrdID {
+		t.Fatalf("bad algo ack: %#v", ack)
+	}
+}
+
 func TestClientCancelOrderSignsPrivateRequest(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
 	secret := "secret"
