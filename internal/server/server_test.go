@@ -270,7 +270,10 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/balances/overview")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("OKX USDT 余额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance USDT 余额")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("USDT 余额表")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("订单时间")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 订单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 订单")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("USDT 估值表")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`data-balance-minutes="129600"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("重置基准")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("同步历史")) ||

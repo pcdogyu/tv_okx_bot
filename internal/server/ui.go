@@ -537,6 +537,38 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: wrap;
     }
     .analysis-controls label { min-width: 260px; }
+    .analysis-period-row {
+      display: flex;
+      align-items: stretch;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .analysis-period-row .analysis-controls {
+      flex: 0 1 380px;
+      justify-content: flex-end;
+    }
+    .analysis-time-status {
+      display: grid;
+      align-content: center;
+      gap: 3px;
+      min-width: 260px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #f8fafc;
+    }
+    .analysis-time-status .label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .analysis-time-status .value {
+      color: var(--text);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
     .exchange-summary {
       display: inline-flex;
       align-items: center;
@@ -626,7 +658,9 @@ const tvbotHTML = `<!doctype html>
       align-items: center;
       gap: 7px;
       flex-wrap: wrap;
-      margin: 0 0 14px;
+      flex: 1 1 560px;
+      justify-content: flex-end;
+      margin: 0;
     }
     .balance-window-toolbar .balance-window-btn {
       font-size: 16px;
@@ -647,6 +681,7 @@ const tvbotHTML = `<!doctype html>
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
       margin-bottom: 14px;
+      align-items: start;
     }
     .balance-chart-card {
       border: 1px solid var(--line);
@@ -659,6 +694,10 @@ const tvbotHTML = `<!doctype html>
       display: grid;
       gap: 10px;
       align-content: start;
+    }
+    .analysis-usdt-block {
+      display: grid;
+      gap: 10px;
     }
     .exchange-balance-metrics {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -763,6 +802,8 @@ const tvbotHTML = `<!doctype html>
       margin-top: 0;
     }
     .analysis-usdt-chart-card {
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
       min-height: 0;
     }
     .analysis-exchange-block + .analysis-exchange-block {
@@ -896,6 +937,10 @@ const tvbotHTML = `<!doctype html>
       .bar { align-items: flex-start; flex-direction: column; }
       nav { justify-content: flex-start; }
       .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics, .dashboard-balance-grid, .analysis-balance-grid { grid-template-columns: 1fr; }
+      .analysis-period-row { flex-direction: column; }
+      .analysis-time-status { min-width: 0; }
+      .analysis-period-row .analysis-controls { justify-content: flex-start; }
+      .balance-window-toolbar { justify-content: flex-start; }
       main { padding: 12px; }
       section { padding: 12px; }
       #usdt-chart { height: 320px; }
@@ -1019,43 +1064,61 @@ const tvbotHTML = `<!doctype html>
       </div>
     </section>
 
-    <section id="analysis">
-      <div class="section-head">
-        <h2>订单分析</h2>
+    <section id="analysis" aria-label="订单分析">
+      <div class="analysis-period-row">
+        <div class="analysis-time-status">
+          <div class="label">订单时间</div>
+          <div class="value" id="analysis-updated">-</div>
+        </div>
+        <div class="balance-window-toolbar" role="group" aria-label="USDT余额周期">
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="0">当前</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="5">5m</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="10">10m</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="15">15m</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="30">30m</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="60">1h</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="240">4h</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="480">8h</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="720">12h</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="1440">24h</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="2880">48h</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="4320">3d</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="10080">7d</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="43200">30d</button>
+          <button class="btn small balance-window-btn" type="button" data-balance-minutes="129600">90d</button>
+          <button class="btn small" type="button" id="reset-balance-baseline">重置基准</button>
+          <button class="btn small" type="button" id="sync-balance-history">同步历史</button>
+        </div>
         <div class="analysis-controls">
-          <span class="muted" id="analysis-updated">-</span>
           <label>交易 API<select id="analysis-api-id"></select></label>
           <button class="btn primary" type="button" id="refresh-analysis">刷新分析</button>
         </div>
       </div>
-      <div class="balance-window-toolbar" role="group" aria-label="USDT余额周期">
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="0">当前</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="5">5m</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="10">10m</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="15">15m</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="30">30m</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="60">1h</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="240">4h</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="480">8h</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="720">12h</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="1440">24h</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="2880">48h</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="4320">3d</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="10080">7d</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="43200">30d</button>
-        <button class="btn small balance-window-btn" type="button" data-balance-minutes="129600">90d</button>
-        <button class="btn small" type="button" id="reset-balance-baseline">重置基准</button>
-        <button class="btn small" type="button" id="sync-balance-history">同步历史</button>
-      </div>
       <div class="analysis-balance-grid">
         <div class="balance-chart-card exchange-balance-card">
           <div class="section-head" style="margin-bottom:0">
-            <h3>USDT 余额表</h3>
+            <h3>OKX 订单</h3>
             <span class="muted" id="analysis-okx-balance-status">-</span>
           </div>
-          <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
-            <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-usdt-eq">-</div></div>
-            <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-balance-updated">-</div></div>
+          <div class="analysis-usdt-block">
+            <div class="section-head" style="margin-bottom:0">
+              <h3 id="analysis-okx-usdt-title">USDT 估值表</h3>
+            </div>
+            <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
+              <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-usdt-eq">-</div></div>
+              <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-balance-updated">-</div></div>
+            </div>
+            <div class="balance-table-wrap">
+              <table>
+                <thead>
+                  <tr><th>币种</th><th>权益</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
+                </thead>
+                <tbody id="analysis-balance-rows"></tbody>
+              </table>
+            </div>
+            <div class="analysis-usdt-chart-card">
+              <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT balance chart"></svg>
+            </div>
           </div>
           <div class="analysis-exchange-block balance-pnl-block">
             <div class="section-head" style="margin-top:0">
@@ -1078,23 +1141,31 @@ const tvbotHTML = `<!doctype html>
               </table>
             </div>
           </div>
-          <div class="balance-table-wrap">
-            <table>
-              <thead>
-                <tr><th>币种</th><th>权益</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
-              </thead>
-              <tbody id="analysis-balance-rows"></tbody>
-            </table>
-          </div>
         </div>
         <div class="balance-chart-card exchange-balance-card">
           <div class="section-head" style="margin-bottom:0">
-            <h3>USDT 余额表</h3>
+            <h3>Binance 订单</h3>
             <span class="muted" id="analysis-binance-balance-status">-</span>
           </div>
-          <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
-            <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-binance-usdt-eq">-</div></div>
-            <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-binance-balance-updated">-</div></div>
+          <div class="analysis-usdt-block">
+            <div class="section-head" style="margin-bottom:0">
+              <h3 id="analysis-binance-usdt-title">USDT 估值表</h3>
+            </div>
+            <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
+              <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-binance-usdt-eq">-</div></div>
+              <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-binance-balance-updated">-</div></div>
+            </div>
+            <div class="balance-table-wrap">
+              <table>
+                <thead>
+                  <tr><th>币种</th><th>权益</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
+                </thead>
+                <tbody id="analysis-binance-balance-rows"></tbody>
+              </table>
+            </div>
+            <div class="analysis-usdt-chart-card">
+              <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT balance chart"></svg>
+            </div>
           </div>
           <div class="analysis-exchange-block balance-pnl-block">
             <div class="section-head" style="margin-top:0">
@@ -1117,14 +1188,6 @@ const tvbotHTML = `<!doctype html>
               </table>
             </div>
           </div>
-          <div class="balance-table-wrap">
-            <table>
-              <thead>
-                <tr><th>币种</th><th>权益</th><th>可用余额</th><th>现金余额</th><th>冻结</th></tr>
-              </thead>
-              <tbody id="analysis-binance-balance-rows"></tbody>
-            </table>
-          </div>
         </div>
         <div class="analysis-subsection" id="analysis-trade-history-section">
           <div class="section-head" style="margin-top:0">
@@ -1143,18 +1206,6 @@ const tvbotHTML = `<!doctype html>
               <tbody id="analysis-trade-rows"></tbody>
             </table>
           </div>
-        </div>
-        <div class="balance-chart-card exchange-balance-card analysis-usdt-chart-card">
-          <div class="section-head" style="margin:2px 0 0">
-            <h3 id="analysis-okx-usdt-title">USDT估值</h3>
-          </div>
-          <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT balance chart"></svg>
-        </div>
-        <div class="balance-chart-card exchange-balance-card analysis-usdt-chart-card">
-          <div class="section-head" style="margin:2px 0 0">
-            <h3 id="analysis-binance-usdt-title">USDT估值</h3>
-          </div>
-          <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT balance chart"></svg>
         </div>
       </div>
     </section>
@@ -3135,7 +3186,7 @@ const tvbotHTML = `<!doctype html>
       const okxAPI = asText(state.analysis.api_id);
       const binanceAPI = asText(state.analysis.binance_api_id);
       const apiText = binanceAPI === "-" ? "OKX " + okxAPI : "OKX " + okxAPI + " / Binance " + binanceAPI;
-      $("analysis-updated").textContent = "订单统计 " + shanghaiTime(state.analysis.refreshed_at) + " / API " + apiText;
+      $("analysis-updated").textContent = shanghaiTime(state.analysis.refreshed_at) + " / API " + apiText;
       renderAnalysisExchangeStats("okx", "");
       renderAnalysisExchangeStats("binance", "");
       renderAnalysisTradeHistory("");
@@ -3240,7 +3291,7 @@ const tvbotHTML = `<!doctype html>
       $("analysis-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
       $("analysis-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : "-";
       $("analysis-okx-balance-status").textContent = exchangeBalanceStatusText(item, balance, "OKX");
-      $("analysis-okx-usdt-title").textContent = "USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
+      $("analysis-okx-usdt-title").textContent = "USDT 估值表 " + balanceWindowLabel(state.balanceWindowMinutes);
       $("analysis-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 USDT 资产余额");
       const overviewPoints = item ? (item.balance_points || []) : [];
       const fallbackPoints = state.analysis ? (state.analysis.balance_points || []) : [];
@@ -3255,7 +3306,7 @@ const tvbotHTML = `<!doctype html>
       $("analysis-binance-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
       $("analysis-binance-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : (item && item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
       $("analysis-binance-balance-status").textContent = exchangeBalanceStatusText(item, balance, "Binance");
-      $("analysis-binance-usdt-title").textContent = "USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
+      $("analysis-binance-usdt-title").textContent = "USDT 估值表 " + balanceWindowLabel(state.balanceWindowMinutes);
       $("analysis-binance-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 USDT 资产余额");
       const points = usdtBalancePoints(item ? (item.balance_points || []) : [], balance);
       drawUSDTChart(points, "analysis-binance-usdt-chart", item && item.configured ? "暂无 Binance USDT 估值数据" : "Binance 未配置", "#138a55");
