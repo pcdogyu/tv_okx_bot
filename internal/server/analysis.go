@@ -288,6 +288,8 @@ func (s *Server) handleBalanceOverview(w http.ResponseWriter, r *http.Request) {
 	minutes, days := balanceWindowQuery(r)
 	now := s.now()
 	envName := analysisEnvName(cfg)
+	okxAPIID := strings.TrimSpace(r.URL.Query().Get("api_id"))
+	binanceAPIID := strings.TrimSpace(r.URL.Query().Get("binance_api_id"))
 	writeJSON(w, http.StatusOK, balanceOverviewResponse{
 		OK:          true,
 		Env:         envName,
@@ -295,8 +297,8 @@ func (s *Server) handleBalanceOverview(w http.ResponseWriter, r *http.Request) {
 		Minutes:     minutes,
 		RefreshedAt: now.UTC(),
 		Exchanges: []exchangeBalanceOverview{
-			s.balanceOverviewForOKX(r.Context(), cfg, envName, minutes, now),
-			s.balanceOverviewForBinance(r.Context(), cfg, envName, minutes, now),
+			s.balanceOverviewForOKX(r.Context(), cfg, envName, okxAPIID, minutes, now),
+			s.balanceOverviewForBinance(r.Context(), cfg, envName, binanceAPIID, minutes, now),
 		},
 	})
 }
@@ -343,8 +345,9 @@ func (s *Server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
 	pnlMinutes := analysisPNLMinutesFromQuery(r, pnlDays)
 	refresh := strings.EqualFold(r.URL.Query().Get("refresh"), "true")
 	apiID := strings.TrimSpace(r.URL.Query().Get("api_id"))
+	binanceAPIID := strings.TrimSpace(r.URL.Query().Get("binance_api_id"))
 	cfg := s.ConfigStore.Get()
-	resp, err := s.buildAnalysis(r.Context(), cfg, apiID, priceDays, pnlMinutes, refresh)
+	resp, err := s.buildAnalysis(r.Context(), cfg, apiID, binanceAPIID, priceDays, pnlMinutes, refresh)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "analysis_failed", err.Error())
 		return
@@ -352,7 +355,7 @@ func (s *Server) handleAnalysis(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requestedAPIID string, priceDays, pnlMinutes int, refresh bool) (analysisResponse, error) {
+func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requestedAPIID, requestedBinanceAPIID string, priceDays, pnlMinutes int, refresh bool) (analysisResponse, error) {
 	pnlMinutes = normalizeAnalysisPNLMinutes(pnlMinutes)
 	creds, apiID, err := s.OKXCredentials.OKXCredentials(requestedAPIID)
 	if err != nil {
@@ -360,7 +363,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 	}
 	now := s.now()
 	envName := analysisEnvName(cfg)
-	binanceCreds, binanceAPIID, binanceConfigured := s.analysisBinanceCredentials()
+	binanceCreds, binanceAPIID, binanceConfigured := s.analysisBinanceCredentials(requestedBinanceAPIID)
 	cacheKey := analysisCacheKey(apiID, binanceAPIID, envName, priceDays, pnlMinutes)
 	if !refresh {
 		if cached, ok, err := s.Orders.CachedPayload(cacheKey); err != nil {
@@ -421,7 +424,7 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 	return resp, nil
 }
 
-func (s *Server) analysisBinanceCredentials() (binance.Credentials, string, bool) {
+func (s *Server) analysisBinanceCredentials(requestedAPIID string) (binance.Credentials, string, bool) {
 	if s.BinanceCredentials == nil {
 		return binance.Credentials{}, "", false
 	}
@@ -429,7 +432,7 @@ func (s *Server) analysisBinanceCredentials() (binance.Credentials, string, bool
 	if !status.Configured {
 		return binance.Credentials{}, strings.TrimSpace(status.ActiveID), false
 	}
-	creds, apiID, err := s.BinanceCredentials.BinanceCredentials("")
+	creds, apiID, err := s.BinanceCredentials.BinanceCredentials(requestedAPIID)
 	if err != nil {
 		if s.Logger != nil {
 			s.Logger.Warn("failed to resolve Binance analysis credentials", "error", err)
@@ -1136,7 +1139,7 @@ func (s *Server) analysisFromStore(apiID, binanceAPIID, envName string, priceDay
 	}, nil
 }
 
-func (s *Server) balanceOverviewForOKX(ctx context.Context, cfg config.Config, envName string, minutes int, now time.Time) exchangeBalanceOverview {
+func (s *Server) balanceOverviewForOKX(ctx context.Context, cfg config.Config, envName, requestedAPIID string, minutes int, now time.Time) exchangeBalanceOverview {
 	out := exchangeBalanceOverview{Exchange: trading.ExchangeOKX, Label: "OKX", Status: "not_configured", RefreshedAt: now.UTC()}
 	if s.OKXCredentials == nil {
 		out.Error = "OKX credential store is not configured"
@@ -1144,7 +1147,10 @@ func (s *Server) balanceOverviewForOKX(ctx context.Context, cfg config.Config, e
 	}
 	status := s.OKXCredentials.Status()
 	out.Configured = status.Configured
-	out.APIID = strings.TrimSpace(status.ActiveID)
+	out.APIID = strings.TrimSpace(requestedAPIID)
+	if out.APIID == "" {
+		out.APIID = strings.TrimSpace(status.ActiveID)
+	}
 	if !status.Configured {
 		return out
 	}
@@ -1169,7 +1175,7 @@ func (s *Server) balanceOverviewForOKX(ctx context.Context, cfg config.Config, e
 	return out
 }
 
-func (s *Server) balanceOverviewForBinance(ctx context.Context, cfg config.Config, envName string, minutes int, now time.Time) exchangeBalanceOverview {
+func (s *Server) balanceOverviewForBinance(ctx context.Context, cfg config.Config, envName, requestedAPIID string, minutes int, now time.Time) exchangeBalanceOverview {
 	out := exchangeBalanceOverview{Exchange: trading.ExchangeBinance, Label: "Binance", Status: "not_configured", RefreshedAt: now.UTC()}
 	if s.BinanceCredentials == nil {
 		out.Error = "Binance credential store is not configured"
@@ -1177,7 +1183,10 @@ func (s *Server) balanceOverviewForBinance(ctx context.Context, cfg config.Confi
 	}
 	status := s.BinanceCredentials.Status()
 	out.Configured = status.Configured
-	out.APIID = strings.TrimSpace(status.ActiveID)
+	out.APIID = strings.TrimSpace(requestedAPIID)
+	if out.APIID == "" {
+		out.APIID = strings.TrimSpace(status.ActiveID)
+	}
 	if !status.Configured {
 		return out
 	}

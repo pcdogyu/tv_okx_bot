@@ -271,6 +271,9 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("OKX USDT 余额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance USDT 余额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单时间")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`id="analysis-okx-api-id"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`id="analysis-binance-api-id"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`binance_api_id`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 订单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 订单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("USDT 估值表")) ||
@@ -301,7 +304,7 @@ func TestRoutes(t *testing.T) {
 		[]byte("analysis-adj-eq"),
 		[]byte("analysis-asset-count"),
 		[]byte("analysis-binance-avail"),
-		[]byte("analysis-binance-api"),
+		[]byte(`id="analysis-binance-api"`),
 		[]byte("analysis-trade-history-section"),
 		[]byte("analysis-trade-rows"),
 		[]byte("analysis-trade-page-info"),
@@ -320,6 +323,8 @@ func TestRoutes(t *testing.T) {
 		[]byte("analysis-binance-balance-rows"),
 		[]byte("balance-table-wrap"),
 		[]byte("balanceRowsHTML"),
+		[]byte(`id="analysis-api-id"`),
+		[]byte(`交易 API<select id="analysis-api-id"`),
 	} {
 		if bytes.Contains(ui.Body.Bytes(), removed) {
 			t.Fatalf("tvbot analysis balance UI should not include removed metric %q", removed)
@@ -1100,6 +1105,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	candleTime2 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
 	var sawBalance, sawCandles, sawFills bool
 	expectedBinanceStart := windowStart
+	expectedBinanceAPIKey := "binance-alt-key"
 	sawBinanceSymbols := map[string]bool{}
 	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1146,8 +1152,8 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 		if r.URL.Path != "/fapi/v1/userTrades" {
 			t.Fatalf("unexpected Binance path %s", r.URL.Path)
 		}
-		if r.Header.Get("X-MBX-APIKEY") != "binance-key" {
-			t.Fatalf("missing Binance API key")
+		if r.Header.Get("X-MBX-APIKEY") != expectedBinanceAPIKey {
+			t.Fatalf("bad Binance API key: got %q want %q", r.Header.Get("X-MBX-APIKEY"), expectedBinanceAPIKey)
 		}
 		query := r.URL.Query()
 		symbol := query.Get("symbol")
@@ -1201,13 +1207,23 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:   "binance-alt",
+		Name: "Binance Alt",
+		Credentials: binance.Credentials{
+			APIKey:    "binance-alt-key",
+			SecretKey: "binance-alt-secret",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	unauth := httptest.NewRecorder()
 	srv.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/tvbot/analysis", nil))
 	if unauth.Code != http.StatusUnauthorized {
 		t.Fatalf("analysis without auth code=%d", unauth.Code)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/tvbot/analysis?refresh=true&pnl_days=60&pnl_minutes=1440", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/analysis?refresh=true&pnl_days=60&pnl_minutes=1440&binance_api_id=binance-alt", nil)
 	req.SetBasicAuth("admin", "Admin123")
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
@@ -1224,7 +1240,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.PNLMinutes != 1440 || resp.PNLDays != 1 || resp.BinanceAPIID != "binance-main" {
+	if resp.PNLMinutes != 1440 || resp.PNLDays != 1 || resp.BinanceAPIID != "binance-alt" || !strings.Contains(resp.Cache.CacheKey, "binance:binance-alt") {
 		t.Fatalf("bad analysis API/window metadata: %#v", resp)
 	}
 	if resp.Balance.TotalEq != "80078.07" || len(resp.Balance.Details) != 2 || resp.Balance.Details[0].Ccy != "BTC" {
@@ -1277,6 +1293,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	}
 
 	expectedBinanceStart = 0
+	expectedBinanceAPIKey = "binance-key"
 	capReq := httptest.NewRequest(http.MethodGet, "/tvbot/analysis?refresh=true&pnl_minutes=999999", nil)
 	capReq.SetBasicAuth("admin", "Admin123")
 	capRR := httptest.NewRecorder()

@@ -1043,7 +1043,8 @@ const tvbotHTML = `<!doctype html>
           <button class="btn small" type="button" id="sync-balance-history">同步历史</button>
         </div>
         <div class="analysis-controls">
-          <label>交易 API<select id="analysis-api-id"></select></label>
+          <label>OKX API<select id="analysis-okx-api-id"></select></label>
+          <label>Binance API<select id="analysis-binance-api-id"></select></label>
           <button class="btn primary" type="button" id="refresh-analysis">刷新分析</button>
         </div>
       </div>
@@ -1790,9 +1791,21 @@ const tvbotHTML = `<!doctype html>
       return Math.min(minutes, 30 * 24 * 60);
     }
 
-    function balanceOverviewPath(forceRefresh) {
+    function analysisSelectedAPIID(exchange) {
+      const id = exchange === "binance" ? "analysis-binance-api-id" : "analysis-okx-api-id";
+      const select = $(id);
+      return select ? select.value : (state.selectedAPIIDs[normalizeExchange(exchange)] || "");
+    }
+
+    function balanceOverviewPath(forceRefresh, analysisAPIs) {
       const qs = new URLSearchParams({ minutes: String(Math.max(0, Number(state.balanceWindowMinutes || 0))) });
       if (forceRefresh) qs.set("refresh", "true");
+      if (analysisAPIs) {
+        const okxAPIID = analysisSelectedAPIID("okx");
+        const binanceAPIID = analysisSelectedAPIID("binance");
+        if (okxAPIID) qs.set("api_id", okxAPIID);
+        if (binanceAPIID) qs.set("binance_api_id", binanceAPIID);
+      }
       return "/tvbot/balances/overview?" + qs.toString();
     }
 
@@ -2168,7 +2181,7 @@ const tvbotHTML = `<!doctype html>
       if (analysisBalanceRefreshBusy || !analysisBalanceAutoRefreshAllowed()) return;
       analysisBalanceRefreshBusy = true;
       try {
-        await loadBalanceOverview(true);
+        await loadBalanceOverview(true, true);
       } finally {
         analysisBalanceRefreshBusy = false;
       }
@@ -2263,9 +2276,9 @@ const tvbotHTML = `<!doctype html>
       updateMetrics();
     }
 
-    async function loadBalanceOverview(forceRefresh) {
+    async function loadBalanceOverview(forceRefresh, analysisAPIs) {
       try {
-        state.balanceOverview = await api(balanceOverviewPath(!!forceRefresh));
+        state.balanceOverview = await api(balanceOverviewPath(!!forceRefresh, !!analysisAPIs));
         state.balanceOverviewError = "";
       } catch (err) {
         state.balanceOverview = null;
@@ -2289,10 +2302,14 @@ const tvbotHTML = `<!doctype html>
 
     async function loadAnalysis(refresh) {
       const qs = new URLSearchParams({ price_days: "3", pnl_minutes: String(analysisPNLWindowMinutes()) });
-      const selected = $("analysis-api-id") ? $("analysis-api-id").value : "";
-      if (selected) qs.set("api_id", selected);
+      const okxSelected = $("analysis-okx-api-id") ? $("analysis-okx-api-id").value : "";
+      const binanceSelected = $("analysis-binance-api-id") ? $("analysis-binance-api-id").value : "";
+      state.selectedAPIIDs.okx = okxSelected;
+      state.selectedAPIIDs.binance = binanceSelected;
+      if (okxSelected) qs.set("api_id", okxSelected);
+      if (binanceSelected) qs.set("binance_api_id", binanceSelected);
       if (refresh) qs.set("refresh", "true");
-      if (refresh) await loadBalanceOverview(true);
+      await loadBalanceOverview(!!refresh, true);
       try {
         state.analysis = await api("/tvbot/analysis?" + qs.toString());
         state.analysisError = "";
@@ -2811,12 +2828,21 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderAnalysisAPIs() {
-      const select = $("analysis-api-id");
-      const current = select.value;
-      const status = apiKeyStatus("okx");
-      const options = apiAccounts("okx").map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
-      select.innerHTML = '<option value="">默认交易 API</option>' + options.join("");
-      select.value = current || (status && status.active_id ? status.active_id : "");
+      renderAnalysisAPISelect($("analysis-okx-api-id"), "okx");
+      renderAnalysisAPISelect($("analysis-binance-api-id"), "binance");
+    }
+
+    function renderAnalysisAPISelect(select, exchange) {
+      if (!select) return;
+      exchange = normalizeExchange(exchange);
+      const current = select.value || state.selectedAPIIDs[exchange] || "";
+      const status = apiKeyStatus(exchange);
+      const accounts = apiAccounts(exchange);
+      const options = accounts.map((account) => '<option value="' + escapeHTML(account.id) + '">' + escapeHTML(account.id + (account.name ? " - " + account.name : "") + (account.active ? " (交易)" : "")) + '</option>');
+      select.innerHTML = '<option value="">默认 ' + escapeHTML(exchangeLabel(exchange)) + ' 交易 API</option>' + options.join("");
+      const selected = accounts.some((account) => account.id === current) ? current : (status && status.active_id ? status.active_id : "");
+      select.value = selected;
+      state.selectedAPIIDs[exchange] = selected;
     }
 
     function renderPositionAPIs() {
@@ -3556,7 +3582,6 @@ const tvbotHTML = `<!doctype html>
       if (!Number.isFinite(parsed)) return;
       state.balanceWindowMinutes = parsed;
       updateBalanceWindowButtons();
-      await loadBalanceOverview(true);
       await loadAnalysis(false);
       toast("周期已切换为 " + balanceWindowLabel(parsed));
     }
@@ -3570,7 +3595,6 @@ const tvbotHTML = `<!doctype html>
       try {
         state.balanceWindowMinutes = 0;
         updateBalanceWindowButtons();
-        await loadBalanceOverview(true);
         await loadAnalysis(false);
         toast("基准已重置为当前余额");
       } finally {
@@ -3588,7 +3612,6 @@ const tvbotHTML = `<!doctype html>
         button.textContent = "同步中";
       }
       try {
-        await loadBalanceOverview(true);
         await loadAnalysis(false);
         toast("余额历史已同步");
       } finally {
@@ -3718,7 +3741,8 @@ const tvbotHTML = `<!doctype html>
     });
     $("reset-balance-baseline").addEventListener("click", () => resetBalanceBaseline($("reset-balance-baseline")).catch((err) => toast(err.message)));
     $("sync-balance-history").addEventListener("click", () => syncBalanceHistory($("sync-balance-history")).catch((err) => toast(err.message)));
-    $("analysis-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
+    $("analysis-okx-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
+    $("analysis-binance-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
     $("refresh-analysis").addEventListener("click", () => loadAnalysis(true).then(() => toast("分析已刷新")).catch((err) => toast(err.message)));
     $("refresh-positions").addEventListener("click", () => loadPositionView(true).then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
     $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
