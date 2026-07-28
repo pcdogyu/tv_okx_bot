@@ -47,6 +47,7 @@ const (
 	positionEntrySizeEpsilon    = 1e-9
 	entryTimeSourceOKXFills     = "okx_fills_history"
 	entryTimeSourceBinanceTrade = "binance_user_trades"
+	entryTimeSourcePositionTime = "exchange_position_time"
 	positionProtectionTP        = "tp"
 	positionProtectionSL        = "sl"
 	positionProtectionTrailing  = "trailing"
@@ -1318,11 +1319,13 @@ func positionViewWithEntryTime(position okx.Position, fills []positionEntryFill,
 	view := positionView{Position: position}
 	if fillErr != nil {
 		view.EntryTimeError = "成交历史读取失败: " + fillErr.Error()
+		applyPositionTimeFallback(&view, now)
 		return view
 	}
 	entryTime, ok, message := positionEntryFillTime(position, fills)
 	if !ok {
 		view.EntryTimeError = message
+		applyPositionTimeFallback(&view, now)
 		return view
 	}
 	view.EntryFillTime = entryTime.UTC().Format(time.RFC3339Nano)
@@ -1331,6 +1334,43 @@ func positionViewWithEntryTime(position okx.Position, fills []positionEntryFill,
 		view.HoldingSeconds = seconds
 	}
 	return view
+}
+
+func applyPositionTimeFallback(view *positionView, now time.Time) {
+	if view == nil || strings.TrimSpace(view.EntryFillTime) != "" {
+		return
+	}
+	entryTime, ok := exchangePositionTime(view.Position)
+	if !ok {
+		return
+	}
+	view.EntryFillTime = entryTime.UTC().Format(time.RFC3339Nano)
+	view.EntryTimeSource = entryTimeSourcePositionTime
+	if seconds := int64(now.UTC().Sub(entryTime.UTC()).Seconds()); seconds > 0 {
+		view.HoldingSeconds = seconds
+	}
+}
+
+func exchangePositionTime(position okx.Position) (time.Time, bool) {
+	for _, raw := range []string{position.CTime, position.UTime} {
+		ts, ok := parseExchangeMillisTime(raw)
+		if ok {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func parseExchangeMillisTime(raw string) (time.Time, bool) {
+	text := strings.TrimSpace(raw)
+	if text == "" || text == "0" || text == "-" {
+		return time.Time{}, false
+	}
+	ms, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || ms <= 0 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(ms).UTC(), true
 }
 
 func allPositionEntryTimesFound(positions []okx.Position, fills []positionEntryFill) bool {

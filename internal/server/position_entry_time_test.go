@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,5 +68,22 @@ func TestPositionEntryFillTimeInsufficientHistory(t *testing.T) {
 	})
 	if ok || !strings.Contains(errText, "成交不足") {
 		t.Fatalf("expected insufficient history, ok=%v err=%q", ok, errText)
+	}
+}
+
+func TestPositionViewWithEntryTimeFallsBackToExchangePositionTime(t *testing.T) {
+	now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+	positionTime := now.Add(-30 * time.Minute)
+	view := positionViewWithEntryTime(okx.Position{
+		InstID:  "BTCUSDT",
+		PosSide: "net",
+		Pos:     "1",
+		UTime:   strconv.FormatInt(positionTime.UnixMilli(), 10),
+	}, nil, now, entryTimeSourceBinanceTrade, errors.New("binance 502"))
+	if view.EntryFillTime != positionTime.Format(time.RFC3339Nano) ||
+		view.EntryTimeSource != entryTimeSourcePositionTime ||
+		view.HoldingSeconds != int64((30*time.Minute).Seconds()) ||
+		!strings.Contains(view.EntryTimeError, "binance 502") {
+		t.Fatalf("bad fallback position time view: %#v", view)
 	}
 }

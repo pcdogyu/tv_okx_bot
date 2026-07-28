@@ -165,6 +165,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionReturnRatio")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("formatHoldingSeconds")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionEntryTimeCell")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("交易所持仓时间")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("upl / Math.abs(margin)")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`{ label: "10%", ratio: "0.1" }`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-position-protection")) ||
