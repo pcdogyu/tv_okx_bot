@@ -41,6 +41,7 @@ type OrderRecord struct {
 	Price          string              `json:"price"`
 	Leverage       int                 `json:"leverage"`
 	Amount         string              `json:"amount"`
+	Risk           trading.Risk        `json:"risk,omitempty"`
 	TokenHash      string              `json:"token_hash"`
 	AcceptedAt     time.Time           `json:"accepted_at"`
 	UpdatedAt      time.Time           `json:"updated_at"`
@@ -286,6 +287,7 @@ func (s *OrderStore) migrateSQLite() error {
 			price TEXT,
 			leverage INTEGER,
 			amount TEXT,
+			risk_json TEXT,
 			token_hash TEXT,
 			accepted_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
@@ -387,6 +389,11 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 			return err
 		}
 	}
+	if !columns["risk_json"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN risk_json TEXT`); err != nil {
+			return err
+		}
+	}
 	if _, err := s.db.Exec(`UPDATE orders SET source_exchange = '' WHERE source_exchange IS NULL`); err != nil {
 		return err
 	}
@@ -394,6 +401,9 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 		return err
 	}
 	if _, err := s.db.Exec(`UPDATE orders SET raw_json = '' WHERE raw_json IS NULL`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`UPDATE orders SET risk_json = '' WHERE risk_json IS NULL`); err != nil {
 		return err
 	}
 	return nil
@@ -641,10 +651,19 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 		}
 		resultJSON = string(b)
 	}
+	riskJSON := ""
+	if strings.TrimSpace(string(rec.Risk.Type)) != "" {
+		rec.Risk.Normalize()
+		b, err := json.Marshal(rec.Risk)
+		if err != nil {
+			return err
+		}
+		riskJSON = string(b)
+	}
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO orders (
 		signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
-		leverage, amount, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.SignalID,
 		rec.DedupeKey,
 		string(rec.Status),
@@ -657,6 +676,7 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 		rec.Price,
 		rec.Leverage,
 		rec.Amount,
+		riskJSON,
 		rec.TokenHash,
 		rec.AcceptedAt.UTC().Format(time.RFC3339Nano),
 		rec.UpdatedAt.UTC().Format(time.RFC3339Nano),
@@ -673,7 +693,7 @@ func (s *OrderStore) listSQLiteLocked(limit int) ([]OrderRecord, error) {
 		limit = 50
 	}
 	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
-		leverage, amount, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders ORDER BY accepted_at DESC, signal_id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -692,7 +712,7 @@ func (s *OrderStore) listSQLiteLocked(limit int) ([]OrderRecord, error) {
 
 func (s *OrderStore) findSQLiteLocked(signalID string) (OrderRecord, error) {
 	row := s.db.QueryRow(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
-		leverage, amount, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders WHERE signal_id = ?`, signalID)
 	return scanOrder(row)
 }
@@ -716,7 +736,7 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	var rec OrderRecord
 	var status, acceptedAt, updatedAt string
 	var action sql.NullString
-	var apiID, sourceExchange, targetExchange, coinpair, ticker, price, amount, tokenHash, resultJSON, errorCode, errorText, rawJSON sql.NullString
+	var apiID, sourceExchange, targetExchange, coinpair, ticker, price, amount, riskJSON, tokenHash, resultJSON, errorCode, errorText, rawJSON sql.NullString
 	if err := scanner.Scan(
 		&rec.SignalID,
 		&rec.DedupeKey,
@@ -730,6 +750,7 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 		&price,
 		&rec.Leverage,
 		&amount,
+		&riskJSON,
 		&tokenHash,
 		&acceptedAt,
 		&updatedAt,
@@ -749,6 +770,12 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	rec.Ticker = nullableString(ticker)
 	rec.Price = nullableString(price)
 	rec.Amount = nullableString(amount)
+	if nullableString(riskJSON) != "" {
+		if err := json.Unmarshal([]byte(nullableString(riskJSON)), &rec.Risk); err != nil {
+			return OrderRecord{}, err
+		}
+		rec.Risk.Normalize()
+	}
 	rec.TokenHash = nullableString(tokenHash)
 	rec.ErrorCode = nullableString(errorCode)
 	rec.Error = nullableString(errorText)
@@ -904,6 +931,7 @@ func newOrderRecord(signal trading.Signal, dedupeKey string, status OrderStatus,
 		Coinpair:       signal.Coinpair,
 		Ticker:         signal.Ticker,
 		Leverage:       signal.Leverage,
+		Risk:           signal.Risk,
 		RawJSON:        strings.TrimSpace(signal.RawJSON),
 		AcceptedAt:     now.UTC(),
 		UpdatedAt:      now.UTC(),

@@ -790,6 +790,7 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		writeError(w, http.StatusBadRequest, "invalid_retry_signal", err.Error())
 		return
 	}
+	executeCfg := retryExecutionConfig(cfg, source)
 	record, duplicate, err := s.Orders.RecordAccepted(signal, storage.RetryKey(source.SignalID, signal, now), now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
@@ -803,7 +804,7 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		})
 		return
 	}
-	go s.execute(record.SignalID, signal, cfg)
+	go s.execute(record.SignalID, signal, executeCfg)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"status":    "accepted",
 		"signal_id": record.SignalID,
@@ -837,10 +838,45 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 	signal.Normalize()
 	applySignalSourceExchangeRouting(&signal, true)
 	cfg.OrderSettings().ApplyToSignal(&signal)
+	if risk, ok := retryRiskFromRecord(rec); ok {
+		signal.Risk = risk
+	}
 	if err := signal.Validate(now, 0, cfg); err != nil {
 		return trading.Signal{}, err
 	}
 	return signal, nil
+}
+
+func retryExecutionConfig(cfg config.Config, rec storage.OrderRecord) config.Config {
+	risk, ok := retryRiskFromRecord(rec)
+	if !ok {
+		return cfg
+	}
+	cfg.Trading.RiskType = string(risk.Type)
+	switch risk.Type {
+	case trading.RiskTPSL:
+		if risk.TPPct != nil && risk.TPPct.Set && risk.TPPct.Value > 0 {
+			cfg.Trading.TakeProfitPct = risk.TPPct.Value
+		}
+		if risk.SLPct != nil && risk.SLPct.Set && risk.SLPct.Value > 0 {
+			cfg.Trading.StopLossPct = risk.SLPct.Value
+		}
+	case trading.RiskTrailing:
+		if risk.TrailingPct != nil && risk.TrailingPct.Set && risk.TrailingPct.Value > 0 {
+			cfg.Trading.TrailingPct = risk.TrailingPct.Value
+		}
+	}
+	cfg.Normalize()
+	return cfg
+}
+
+func retryRiskFromRecord(rec storage.OrderRecord) (trading.Risk, bool) {
+	if strings.TrimSpace(string(rec.Risk.Type)) == "" {
+		return trading.Risk{}, false
+	}
+	risk := rec.Risk
+	risk.Normalize()
+	return risk, true
 }
 
 func parseOrderRecordFloat(name, value string) (float64, error) {

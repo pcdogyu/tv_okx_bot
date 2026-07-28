@@ -68,6 +68,8 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+	tp := trading.NewFlexibleFloat(3)
+	sl := trading.NewFlexibleFloat(1.5)
 	signal := trading.Signal{
 		Action:   trading.ActionShort,
 		APIID:    "backup",
@@ -77,8 +79,13 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 		Ticker:   "ETHUSDT",
 		Leverage: 3,
 		Amount:   trading.NewFlexibleFloat(120),
-		Token:    "token",
-		RawJSON:  `{"action":"sell","token":"[redacted]"}`,
+		Risk: trading.Risk{
+			Type:  trading.RiskTPSL,
+			TPPct: &tp,
+			SLPct: &sl,
+		},
+		Token:   "token",
+		RawJSON: `{"action":"sell","token":"[redacted]"}`,
 	}
 	signal.Normalize()
 	dedupe := DedupeKey(signal)
@@ -108,6 +115,9 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	}
 	if records[0].RawJSON != signal.RawJSON || records[1].RawJSON != signal.RawJSON {
 		t.Fatalf("raw json should be preserved: %#v", records)
+	}
+	if records[1].Risk.Type != trading.RiskTPSL || records[1].Risk.TPPct == nil || records[1].Risk.TPPct.Value != 3 || records[1].Risk.SLPct == nil || records[1].Risk.SLPct.Value != 1.5 {
+		t.Fatalf("risk settings should be preserved: %#v", records[1].Risk)
 	}
 }
 
@@ -172,12 +182,12 @@ func TestSQLiteOrderStoreReadsLegacyRowsWithNullExchangeColumns(t *testing.T) {
 	if len(records) != 1 || records[0].SignalID != "sig-old" || records[0].TargetExchange != trading.ExchangeOKX {
 		t.Fatalf("legacy order should remain readable after exchange migration: %#v", records)
 	}
-	var sourceExchange, targetExchange, rawJSON string
-	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange, raw_json FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange, &rawJSON); err != nil {
+	var sourceExchange, targetExchange, rawJSON, riskJSON string
+	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange, raw_json, risk_json FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange, &rawJSON, &riskJSON); err != nil {
 		t.Fatal(err)
 	}
-	if sourceExchange != "" || targetExchange != trading.ExchangeOKX || rawJSON != "" {
-		t.Fatalf("legacy order columns not backfilled source=%q target=%q raw_json=%q", sourceExchange, targetExchange, rawJSON)
+	if sourceExchange != "" || targetExchange != trading.ExchangeOKX || rawJSON != "" || riskJSON != "" {
+		t.Fatalf("legacy order columns not backfilled source=%q target=%q raw_json=%q risk_json=%q", sourceExchange, targetExchange, rawJSON, riskJSON)
 	}
 }
 
