@@ -271,8 +271,6 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("OKX USDT 余额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance USDT 余额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单时间")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`id="analysis-okx-api-id"`)) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`id="analysis-binance-api-id"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`binance_api_id`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 订单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 订单")) ||
@@ -305,6 +303,10 @@ func TestRoutes(t *testing.T) {
 		[]byte("analysis-asset-count"),
 		[]byte("analysis-binance-avail"),
 		[]byte(`id="analysis-binance-api"`),
+		[]byte(`id="analysis-okx-api-id"`),
+		[]byte(`id="analysis-binance-api-id"`),
+		[]byte(`id="refresh-analysis"`),
+		[]byte("刷新分析"),
 		[]byte("analysis-trade-history-section"),
 		[]byte("analysis-trade-rows"),
 		[]byte("analysis-trade-page-info"),
