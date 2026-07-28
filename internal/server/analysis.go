@@ -1290,7 +1290,7 @@ func balancePointBucket(minutes int) time.Duration {
 }
 
 func snapshotBalanceValue(snapshot storage.USDTBalanceSnapshot) float64 {
-	for _, raw := range []string{snapshot.CashBal, snapshot.AvailBal, snapshot.Eq, snapshot.EqUsd} {
+	for _, raw := range []string{snapshot.EqUsd, snapshot.Eq, snapshot.CashBal, snapshot.AvailBal} {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue

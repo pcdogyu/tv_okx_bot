@@ -56,46 +56,50 @@ func TestCompactBalancePointsUsesCurrentAndHourlyLongWindows(t *testing.T) {
 	}
 }
 
-func TestSnapshotBalanceValueUsesCashBalanceFallbackOrder(t *testing.T) {
+func TestSnapshotBalanceValueUsesValuationFallbackOrder(t *testing.T) {
 	tests := []struct {
 		name     string
 		snapshot storage.USDTBalanceSnapshot
 		want     float64
 	}{
 		{
-			name: "cash balance preferred over valuation",
+			name: "USD valuation preferred over equity and available balances",
 			snapshot: storage.USDTBalanceSnapshot{
 				CashBal:  "4818.20",
 				AvailBal: "4820.00",
 				Eq:       "4864.23",
 				EqUsd:    "4852.64",
 			},
+			want: 4852.64,
+		},
+		{
+			name: "fallback to equity",
+			snapshot: storage.USDTBalanceSnapshot{
+				Eq:       "4864.23",
+				CashBal:  "4818.20",
+				AvailBal: "4820.00",
+			},
+			want: 4864.23,
+		},
+		{
+			name: "fallback to cash balance",
+			snapshot: storage.USDTBalanceSnapshot{
+				EqUsd:    "bad",
+				Eq:       "bad",
+				CashBal:  "4818.20",
+				AvailBal: "4820.00",
+			},
 			want: 4818.20,
 		},
 		{
 			name: "fallback to available balance",
 			snapshot: storage.USDTBalanceSnapshot{
+				EqUsd:    "bad",
+				Eq:       "bad",
+				CashBal:  "bad",
 				AvailBal: "4820.00",
-				Eq:       "4864.23",
-				EqUsd:    "4852.64",
 			},
 			want: 4820.00,
-		},
-		{
-			name: "fallback to equity",
-			snapshot: storage.USDTBalanceSnapshot{
-				AvailBal: "bad",
-				Eq:       "4864.23",
-				EqUsd:    "4852.64",
-			},
-			want: 4864.23,
-		},
-		{
-			name: "fallback to USD valuation",
-			snapshot: storage.USDTBalanceSnapshot{
-				EqUsd: "4852.64",
-			},
-			want: 4852.64,
 		},
 	}
 	for _, tc := range tests {
@@ -107,7 +111,7 @@ func TestSnapshotBalanceValueUsesCashBalanceFallbackOrder(t *testing.T) {
 	}
 }
 
-func TestBalancePointsFromSnapshotsUsesCashBalanceForChartValue(t *testing.T) {
+func TestBalancePointsFromSnapshotsUsesValuationForChartValue(t *testing.T) {
 	now := time.Date(2026, 7, 28, 4, 0, 0, 0, time.UTC)
 	points := balancePointsFromSnapshots([]storage.USDTBalanceSnapshot{
 		{
@@ -123,8 +127,8 @@ func TestBalancePointsFromSnapshotsUsesCashBalanceForChartValue(t *testing.T) {
 	if len(points) != 1 {
 		t.Fatalf("points len=%d", len(points))
 	}
-	if math.Abs(points[0].Value-4818.20) > 0.0000001 {
-		t.Fatalf("chart value should use cash balance, points=%#v", points)
+	if math.Abs(points[0].Value-4852.64) > 0.0000001 {
+		t.Fatalf("chart value should use USDT valuation, points=%#v", points)
 	}
 	if points[0].EqUsd != "4852.64" || points[0].Eq != "4858.04" || points[0].FrozenBal != "39.83" {
 		t.Fatalf("snapshot fields should be preserved: %#v", points[0])

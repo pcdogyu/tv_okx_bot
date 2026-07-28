@@ -317,7 +317,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("chartTimeLabel")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("chartTickIndexes")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("usdtBalancePoints")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`["cash_bal", "avail_bal", "eq", "eq_usd"]`)) {
+		!bytes.Contains(ui.Body.Bytes(), []byte(`["eq_usd", "eq", "cash_bal", "avail_bal"]`)) {
 		t.Fatalf("tvbot ui should render full-width chart grid and time axis")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("账户名称")) ||
@@ -1221,7 +1221,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if len(resp.PricePoints) != 2 || resp.PriceInstID != "USDT-USD" || resp.PriceBar != "1H" {
 		t.Fatalf("bad price data: %#v", resp)
 	}
-	if len(resp.BalancePoints) != 1 || math.Abs(resp.BalancePoints[0].Value-5000) > 0.0000001 {
+	if len(resp.BalancePoints) != 1 || math.Abs(resp.BalancePoints[0].Value-4996.65) > 0.0000001 || resp.BalancePoints[0].CashBal != "5000" {
 		t.Fatalf("bad balance points: %#v", resp.BalancePoints)
 	}
 	snapshots, err := srv.Orders.ListUSDTBalanceSnapshots("default", cfg.Trading.Env, time.Date(2026, 7, 24, 2, 0, 0, 0, time.UTC), 10)
