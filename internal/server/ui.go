@@ -806,7 +806,7 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-rate-col { width: 5.2%; }
     .positions-table .pos-entry-time-col { width: 6.9%; }
     .positions-table .pos-holding-time-col { width: 5.6%; }
-    .positions-table .pos-actions-col { width: 25%; }
+    .positions-table .pos-actions-col { width: 27.5%; }
     .pending-order-table {
       min-width: 1280px;
     }
@@ -1375,11 +1375,15 @@ const tvbotHTML = `<!doctype html>
     };
     let positionViewPollTimer = null;
     let positionViewPollBusy = false;
+    let positionEntryTimeSyncTimer = null;
+    let positionEntryTimeSyncBusy = false;
     let analysisBalanceRefreshTimer = null;
     let analysisBalanceRefreshBusy = false;
     let menuSettingsSynced = false;
     let tableColumnDrag = null;
     const analysisTradePageSize = 20;
+    const positionViewPollIntervalMs = 5000;
+    const missingPositionEntrySyncIntervalMs = 180000;
     const analysisBalanceRefreshIntervalMs = 60000;
     const defaultMenuItems = [
       { tab: "dashboard", label: "总览" },
@@ -2120,26 +2124,72 @@ const tvbotHTML = `<!doctype html>
       applyMenuSettings();
     }
 
+    function positionsTabActive() {
+      const section = $("positions");
+      return !!(section && section.classList.contains("active"));
+    }
+
+    function positionEntryTimesMissing(row) {
+      const entryTime = String(row && row.entry_fill_time ? row.entry_fill_time : "").trim();
+      const holdingSeconds = Number(row && row.holding_seconds);
+      return !entryTime || !Number.isFinite(holdingSeconds) || holdingSeconds < 0;
+    }
+
+    function missingPositionEntryTimesDetected() {
+      const rows = state.positions && Array.isArray(state.positions.positions) ? state.positions.positions : [];
+      return rows.some((row) => positionEntryTimesMissing(row));
+    }
+
     function startPositionViewPolling() {
-      if (positionViewPollTimer) return;
-      positionViewPollTimer = window.setInterval(async () => {
-        if (positionViewPollBusy) return;
-        positionViewPollBusy = true;
-        try {
-          await loadPositionView();
-        } catch (err) {
-          toast(err.message);
-        } finally {
-          positionViewPollBusy = false;
-        }
-      }, 5000);
+      if (!positionViewPollTimer) {
+        positionViewPollTimer = window.setInterval(async () => {
+          if (positionViewPollBusy) return;
+          positionViewPollBusy = true;
+          try {
+            await loadPositionView();
+          } catch (err) {
+            toast(err.message);
+          } finally {
+            positionViewPollBusy = false;
+          }
+        }, positionViewPollIntervalMs);
+      }
+      startMissingPositionEntryTimeSync();
     }
 
     function stopPositionViewPolling() {
-      if (!positionViewPollTimer) return;
-      window.clearInterval(positionViewPollTimer);
-      positionViewPollTimer = null;
+      if (positionViewPollTimer) {
+        window.clearInterval(positionViewPollTimer);
+        positionViewPollTimer = null;
+      }
+      stopMissingPositionEntryTimeSync();
       positionViewPollBusy = false;
+    }
+
+    function startMissingPositionEntryTimeSync() {
+      if (positionEntryTimeSyncTimer) return;
+      positionEntryTimeSyncTimer = window.setInterval(() => {
+        syncMissingPositionEntryTimes().catch((err) => toast(err.message));
+      }, missingPositionEntrySyncIntervalMs);
+    }
+
+    function stopMissingPositionEntryTimeSync() {
+      if (!positionEntryTimeSyncTimer) return;
+      window.clearInterval(positionEntryTimeSyncTimer);
+      positionEntryTimeSyncTimer = null;
+      positionEntryTimeSyncBusy = false;
+    }
+
+    async function syncMissingPositionEntryTimes() {
+      if (positionEntryTimeSyncBusy || positionViewPollBusy || !positionsTabActive() || !missingPositionEntryTimesDetected()) return;
+      positionEntryTimeSyncBusy = true;
+      positionViewPollBusy = true;
+      try {
+        await loadPositions(true);
+      } finally {
+        positionEntryTimeSyncBusy = false;
+        positionViewPollBusy = false;
+      }
     }
 
     function analysisTabActive() {
@@ -2306,8 +2356,8 @@ const tvbotHTML = `<!doctype html>
       renderAnalysis();
     }
 
-    async function loadPositions() {
-      const results = await Promise.all(positionExchanges.map((exchange) => loadPositionExchange(exchange)));
+    async function loadPositions(forceRefresh) {
+      const results = await Promise.all(positionExchanges.map((exchange) => loadPositionExchange(exchange, !!forceRefresh)));
       const rows = [];
       results.forEach((result) => {
         const exchange = normalizeExchange(result.exchange);
@@ -2359,10 +2409,11 @@ const tvbotHTML = `<!doctype html>
       renderPendingOrders();
     }
 
-    async function loadPositionExchange(exchange) {
+    async function loadPositionExchange(exchange, forceRefresh) {
       const qs = new URLSearchParams({ inst_type: "SWAP", exchange });
       const apiID = activeAPIID(exchange);
       if (apiID) qs.set("api_id", apiID);
+      if (forceRefresh) qs.set("refresh", "true");
       try {
         const result = await api("/tvbot/positions?" + qs.toString());
         result.exchange = normalizeExchange(result.exchange || exchange);
@@ -2460,8 +2511,8 @@ const tvbotHTML = `<!doctype html>
       }).join(" . ");
     }
 
-    async function loadPositionView() {
-      await Promise.all([loadPositions(), loadPendingOrders()]);
+    async function loadPositionView(forceRefresh) {
+      await Promise.all([loadPositions(!!forceRefresh), loadPendingOrders()]);
     }
 
     async function loadSymbols(showLoading) {
@@ -3808,7 +3859,7 @@ const tvbotHTML = `<!doctype html>
       state.analysisTradePage = Number(state.analysisTradePage || 1) + 1;
       renderAnalysisTradeHistory("");
     });
-    $("refresh-positions").addEventListener("click", () => loadPositionView().then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
+    $("refresh-positions").addEventListener("click", () => loadPositionView(true).then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
     $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
     $("copy-webhook-url").addEventListener("click", async () => {

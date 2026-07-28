@@ -275,6 +275,7 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 		instType = "SWAP"
 	}
 	apiID := strings.TrimSpace(r.URL.Query().Get("api_id"))
+	refresh := strings.EqualFold(r.URL.Query().Get("refresh"), "true")
 	cfg := s.ConfigStore.Get()
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
@@ -287,13 +288,13 @@ func (s *Server) handlePositions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
 			return
 		}
-		resp, err = s.fetchBinancePositions(ctx, cfg, apiID)
+		resp, err = s.fetchBinancePositions(ctx, cfg, apiID, refresh)
 	} else {
 		if s.OKXCredentials == nil {
 			writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
 			return
 		}
-		resp, err = s.fetchPositions(ctx, cfg, apiID, instType)
+		resp, err = s.fetchPositions(ctx, cfg, apiID, instType, refresh)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "positions_failed", err.Error())
@@ -969,7 +970,7 @@ func (s *Server) startBinanceLimitPositionClose(ctx context.Context, apiID strin
 	return order, true, nil
 }
 
-func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requestedAPIID, instType string) (positionsResponse, error) {
+func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requestedAPIID, instType string, refresh bool) (positionsResponse, error) {
 	creds, apiID, err := s.OKXCredentials.OKXCredentials(requestedAPIID)
 	if err != nil {
 		return positionsResponse{}, err
@@ -996,6 +997,7 @@ func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requeste
 	fills, fillErr := s.cachedPositionEntryFills(
 		trading.ExchangeOKX+"|"+apiID+"|"+strings.TrimRight(client.BaseURL, "/")+"|"+strings.ToUpper(strings.TrimSpace(instType)),
 		now,
+		refresh,
 		func() ([]positionEntryFill, error) {
 			return fetchOKXPositionEntryFills(ctx, client, instType, positions, now)
 		},
@@ -1052,7 +1054,7 @@ func (s *Server) fetchPendingOrders(ctx context.Context, cfg config.Config, requ
 	}, nil
 }
 
-func (s *Server) fetchBinancePositions(ctx context.Context, cfg config.Config, requestedAPIID string) (positionsResponse, error) {
+func (s *Server) fetchBinancePositions(ctx context.Context, cfg config.Config, requestedAPIID string, refresh bool) (positionsResponse, error) {
 	client, apiID, err := s.binanceClientForCredentials(cfg, requestedAPIID)
 	if err != nil {
 		return positionsResponse{}, err
@@ -1085,6 +1087,7 @@ func (s *Server) fetchBinancePositions(ctx context.Context, cfg config.Config, r
 		fills, fillErr := s.cachedPositionEntryFills(
 			trading.ExchangeBinance+"|"+apiID+"|"+strings.TrimRight(client.BaseURL, "/")+"|"+symbol,
 			now,
+			refresh,
 			func() ([]positionEntryFill, error) {
 				return fetchBinancePositionEntryFills(ctx, client, symbol, symbolPositions, now)
 			},
@@ -1143,9 +1146,11 @@ func (s *Server) fetchBinancePendingOrders(ctx context.Context, cfg config.Confi
 	}, nil
 }
 
-func (s *Server) cachedPositionEntryFills(key string, now time.Time, fetch func() ([]positionEntryFill, error)) ([]positionEntryFill, error) {
-	if fills, ok := s.positionEntryCache.get(key, now); ok {
-		return fills, nil
+func (s *Server) cachedPositionEntryFills(key string, now time.Time, refresh bool, fetch func() ([]positionEntryFill, error)) ([]positionEntryFill, error) {
+	if !refresh {
+		if fills, ok := s.positionEntryCache.get(key, now); ok {
+			return fills, nil
+		}
 	}
 	fills, err := fetch()
 	if err != nil {

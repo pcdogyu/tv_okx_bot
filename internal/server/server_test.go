@@ -180,7 +180,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("font-size: 7px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .position-actions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("gap: 6px")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .pos-actions-col { width: 25%; }")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .pos-actions-col { width: 27.5%; }")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("missingPositionEntrySyncIntervalMs = 180000")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("positionEntryTimesMissing")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("syncMissingPositionEntryTimes")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`qs.set("refresh", "true")`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("loadPositionView(true)")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionTableColumnDefs")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`tableColumnCount("positions")`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
@@ -1345,7 +1350,8 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	srv := newTestServer(t)
 	entryFillTime := srv.now().Add(-2 * time.Hour)
 	reduceFillTime := srv.now().Add(-time.Hour)
-	var sawPositions, sawFills bool
+	var sawPositions bool
+	fillsCalls := 0
 	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -1362,7 +1368,7 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 				{"instType":"SWAP","instId":"ETH-USDT-SWAP","mgnMode":"isolated","posId":"2","posSide":"short","pos":"0","availPos":"0","avgPx":"2500","markPx":"2490","upl":"0","uplRatio":"0","lever":"5","notionalUsd":"0","uTime":"1784880000000"}
 			]}`))
 		case "/api/v5/trade/fills-history":
-			sawFills = true
+			fillsCalls++
 			if r.URL.Query().Get("instType") != "SWAP" || r.URL.Query().Get("limit") != "100" {
 				t.Fatalf("bad fills query: %s", r.URL.RawQuery)
 			}
@@ -1411,7 +1417,7 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	if !sawPositions {
 		t.Fatal("expected OKX positions call")
 	}
-	if !sawFills {
+	if fillsCalls != 1 {
 		t.Fatal("expected OKX fills-history call")
 	}
 	var resp positionsResponse
@@ -1430,11 +1436,34 @@ func TestTVBotPositionsRequiresAdminAndReturnsCurrentPositions(t *testing.T) {
 	if resp.Positions[0].PricePrecision == nil || *resp.Positions[0].PricePrecision != 1 || resp.Positions[0].QuantityPrecision == nil || *resp.Positions[0].QuantityPrecision != 2 {
 		t.Fatalf("bad OKX position precision: %#v", resp.Positions[0])
 	}
+
+	cachedReq := httptest.NewRequest(http.MethodGet, "/tvbot/positions?api_id=default", nil)
+	cachedReq.SetBasicAuth("admin", "Admin123")
+	cachedRR := httptest.NewRecorder()
+	srv.ServeHTTP(cachedRR, cachedReq)
+	if cachedRR.Code != http.StatusOK {
+		t.Fatalf("cached positions code=%d body=%s", cachedRR.Code, cachedRR.Body.String())
+	}
+	if fillsCalls != 1 {
+		t.Fatalf("expected cached positions request to reuse entry fills, calls=%d", fillsCalls)
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodGet, "/tvbot/positions?api_id=default&refresh=true", nil)
+	refreshReq.SetBasicAuth("admin", "Admin123")
+	refreshRR := httptest.NewRecorder()
+	srv.ServeHTTP(refreshRR, refreshReq)
+	if refreshRR.Code != http.StatusOK {
+		t.Fatalf("refresh positions code=%d body=%s", refreshRR.Code, refreshRR.Body.String())
+	}
+	if fillsCalls != 2 {
+		t.Fatalf("expected refresh=true to reload entry fills, calls=%d", fillsCalls)
+	}
 }
 
 func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	srv := newTestServer(t)
 	seen := map[string]bool{}
+	userTradesCalls := 0
 	entryTradeTime := srv.now().Add(-2 * time.Hour)
 	reduceTradeTime := srv.now().Add(-time.Hour)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1460,6 +1489,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 				{"symbol":"ETHUSDT","algoId":901,"clientAlgoId":"sl-901","algoType":"CONDITIONAL","orderType":"STOP_MARKET","side":"BUY","positionSide":"BOTH","quantity":"0.2","algoStatus":"NEW","reduceOnly":true}
 			]`))
 		case "/fapi/v1/userTrades":
+			userTradesCalls++
 			if r.URL.Query().Get("symbol") != "BTCUSDT" || r.URL.Query().Get("limit") != "1000" {
 				t.Fatalf("bad user trades query: %s", r.URL.RawQuery)
 			}
@@ -1515,6 +1545,31 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	}
 	if positions.Positions[0].PricePrecision == nil || *positions.Positions[0].PricePrecision != 2 || positions.Positions[0].QuantityPrecision == nil || *positions.Positions[0].QuantityPrecision != 3 {
 		t.Fatalf("bad Binance position precision: %#v", positions.Positions[0])
+	}
+	if userTradesCalls != 1 {
+		t.Fatalf("expected Binance user trades call, calls=%d", userTradesCalls)
+	}
+
+	cachedPositionsReq := httptest.NewRequest(http.MethodGet, "/tvbot/positions?exchange=binance", nil)
+	cachedPositionsReq.SetBasicAuth("admin", "Admin123")
+	cachedPositionsRR := httptest.NewRecorder()
+	srv.ServeHTTP(cachedPositionsRR, cachedPositionsReq)
+	if cachedPositionsRR.Code != http.StatusOK {
+		t.Fatalf("cached Binance positions status=%d body=%s", cachedPositionsRR.Code, cachedPositionsRR.Body.String())
+	}
+	if userTradesCalls != 1 {
+		t.Fatalf("expected cached Binance positions request to reuse user trades, calls=%d", userTradesCalls)
+	}
+
+	refreshPositionsReq := httptest.NewRequest(http.MethodGet, "/tvbot/positions?exchange=binance&refresh=true", nil)
+	refreshPositionsReq.SetBasicAuth("admin", "Admin123")
+	refreshPositionsRR := httptest.NewRecorder()
+	srv.ServeHTTP(refreshPositionsRR, refreshPositionsReq)
+	if refreshPositionsRR.Code != http.StatusOK {
+		t.Fatalf("refresh Binance positions status=%d body=%s", refreshPositionsRR.Code, refreshPositionsRR.Body.String())
+	}
+	if userTradesCalls != 2 {
+		t.Fatalf("expected refresh=true to reload Binance user trades, calls=%d", userTradesCalls)
 	}
 
 	pendingReq := httptest.NewRequest(http.MethodGet, "/tvbot/pending-orders?exchange=binance", nil)
