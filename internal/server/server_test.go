@@ -268,6 +268,12 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("USDT估值")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("USDT余额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/balances/overview")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("global-exchange-switch")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`data-global-exchange="okx"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`data-global-exchange="binance"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`data-exchange-view="okx"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`data-exchange-view="binance"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`globalExchangeStorageKey = "tvbot.selectedExchange"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("OKX USDT 余额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance USDT 余额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单时间")) ||
@@ -294,7 +300,15 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("formatQuantityAmount")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbolPrecisions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPNLWindowMinutes")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("pnl_minutes")) {
+		!bytes.Contains(ui.Body.Bytes(), []byte("pnl_minutes")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("历史成交明细")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-page-info")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysisTradePageSize = 20")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("renderAnalysisTradeHistory")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("exchange: activeExchange()")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("loadPositionExchange(activeExchange()")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("loadPendingOrdersExchange(activeExchange()")) {
 		t.Fatalf("tvbot ui should include exchange balance analysis")
 	}
 	for _, removed := range [][]byte{
@@ -308,11 +322,6 @@ func TestRoutes(t *testing.T) {
 		[]byte(`id="refresh-analysis"`),
 		[]byte("刷新分析"),
 		[]byte("analysis-trade-history-section"),
-		[]byte("analysis-trade-rows"),
-		[]byte("analysis-trade-page-info"),
-		[]byte("analysisTradePageSize"),
-		[]byte("analysis-trade-table"),
-		[]byte("成交历史"),
 		[]byte("OKX 盈亏分析"),
 		[]byte("Binance 盈亏分析"),
 		[]byte("analysis-okx-symbol-status"),
@@ -368,7 +377,6 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("configuredDefaultTab")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("effectiveDefaultTab")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("syncActiveTabAfterMenuSettings")) ||
-		bytes.Contains(ui.Body.Bytes(), []byte("localStorage.getItem")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("tvbot.active_tab")) {
 		t.Fatalf("tvbot ui should use hash/default tab navigation without localStorage override")
 	}
@@ -687,6 +695,53 @@ func TestTVOrderRoutesTargetExchangeBinance(t *testing.T) {
 	records := srv.Orders.List(10)
 	if len(records) != 1 || records[0].TargetExchange != trading.ExchangeBinance {
 		t.Fatalf("order record should save Binance target exchange: %#v", records)
+	}
+}
+
+func TestHandleOrdersFiltersByTargetExchange(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Date(2026, 7, 24, 4, 0, 0, 0, time.UTC)
+	okxSignal := validSignal(t, srv)
+	okxSignal.TargetExchange = trading.ExchangeOKX
+	okxSignal.Coinpair = "BTC"
+	okxSignal.Ticker = "OKX:BTCUSDT.P"
+	if _, _, err := srv.Orders.RecordAccepted(okxSignal, "okx-order", now); err != nil {
+		t.Fatal(err)
+	}
+	binanceSignal := validSignal(t, srv)
+	binanceSignal.TargetExchange = trading.ExchangeBinance
+	binanceSignal.APIID = "binance-main"
+	binanceSignal.Coinpair = "ETH"
+	binanceSignal.Ticker = "BINANCE:ETHUSDT.P"
+	if _, _, err := srv.Orders.RecordAccepted(binanceSignal, "binance-order", now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	fetch := func(target string) (int, []storage.OrderRecord, string) {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		var list struct {
+			Orders []storage.OrderRecord `json:"orders"`
+		}
+		if rr.Code == http.StatusOK {
+			if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return rr.Code, list.Orders, rr.Body.String()
+	}
+	if code, orders, body := fetch("/tvbot/orders?limit=50"); code != http.StatusOK || len(orders) != 2 {
+		t.Fatalf("unfiltered orders code=%d len=%d body=%s", code, len(orders), body)
+	}
+	if code, orders, body := fetch("/tvbot/orders?limit=50&exchange=okx"); code != http.StatusOK || len(orders) != 1 || orders[0].TargetExchange != trading.ExchangeOKX {
+		t.Fatalf("OKX orders code=%d orders=%#v body=%s", code, orders, body)
+	}
+	if code, orders, body := fetch("/tvbot/orders?limit=50&exchange=binance"); code != http.StatusOK || len(orders) != 1 || orders[0].TargetExchange != trading.ExchangeBinance {
+		t.Fatalf("Binance orders code=%d orders=%#v body=%s", code, orders, body)
+	}
+	if code, _, body := fetch("/tvbot/orders?exchange=bybit"); code != http.StatusBadRequest || !strings.Contains(body, "invalid_exchange") {
+		t.Fatalf("invalid exchange code=%d body=%s", code, body)
 	}
 }
 

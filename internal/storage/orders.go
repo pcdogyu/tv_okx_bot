@@ -219,6 +219,29 @@ func (s *OrderStore) List(limit int) []OrderRecord {
 	return out
 }
 
+func (s *OrderStore) ListByTargetExchange(exchange string, limit int) []OrderRecord {
+	exchange = trading.NormalizeExchange(exchange)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		records, err := s.listSQLiteByTargetExchangeLocked(exchange, limit)
+		if err == nil {
+			return records
+		}
+		return nil
+	}
+	if limit <= 0 {
+		limit = len(s.state.Orders)
+	}
+	out := make([]OrderRecord, 0, min(limit, len(s.state.Orders)))
+	for i := len(s.state.Orders) - 1; i >= 0 && len(out) < limit; i-- {
+		if trading.NormalizeExchange(s.state.Orders[i].TargetExchange) == exchange {
+			out = append(out, s.state.Orders[i])
+		}
+	}
+	return out
+}
+
 func (s *OrderStore) Get(signalID string) (OrderRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -695,6 +718,28 @@ func (s *OrderStore) listSQLiteLocked(limit int) ([]OrderRecord, error) {
 	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
 		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders ORDER BY accepted_at DESC, signal_id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OrderRecord
+	for rows.Next() {
+		rec, err := scanOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+func (s *OrderStore) listSQLiteByTargetExchangeLocked(exchange string, limit int) ([]OrderRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
+		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+		FROM orders WHERE target_exchange = ? ORDER BY accepted_at DESC, signal_id DESC LIMIT ?`, trading.NormalizeExchange(exchange), limit)
 	if err != nil {
 		return nil, err
 	}

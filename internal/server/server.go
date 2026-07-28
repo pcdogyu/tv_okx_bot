@@ -753,6 +753,15 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
+	exchange := strings.TrimSpace(r.URL.Query().Get("exchange"))
+	if exchange != "" {
+		if !trading.ValidTargetExchange(exchange) {
+			writeError(w, http.StatusBadRequest, "invalid_exchange", "exchange must be okx or binance")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"orders": s.Orders.ListByTargetExchange(exchange, limit)})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"orders": s.Orders.List(limit)})
 }
 

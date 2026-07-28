@@ -18,6 +18,17 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`.analysis-period-row`,
 		`.analysis-time-status`,
 		`.analysis-usdt-chart-card`,
+		`.global-exchange-switch`,
+		`data-global-exchange="okx"`,
+		`data-global-exchange="binance"`,
+		`data-exchange-view="okx"`,
+		`data-exchange-view="binance"`,
+		`globalExchangeStorageKey = "tvbot.selectedExchange"`,
+		`window.localStorage.getItem(globalExchangeStorageKey)`,
+		`window.localStorage.setItem(globalExchangeStorageKey, selected)`,
+		`function activeExchange()`,
+		`function setSelectedExchange(exchange)`,
+		`function renderGlobalExchangeSwitch()`,
 		`订单时间`,
 		`OKX 订单`,
 		`Binance 订单`,
@@ -51,6 +62,19 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`data-balance-minutes="2880"`,
 		`data-balance-minutes="4320"`,
 		`data-balance-minutes="10080"`,
+		`历史成交明细`,
+		`class="symbol-table analysis-trade-table"`,
+		`id="analysis-trade-rows"`,
+		`id="analysis-trade-page-info"`,
+		`id="analysis-trade-prev"`,
+		`id="analysis-trade-next"`,
+		`analysisTradePageSize = 20`,
+		`function renderAnalysisTradeHistory(errorText)`,
+		`analysisTradesForActiveExchange`,
+		`暂无 ' + escapeHTML(label) + ' 成交明细`,
+		`exchange: activeExchange()`,
+		`loadPositionExchange(activeExchange()`,
+		`loadPendingOrdersExchange(activeExchange()`,
 	} {
 		if !strings.Contains(tvbotHTML, marker) {
 			t.Fatalf("tvbot ui missing %s", marker)
@@ -81,12 +105,6 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`默认 ' + escapeHTML(exchangeLabel(exchange)) + ' 交易 API`,
 		`id="analysis-symbol-section"`,
 		`id="analysis-trade-history-section"`,
-		`class="analysis-trade-table"`,
-		`id="analysis-trade-rows"`,
-		`id="analysis-trade-page-info"`,
-		`analysisTradePageSize`,
-		`renderAnalysisTradeHistory`,
-		`成交历史`,
 		`OKX 盈亏分析`,
 		`Binance 盈亏分析`,
 		`analysis-okx-symbol-status`,
@@ -130,12 +148,18 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		t.Fatal("analysis layout markers are missing")
 	}
 	if !(okxOrder < binanceOrder) {
-		t.Fatal("OKX and Binance order columns should be rendered side by side in order")
+		t.Fatal("OKX and Binance analysis panels should remain in stable order")
 	}
 	if !(okxValuation < okxPNL && okxPNL < okxChart) {
 		t.Fatal("OKX column should show USDT valuation cards, pnl summary, then equity chart")
 	}
 	if !(binanceValuation < binancePNL && binancePNL < binanceChart) {
 		t.Fatal("Binance column should show USDT valuation cards, pnl summary, then equity chart")
+	}
+	tradeHistory := strings.Index(tvbotHTML, `id="analysis-trade-history-title"`)
+	tradeRows := strings.Index(tvbotHTML, `id="analysis-trade-rows"`)
+	tradePage := strings.Index(tvbotHTML, `id="analysis-trade-page-info"`)
+	if tradeHistory < 0 || tradeRows < 0 || tradePage < 0 || !(analysisGrid < tradeHistory && tradeHistory < tradeRows && tradeRows < tradePage) {
+		t.Fatal("analysis should show paginated trade history after the active exchange summary")
 	}
 }

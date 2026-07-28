@@ -121,6 +121,44 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	}
 }
 
+func TestOrderStoreListByTargetExchangeFiltersMemoryAndSQLite(t *testing.T) {
+	run := func(t *testing.T, store *OrderStore) {
+		t.Helper()
+		now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+		okxSignal := trading.Signal{Action: trading.ActionLong, TargetExchange: trading.ExchangeOKX, Coinpair: "BTC", Ticker: "OKX:BTCUSDT.P"}
+		binanceSignal := trading.Signal{Action: trading.ActionShort, TargetExchange: trading.ExchangeBinance, Coinpair: "ETH", Ticker: "BINANCE:ETHUSDT.P"}
+		if _, _, err := store.RecordAccepted(okxSignal, "okx", now); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.RecordAccepted(binanceSignal, "binance", now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		okx := store.ListByTargetExchange(trading.ExchangeOKX, 10)
+		if len(okx) != 1 || okx[0].TargetExchange != trading.ExchangeOKX || okx[0].Coinpair != "BTC" {
+			t.Fatalf("bad OKX filtered orders: %#v", okx)
+		}
+		binance := store.ListByTargetExchange(trading.ExchangeBinance, 10)
+		if len(binance) != 1 || binance[0].TargetExchange != trading.ExchangeBinance || binance[0].Coinpair != "ETH" {
+			t.Fatalf("bad Binance filtered orders: %#v", binance)
+		}
+	}
+	t.Run("memory", func(t *testing.T) {
+		store, err := NewOrderStore("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run(t, store)
+	})
+	t.Run("sqlite", func(t *testing.T) {
+		store, err := NewSQLiteOrderStore(filepath.Join(t.TempDir(), "tvbot.db"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		run(t, store)
+	})
+}
+
 func TestSQLiteOrderStoreReadsLegacyRowsWithNullExchangeColumns(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "tvbot.db")
 	db, err := sql.Open("sqlite", dbPath)

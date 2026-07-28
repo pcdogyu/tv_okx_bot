@@ -247,6 +247,37 @@ const tvbotHTML = `<!doctype html>
       font-size: 12px;
       letter-spacing: 0;
     }
+    .header-controls {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .global-exchange-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 4px;
+      background: #f8fafc;
+    }
+    .global-exchange-switch button {
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text);
+      min-height: 30px;
+      padding: 5px 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .global-exchange-switch button[aria-selected="true"] {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #fff;
+    }
     nav {
       display: flex;
       gap: 6px;
@@ -291,6 +322,9 @@ const tvbotHTML = `<!doctype html>
     }
     .status[hidden] {
       display: none;
+    }
+    [hidden] {
+      display: none !important;
     }
     .metric, section {
       background: var(--panel);
@@ -668,13 +702,13 @@ const tvbotHTML = `<!doctype html>
     }
     .dashboard-balance-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: minmax(0, 1fr);
       gap: 12px;
       margin-top: 14px;
     }
     .analysis-balance-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: minmax(0, 1fr);
       gap: 12px;
       margin-bottom: 14px;
       align-items: start;
@@ -765,6 +799,13 @@ const tvbotHTML = `<!doctype html>
       justify-content: flex-end;
       gap: 8px;
       flex-wrap: wrap;
+    }
+    .analysis-trade-history-card {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }
+    .analysis-trade-table {
+      min-width: 980px;
     }
     .positions-table {
       min-width: 1400px;
@@ -885,6 +926,7 @@ const tvbotHTML = `<!doctype html>
     }
     @media (max-width: 880px) {
       .bar { align-items: flex-start; flex-direction: column; }
+      .header-controls { justify-content: flex-start; }
       nav { justify-content: flex-start; }
       .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics, .dashboard-balance-grid, .analysis-balance-grid { grid-template-columns: 1fr; }
       .analysis-period-row { flex-direction: column; }
@@ -904,19 +946,25 @@ const tvbotHTML = `<!doctype html>
   <header>
     <div class="bar">
       <div class="brand"><span class="mark">TV</span><span>OKX Bot</span></div>
-      <nav aria-label="sections">
-        <button type="button" data-tab="dashboard" aria-selected="true">总览</button>
-        <button type="button" data-tab="positions">持仓</button>
-        <button type="button" data-tab="analysis">订单分析</button>
-        <button type="button" data-tab="symbols">币对配置</button>
-        <button type="button" data-tab="config">订单配置</button>
-        <button type="button" data-tab="apiKeys">API Key</button>
-        <button type="button" data-tab="orderSettings">下单设置</button>
-        <button type="button" data-tab="template">告警模板</button>
-        <button type="button" data-tab="orders">订单</button>
-        <button type="button" data-tab="menuSettings">菜单设置</button>
-        <button type="button" data-tab="upgrade">升级</button>
-      </nav>
+      <div class="header-controls">
+        <div class="global-exchange-switch" role="group" aria-label="全局交易所">
+          <button type="button" data-global-exchange="okx" aria-selected="true">OKX</button>
+          <button type="button" data-global-exchange="binance">Binance</button>
+        </div>
+        <nav aria-label="sections">
+          <button type="button" data-tab="dashboard" aria-selected="true">总览</button>
+          <button type="button" data-tab="positions">持仓</button>
+          <button type="button" data-tab="analysis">订单分析</button>
+          <button type="button" data-tab="symbols">币对配置</button>
+          <button type="button" data-tab="config">订单配置</button>
+          <button type="button" data-tab="apiKeys">API Key</button>
+          <button type="button" data-tab="orderSettings">下单设置</button>
+          <button type="button" data-tab="template">告警模板</button>
+          <button type="button" data-tab="orders">订单</button>
+          <button type="button" data-tab="menuSettings">菜单设置</button>
+          <button type="button" data-tab="upgrade">升级</button>
+        </nav>
+      </div>
     </div>
   </header>
 
@@ -949,7 +997,7 @@ const tvbotHTML = `<!doctype html>
         </div>
       </div>
       <div class="dashboard-balance-grid">
-        <div class="balance-chart-card">
+        <div class="balance-chart-card" data-exchange-view="okx">
           <div class="section-head" style="margin-bottom:8px">
             <h3>OKX USDT 余额</h3>
             <span class="muted" id="overview-okx-status">-</span>
@@ -962,7 +1010,7 @@ const tvbotHTML = `<!doctype html>
           </div>
           <svg id="overview-okx-usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT balance chart"></svg>
         </div>
-        <div class="balance-chart-card">
+        <div class="balance-chart-card" data-exchange-view="binance">
           <div class="section-head" style="margin-bottom:8px">
             <h3>Binance USDT 余额</h3>
             <span class="muted" id="overview-binance-status">-</span>
@@ -1039,7 +1087,7 @@ const tvbotHTML = `<!doctype html>
         </div>
       </div>
       <div class="analysis-balance-grid">
-        <div class="balance-chart-card exchange-balance-card">
+        <div class="balance-chart-card exchange-balance-card" data-exchange-view="okx">
           <div class="section-head" style="margin-bottom:0">
             <h3>OKX 订单</h3>
             <span class="muted" id="analysis-okx-balance-status">-</span>
@@ -1069,7 +1117,7 @@ const tvbotHTML = `<!doctype html>
             <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT equity chart"></svg>
           </div>
         </div>
-        <div class="balance-chart-card exchange-balance-card">
+        <div class="balance-chart-card exchange-balance-card" data-exchange-view="binance">
           <div class="section-head" style="margin-bottom:0">
             <h3>Binance 订单</h3>
             <span class="muted" id="analysis-binance-balance-status">-</span>
@@ -1098,6 +1146,25 @@ const tvbotHTML = `<!doctype html>
             </div>
             <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT equity chart"></svg>
           </div>
+        </div>
+      </div>
+      <div class="analysis-trade-history-card">
+        <div class="section-head" style="margin-bottom:10px">
+          <h3 id="analysis-trade-history-title">历史成交明细</h3>
+          <span class="muted" id="analysis-trade-history-status">-</span>
+        </div>
+        <div class="symbol-table-wrap">
+          <table class="symbol-table analysis-trade-table">
+            <thead>
+              <tr><th>时间</th><th>币对</th><th>方向</th><th>成交价</th><th>数量</th><th>盈亏</th><th>手续费</th><th>订单号</th><th>成交笔数</th></tr>
+            </thead>
+            <tbody id="analysis-trade-rows"></tbody>
+          </table>
+        </div>
+        <div class="analysis-pagination" style="margin-top:10px">
+          <button class="btn small" type="button" id="analysis-trade-prev">上一页</button>
+          <span class="muted" id="analysis-trade-page-info">-</span>
+          <button class="btn small" type="button" id="analysis-trade-next">下一页</button>
         </div>
       </div>
     </section>
@@ -1303,6 +1370,7 @@ const tvbotHTML = `<!doctype html>
       pendingOrderActions: {},
       analysis: null,
       analysisError: "",
+      selectedExchange: "okx",
       analysisTradePage: 1,
       symbolPrecisions: {},
       balanceOverview: null,
@@ -1341,6 +1409,8 @@ const tvbotHTML = `<!doctype html>
       { tab: "upgrade", label: "升级" }
     ];
     const positionExchanges = ["okx", "binance"];
+    const globalExchangeStorageKey = "tvbot.selectedExchange";
+    const analysisTradePageSize = 20;
     const balanceWindowOptions = [
       { minutes: 0, label: "当前" },
       { minutes: 5, label: "5m" },
@@ -1585,6 +1655,68 @@ const tvbotHTML = `<!doctype html>
 
     function exchangeLabel(value) {
       return normalizeExchange(value) === "binance" ? "Binance" : "OKX";
+    }
+
+    function storedSelectedExchange() {
+      try {
+        return normalizeExchange(window.localStorage.getItem(globalExchangeStorageKey) || "okx");
+      } catch (_) {
+        return "okx";
+      }
+    }
+
+    function activeExchange() {
+      return normalizeExchange(state.selectedExchange || "okx");
+    }
+
+    function sectionActive(tabID) {
+      const section = $(tabID);
+      return !!(section && section.classList.contains("active"));
+    }
+
+    function renderGlobalExchangeSwitch() {
+      const selected = activeExchange();
+      document.querySelectorAll("[data-global-exchange]").forEach((button) => {
+        button.setAttribute("aria-selected", normalizeExchange(button.dataset.globalExchange) === selected ? "true" : "false");
+      });
+      document.querySelectorAll("[data-exchange-view]").forEach((panel) => {
+        panel.hidden = normalizeExchange(panel.dataset.exchangeView) !== selected;
+      });
+      renderPositionAPIs();
+    }
+
+    function setSelectedExchange(exchange) {
+      const selected = normalizeExchange(exchange);
+      if (selected === activeExchange()) {
+        renderGlobalExchangeSwitch();
+        return;
+      }
+      state.selectedExchange = selected;
+      state.analysisTradePage = 1;
+      state.orders = [];
+      state.positions = null;
+      state.pendingOrders = null;
+      try {
+        window.localStorage.setItem(globalExchangeStorageKey, selected);
+      } catch (_) {}
+      renderGlobalExchangeSwitch();
+      renderDashboard();
+      renderAnalysis();
+      renderOrders();
+      updateMetrics();
+      loadOrders().catch((err) => toast(err.message));
+      if (sectionActive("dashboard")) {
+        loadBalanceOverview(true).then(() => renderDashboard()).catch((err) => toast(err.message));
+      }
+      if (sectionActive("analysis")) {
+        loadAnalysis(false).catch((err) => toast(err.message));
+      }
+      if (sectionActive("positions")) {
+        loadPositionView(true).catch((err) => toast(err.message));
+      } else {
+        renderPositions();
+        renderPendingOrders();
+      }
     }
 
     function formatNumber(v) {
@@ -2159,7 +2291,7 @@ const tvbotHTML = `<!doctype html>
       if (analysisBalanceRefreshBusy || !analysisBalanceAutoRefreshAllowed()) return;
       analysisBalanceRefreshBusy = true;
       try {
-        await loadBalanceOverview(true, true);
+        await loadBalanceOverview(true);
       } finally {
         analysisBalanceRefreshBusy = false;
       }
@@ -2265,7 +2397,8 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadOrders() {
-      const data = await api("/tvbot/orders?limit=50");
+      const qs = new URLSearchParams({ limit: "50", exchange: activeExchange() });
+      const data = await api("/tvbot/orders?" + qs.toString());
       state.orders = data.orders || [];
       renderOrders();
       updateMetrics();
@@ -2294,7 +2427,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadPositions(forceRefresh) {
-      const results = await Promise.all(positionExchanges.map((exchange) => loadPositionExchange(exchange, !!forceRefresh)));
+      const results = await Promise.all([loadPositionExchange(activeExchange(), !!forceRefresh)]);
       const rows = [];
       results.forEach((result) => {
         const exchange = normalizeExchange(result.exchange);
@@ -2317,7 +2450,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadPendingOrders() {
-      const results = await Promise.all(positionExchanges.map((exchange) => loadPendingOrdersExchange(exchange)));
+      const results = await Promise.all([loadPendingOrdersExchange(activeExchange())]);
       const rows = [];
       let normalCount = 0;
       let algoCount = 0;
@@ -2437,7 +2570,7 @@ const tvbotHTML = `<!doctype html>
     function pendingOrdersSummaryText(response) {
       const exchanges = response && Array.isArray(response.exchanges) ? response.exchanges : [];
       if (exchanges.length === 0) return "-";
-      return positionExchanges.map((exchange) => {
+      return [activeExchange()].map((exchange) => {
         const result = exchanges.find((item) => normalizeExchange(item && item.exchange) === exchange);
         const label = exchangeLabel(exchange);
         if (!result) return label + " -";
@@ -2477,6 +2610,7 @@ const tvbotHTML = `<!doctype html>
 
     function renderDashboard() {
       if (!state.config) return;
+      renderGlobalExchangeSwitch();
       const t = state.config.trading || {};
       const rows = [
         ["服务地址", state.config.server ? state.config.server.addr : "-"],
@@ -2502,6 +2636,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderBalanceOverview() {
+      renderGlobalExchangeSwitch();
       ["okx", "binance"].forEach((exchange) => {
         const item = balanceOverviewExchange(exchange);
         const prefix = "overview-" + exchange;
@@ -2801,12 +2936,14 @@ const tvbotHTML = `<!doctype html>
     function renderPositionAPIs() {
       const summary = $("position-exchange-summary");
       if (!summary) return;
-      summary.textContent = positionExchanges.map((exchange) => {
-        const status = apiKeyStatus(exchange);
-        if (!status || !status.configured) return exchangeLabel(exchange) + " 未配置";
-        const apiID = status && status.active_id ? status.active_id : "default";
-        return exchangeLabel(exchange) + " " + apiDisplayName(apiID, exchange);
-      }).join(" / ");
+      const exchange = activeExchange();
+      const status = apiKeyStatus(exchange);
+      if (!status || !status.configured) {
+        summary.textContent = exchangeLabel(exchange) + " 未配置";
+        return;
+      }
+      const apiID = status && status.active_id ? status.active_id : "default";
+      summary.textContent = exchangeLabel(exchange) + " " + apiDisplayName(apiID, exchange);
     }
 
     function positionSideText(posSide, pos) {
@@ -3050,20 +3187,22 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderAnalysis() {
+      renderGlobalExchangeSwitch();
       if (!state.analysis) {
         $("analysis-updated").textContent = state.analysisError || "-";
         renderAnalysisExchangeBalances();
         renderAnalysisExchangeStats("okx", state.analysisError || "-");
         renderAnalysisExchangeStats("binance", state.analysisError || "-");
+        renderAnalysisTradeHistory(state.analysisError || "-");
         return;
       }
       renderAnalysisExchangeBalances();
-      const okxAPI = asText(state.analysis.api_id);
-      const binanceAPI = asText(state.analysis.binance_api_id);
-      const apiText = binanceAPI === "-" ? "OKX " + okxAPI : "OKX " + okxAPI + " / Binance " + binanceAPI;
-      $("analysis-updated").textContent = shanghaiTime(state.analysis.refreshed_at) + " / API " + apiText;
+      const exchange = activeExchange();
+      const apiID = exchange === "binance" ? state.analysis.binance_api_id : state.analysis.api_id;
+      $("analysis-updated").textContent = shanghaiTime(state.analysis.refreshed_at) + " / API " + exchangeLabel(exchange) + " " + asText(apiID);
       renderAnalysisExchangeStats("okx", "");
       renderAnalysisExchangeStats("binance", "");
+      renderAnalysisTradeHistory("");
     }
 
     function renderAnalysisExchangeStats(exchange, errorText) {
@@ -3089,6 +3228,79 @@ const tvbotHTML = `<!doctype html>
       const summaries = state.analysis && Array.isArray(state.analysis.exchange_summaries) ? state.analysis.exchange_summaries : [];
       const found = summaries.find((row) => normalizeExchange(row.exchange) === normalizeExchange(exchange));
       return found || { exchange: normalizeExchange(exchange), trade_count: 0, wins: 0, losses: 0, net_pnl: 0, fees: 0, win_rate: 0, profit_factor: 0, payoff_ratio: 0 };
+    }
+
+    function analysisTradesForActiveExchange() {
+      const exchange = activeExchange();
+      const rows = state.analysis && Array.isArray(state.analysis.trades) ? state.analysis.trades : [];
+      return rows.filter((row) => normalizeExchange(row.exchange) === exchange);
+    }
+
+    function formattedTradeNumber(value, suffix) {
+      if (value === null || value === undefined || String(value).trim() === "") return "-";
+      const formatted = formatNumber(value);
+      if (formatted === "-") return asText(value);
+      return formatted + (suffix || "");
+    }
+
+    function tradeFeeText(row) {
+      const fee = formattedTradeNumber(row && row.fee, "");
+      const ccy = row && row.fee_ccy ? String(row.fee_ccy).trim() : "";
+      if (fee === "-") return "-";
+      return ccy ? fee + " " + ccy : fee;
+    }
+
+    function renderAnalysisTradeHistory(errorText) {
+      const exchange = activeExchange();
+      const label = exchangeLabel(exchange);
+      const title = $("analysis-trade-history-title");
+      const status = $("analysis-trade-history-status");
+      const rowsEl = $("analysis-trade-rows");
+      const pageInfo = $("analysis-trade-page-info");
+      const prev = $("analysis-trade-prev");
+      const next = $("analysis-trade-next");
+      if (title) title.textContent = label + " 历史成交明细";
+      if (!rowsEl) return;
+      if (errorText) {
+        rowsEl.innerHTML = '<tr><td colspan="9" class="muted">' + escapeHTML(errorText) + '</td></tr>';
+        if (status) status.textContent = errorText;
+        if (pageInfo) pageInfo.textContent = "-";
+        if (prev) prev.disabled = true;
+        if (next) next.disabled = true;
+        return;
+      }
+      const trades = analysisTradesForActiveExchange();
+      const totalPages = Math.max(1, Math.ceil(trades.length / analysisTradePageSize));
+      state.analysisTradePage = Math.min(Math.max(1, Number(state.analysisTradePage || 1)), totalPages);
+      const start = (state.analysisTradePage - 1) * analysisTradePageSize;
+      const pageRows = trades.slice(start, start + analysisTradePageSize);
+      rowsEl.innerHTML = pageRows.map((row) => {
+        const pnlValue = row && row.fill_pnl;
+        const pnlText = formattedTradeNumber(pnlValue, " USDT");
+        const pnlTone = signedToneClass(pnlValue);
+        return "<tr>" +
+          '<td class="time">' + escapeHTML(shanghaiTime(row.fill_time)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.inst_id)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.side)) + "</td>" +
+          "<td>" + escapeHTML(formattedTradeNumber(row.fill_px, "")) + "</td>" +
+          "<td>" + escapeHTML(formattedTradeNumber(row.fill_sz, "")) + "</td>" +
+          '<td' + (pnlTone ? ' class="' + pnlTone + '"' : "") + ">" + escapeHTML(pnlText) + "</td>" +
+          "<td>" + escapeHTML(tradeFeeText(row)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.ord_id || row.trade_id)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.fill_count || 1)) + "</td>" +
+          "</tr>";
+      }).join("") || '<tr><td colspan="9" class="muted">暂无 ' + escapeHTML(label) + ' 成交明细</td></tr>';
+      if (status) status.textContent = trades.length ? ("共 " + trades.length + " 条") : "-";
+      if (pageInfo) pageInfo.textContent = trades.length ? ("第 " + state.analysisTradePage + " / " + totalPages + " 页") : "-";
+      if (prev) prev.disabled = state.analysisTradePage <= 1;
+      if (next) next.disabled = state.analysisTradePage >= totalPages;
+    }
+
+    function changeAnalysisTradePage(delta) {
+      const trades = analysisTradesForActiveExchange();
+      const totalPages = Math.max(1, Math.ceil(trades.length / analysisTradePageSize));
+      state.analysisTradePage = Math.min(Math.max(1, Number(state.analysisTradePage || 1) + delta), totalPages);
+      renderAnalysisTradeHistory("");
     }
 
     function renderAnalysisExchangeBalances() {
@@ -3518,7 +3730,7 @@ const tvbotHTML = `<!doctype html>
     async function checkOKX() {
       $("okx-output").textContent = "checking...";
       try {
-        const exchange = normalizeExchange(state.apiKeyExchange);
+        const exchange = activeExchange();
         const status = apiKeyStatus(exchange);
         const body = status && status.active_id ? { exchange: exchange, api_id: status.active_id } : { exchange: exchange };
         const result = await api("/tvbot/check-okx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -3595,6 +3807,11 @@ const tvbotHTML = `<!doctype html>
     document.querySelectorAll("nav button").forEach((button) => {
       button.addEventListener("click", () => {
         activateTab(button.dataset.tab, true);
+      });
+    });
+    document.querySelectorAll("[data-global-exchange]").forEach((button) => {
+      button.addEventListener("click", () => {
+        setSelectedExchange(button.dataset.globalExchange);
       });
     });
 
@@ -3692,6 +3909,8 @@ const tvbotHTML = `<!doctype html>
     });
     $("reset-balance-baseline").addEventListener("click", () => resetBalanceBaseline($("reset-balance-baseline")).catch((err) => toast(err.message)));
     $("sync-balance-history").addEventListener("click", () => syncBalanceHistory($("sync-balance-history")).catch((err) => toast(err.message)));
+    $("analysis-trade-prev").addEventListener("click", () => changeAnalysisTradePage(-1));
+    $("analysis-trade-next").addEventListener("click", () => changeAnalysisTradePage(1));
     $("refresh-positions").addEventListener("click", () => loadPositionView(true).then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
     $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
@@ -3749,6 +3968,8 @@ const tvbotHTML = `<!doctype html>
       }
     });
 
+    state.selectedExchange = storedSelectedExchange();
+    renderGlobalExchangeSwitch();
     renderTemplateWebhookURL();
     updateBalanceWindowButtons();
     initTableColumnDrag();
