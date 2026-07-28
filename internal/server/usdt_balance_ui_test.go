@@ -26,8 +26,8 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`Binance 订单`,
 		`USDT 估值表`,
 		`USDT 权益图`,
-		`OKX 盈亏分析`,
-		`Binance 盈亏分析`,
+		`id="analysis-okx-net-pnl"`,
+		`id="analysis-binance-net-pnl"`,
 		`.balance-table-wrap`,
 		"height: auto;\n      max-height: 188px;\n      overflow: auto;",
 		`#analysis .mini-usdt-chart`,
@@ -86,6 +86,14 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`analysisTradePageSize`,
 		`renderAnalysisTradeHistory`,
 		`成交历史`,
+		`OKX 盈亏分析`,
+		`Binance 盈亏分析`,
+		`analysis-okx-symbol-status`,
+		`analysis-binance-symbol-status`,
+		`analysis-okx-rows`,
+		`analysis-binance-rows`,
+		`analysis-symbol-table`,
+		`analysis-table-wrap`,
 		`for (const key of ["eq_usd", "eq", "cash_bal", "avail_bal"])`,
 		".balance-table-wrap {\n      height: 188px;",
 	} {
@@ -108,8 +116,8 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 	binanceBalanceRows := strings.Index(tvbotHTML, `id="analysis-binance-balance-rows"`)
 	okxChart := strings.Index(tvbotHTML, `id="usdt-chart" class="mini-usdt-chart"`)
 	binanceChart := strings.Index(tvbotHTML, `id="analysis-binance-usdt-chart" class="mini-usdt-chart"`)
-	okxPNL := strings.Index(tvbotHTML, `OKX 盈亏分析`)
-	binancePNL := strings.Index(tvbotHTML, `Binance 盈亏分析`)
+	okxPNL := strings.Index(tvbotHTML, `id="analysis-okx-net-pnl"`)
+	binancePNL := strings.Index(tvbotHTML, `id="analysis-binance-net-pnl"`)
 	if okxOrder < 0 || binanceOrder < 0 || okxBalanceRows < 0 || binanceBalanceRows < 0 || okxChart < 0 || binanceChart < 0 || okxPNL < 0 || binancePNL < 0 {
 		t.Fatal("analysis layout markers are missing")
 	}

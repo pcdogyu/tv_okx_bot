@@ -752,20 +752,14 @@ const tvbotHTML = `<!doctype html>
     .symbol-table {
       min-width: 980px;
     }
-    .analysis-table-wrap {
-      overflow-x: auto;
-    }
     .balance-pnl-block {
       border-top: 1px solid var(--line);
       padding-top: 10px;
     }
-    .balance-pnl-block .section-head {
-      margin-bottom: 8px;
-    }
     .balance-pnl-block .analysis-metrics {
       grid-template-columns: repeat(5, minmax(88px, 1fr));
       gap: 8px;
-      margin: 8px 0;
+      margin: 0;
     }
     .balance-pnl-block .analysis-card {
       min-height: 58px;
@@ -773,26 +767,6 @@ const tvbotHTML = `<!doctype html>
     }
     .balance-pnl-block .analysis-card .value {
       font-size: 15px;
-    }
-    .balance-pnl-block .analysis-table-wrap {
-      max-height: 188px;
-      overflow: auto;
-    }
-    .balance-pnl-block .analysis-symbol-table {
-      min-width: 920px;
-    }
-    .balance-pnl-block th {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-    }
-    .analysis-symbol-table {
-      min-width: 1080px;
-    }
-    .analysis-subsection {
-      border-top: 1px solid var(--line);
-      margin-top: 16px;
-      padding-top: 12px;
     }
     .analysis-usdt-chart-card {
       border-top: 1px solid var(--line);
@@ -1111,24 +1085,12 @@ const tvbotHTML = `<!doctype html>
             </div>
           </div>
           <div class="analysis-exchange-block balance-pnl-block">
-            <div class="section-head" style="margin-top:0">
-              <h3>OKX 盈亏分析</h3>
-              <span class="muted" id="analysis-okx-symbol-status">-</span>
-            </div>
             <div class="analysis-metrics">
               <div class="analysis-card"><div class="label">净盈亏</div><div class="value" id="analysis-okx-net-pnl">-</div></div>
               <div class="analysis-card"><div class="label">胜率</div><div class="value" id="analysis-okx-win-rate">-</div></div>
               <div class="analysis-card"><div class="label">盈利因子</div><div class="value" id="analysis-okx-profit-factor">-</div></div>
               <div class="analysis-card"><div class="label">盈亏比</div><div class="value" id="analysis-okx-payoff-ratio">-</div></div>
               <div class="analysis-card"><div class="label">成交数</div><div class="value" id="analysis-okx-trades">-</div></div>
-            </div>
-            <div class="analysis-table-wrap">
-              <table class="analysis-symbol-table">
-                <thead>
-                  <tr><th>币对</th><th>成交数</th><th>盈利数</th><th>亏损数</th><th>净盈亏</th><th>手续费</th><th>胜率</th><th>盈利因子</th><th>盈亏比</th></tr>
-                </thead>
-                <tbody id="analysis-okx-rows"></tbody>
-              </table>
             </div>
           </div>
           <div class="analysis-usdt-chart-card">
@@ -1161,24 +1123,12 @@ const tvbotHTML = `<!doctype html>
             </div>
           </div>
           <div class="analysis-exchange-block balance-pnl-block">
-            <div class="section-head" style="margin-top:0">
-              <h3>Binance 盈亏分析</h3>
-              <span class="muted" id="analysis-binance-symbol-status">-</span>
-            </div>
             <div class="analysis-metrics">
               <div class="analysis-card"><div class="label">净盈亏</div><div class="value" id="analysis-binance-net-pnl">-</div></div>
               <div class="analysis-card"><div class="label">胜率</div><div class="value" id="analysis-binance-win-rate">-</div></div>
               <div class="analysis-card"><div class="label">盈利因子</div><div class="value" id="analysis-binance-profit-factor">-</div></div>
               <div class="analysis-card"><div class="label">盈亏比</div><div class="value" id="analysis-binance-payoff-ratio">-</div></div>
               <div class="analysis-card"><div class="label">成交数</div><div class="value" id="analysis-binance-trades">-</div></div>
-            </div>
-            <div class="analysis-table-wrap">
-              <table class="analysis-symbol-table">
-                <thead>
-                  <tr><th>币对</th><th>成交数</th><th>盈利数</th><th>亏损数</th><th>净盈亏</th><th>手续费</th><th>胜率</th><th>盈利因子</th><th>盈亏比</th></tr>
-                </thead>
-                <tbody id="analysis-binance-rows"></tbody>
-              </table>
             </div>
           </div>
           <div class="analysis-usdt-chart-card">
@@ -3176,32 +3126,14 @@ const tvbotHTML = `<!doctype html>
         $(prefix + "-profit-factor").textContent = "-";
         $(prefix + "-payoff-ratio").textContent = "-";
         $(prefix + "-trades").textContent = "-";
-        $(prefix + "-symbol-status").textContent = errorText;
-        $(prefix + "-rows").innerHTML = '<tr><td colspan="9" class="muted">' + escapeHTML(errorText) + '</td></tr>';
         return;
       }
-      const symbols = (state.analysis && Array.isArray(state.analysis.symbols) ? state.analysis.symbols : []).filter((row) => normalizeExchange(row.exchange) === normalized);
       const summary = analysisExchangeSummary(normalized);
       $(prefix + "-net-pnl").textContent = formatNumber(summary.net_pnl) + " USDT";
       $(prefix + "-win-rate").textContent = formatPct(summary.win_rate);
       $(prefix + "-profit-factor").textContent = formatFactor(summary);
       $(prefix + "-payoff-ratio").textContent = formatNumber(summary.payoff_ratio);
       $(prefix + "-trades").textContent = asText(summary.trade_count || 0);
-      $(prefix + "-symbol-status").textContent = "成交数 " + asText(summary.trade_count || 0) + " / 币对 " + symbols.length;
-      const rows = symbols.map((row) => {
-        return "<tr>" +
-          "<td>" + escapeHTML(asText(row.inst_id)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.trade_count)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.wins)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.losses)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.net_pnl)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.fees)) + "</td>" +
-          "<td>" + escapeHTML(formatPct(row.win_rate)) + "</td>" +
-          "<td>" + escapeHTML(formatFactor(row)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.payoff_ratio)) + "</td>" +
-          "</tr>";
-      });
-      $(prefix + "-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">暂无 ' + escapeHTML(exchangeLabel(normalized)) + ' 成交统计</td></tr>';
     }
 
     function analysisExchangeSummary(exchange) {

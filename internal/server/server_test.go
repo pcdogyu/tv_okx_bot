@@ -286,10 +286,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("#analysis .mini-usdt-chart {\n      height: 360px;")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("#analysis .mini-usdt-chart { height: 346px; }")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("balance-pnl-block")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 盈亏分析")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 盈亏分析")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-okx-rows")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-okx-net-pnl")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-net-pnl")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisBalanceRefreshIntervalMs = 60000")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("refreshAnalysisBalanceOverviewAuto")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("visibilitychange")) ||
@@ -297,8 +295,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("formatQuantityAmount")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbolPrecisions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPNLWindowMinutes")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("pnl_minutes")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-symbol-table")) {
+		!bytes.Contains(ui.Body.Bytes(), []byte("pnl_minutes")) {
 		t.Fatalf("tvbot ui should include exchange balance analysis")
 	}
 	for _, removed := range [][]byte{
@@ -313,6 +310,14 @@ func TestRoutes(t *testing.T) {
 		[]byte("analysisTradePageSize"),
 		[]byte("analysis-trade-table"),
 		[]byte("成交历史"),
+		[]byte("OKX 盈亏分析"),
+		[]byte("Binance 盈亏分析"),
+		[]byte("analysis-okx-symbol-status"),
+		[]byte("analysis-binance-symbol-status"),
+		[]byte("analysis-okx-rows"),
+		[]byte("analysis-binance-rows"),
+		[]byte("analysis-symbol-table"),
+		[]byte("analysis-table-wrap"),
 	} {
 		if bytes.Contains(ui.Body.Bytes(), removed) {
 			t.Fatalf("tvbot analysis balance UI should not include removed metric %q", removed)
