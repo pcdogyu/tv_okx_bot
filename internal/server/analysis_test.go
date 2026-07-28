@@ -1,10 +1,13 @@
 package server
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 )
 
 func TestBalanceWindowQuerySupportsMinutesAndLegacyDays(t *testing.T) {
@@ -50,5 +53,80 @@ func TestCompactBalancePointsUsesCurrentAndHourlyLongWindows(t *testing.T) {
 		if time.UnixMilli(point.TS).Minute() != 0 {
 			t.Fatalf("point should be hour-bucketed: %#v", point)
 		}
+	}
+}
+
+func TestSnapshotBalanceValueUsesCashBalanceFallbackOrder(t *testing.T) {
+	tests := []struct {
+		name     string
+		snapshot storage.USDTBalanceSnapshot
+		want     float64
+	}{
+		{
+			name: "cash balance preferred over valuation",
+			snapshot: storage.USDTBalanceSnapshot{
+				CashBal:  "4818.20",
+				AvailBal: "4820.00",
+				Eq:       "4864.23",
+				EqUsd:    "4852.64",
+			},
+			want: 4818.20,
+		},
+		{
+			name: "fallback to available balance",
+			snapshot: storage.USDTBalanceSnapshot{
+				AvailBal: "4820.00",
+				Eq:       "4864.23",
+				EqUsd:    "4852.64",
+			},
+			want: 4820.00,
+		},
+		{
+			name: "fallback to equity",
+			snapshot: storage.USDTBalanceSnapshot{
+				AvailBal: "bad",
+				Eq:       "4864.23",
+				EqUsd:    "4852.64",
+			},
+			want: 4864.23,
+		},
+		{
+			name: "fallback to USD valuation",
+			snapshot: storage.USDTBalanceSnapshot{
+				EqUsd: "4852.64",
+			},
+			want: 4852.64,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := snapshotBalanceValue(tc.snapshot); math.Abs(got-tc.want) > 0.0000001 {
+				t.Fatalf("snapshotBalanceValue=%f, want %f", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBalancePointsFromSnapshotsUsesCashBalanceForChartValue(t *testing.T) {
+	now := time.Date(2026, 7, 28, 4, 0, 0, 0, time.UTC)
+	points := balancePointsFromSnapshots([]storage.USDTBalanceSnapshot{
+		{
+			BucketTS:   now.UnixMilli(),
+			ObservedAt: now,
+			EqUsd:      "4852.64",
+			Eq:         "4858.04",
+			AvailBal:   "4818.20",
+			CashBal:    "4818.20",
+			FrozenBal:  "39.83",
+		},
+	})
+	if len(points) != 1 {
+		t.Fatalf("points len=%d", len(points))
+	}
+	if math.Abs(points[0].Value-4818.20) > 0.0000001 {
+		t.Fatalf("chart value should use cash balance, points=%#v", points)
+	}
+	if points[0].EqUsd != "4852.64" || points[0].Eq != "4858.04" || points[0].FrozenBal != "39.83" {
+		t.Fatalf("snapshot fields should be preserved: %#v", points[0])
 	}
 }

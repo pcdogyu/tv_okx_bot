@@ -1076,9 +1076,9 @@ const tvbotHTML = `<!doctype html>
             </table>
           </div>
           <div class="section-head" style="margin:2px 0 0">
-            <h3 id="analysis-okx-usdt-title">USDT估值</h3>
+            <h3 id="analysis-okx-usdt-title">USDT余额</h3>
           </div>
-          <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT valuation chart"></svg>
+          <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT balance chart"></svg>
         </div>
         <div class="balance-chart-card exchange-balance-card">
           <div class="section-head" style="margin-bottom:0">
@@ -1119,9 +1119,9 @@ const tvbotHTML = `<!doctype html>
             </table>
           </div>
           <div class="section-head" style="margin:2px 0 0">
-            <h3 id="analysis-binance-usdt-title">USDT估值</h3>
+            <h3 id="analysis-binance-usdt-title">USDT余额</h3>
           </div>
-          <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT valuation chart"></svg>
+          <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT balance chart"></svg>
         </div>
       </div>
       <div class="analysis-subsection" id="analysis-trade-history-section">
@@ -1884,33 +1884,27 @@ const tvbotHTML = `<!doctype html>
       return details.find((row) => String(row.ccy || "").toUpperCase() === "USDT") || null;
     }
 
-    function usdtValuationPoints(balancePoints, pricePoints, balance) {
+    function usdtBalanceRawValue(row) {
+      for (const key of ["cash_bal", "avail_bal", "eq", "eq_usd"]) {
+        const raw = row && row[key];
+        if (raw !== undefined && raw !== null && String(raw).trim() !== "") return raw;
+      }
+      return "";
+    }
+
+    function usdtBalancePoints(balancePoints, balance) {
       const stored = (Array.isArray(balancePoints) ? balancePoints : []).map((point, index) => {
         return {
           index: index,
-          value: Number(point.value !== undefined ? point.value : (point.eq_usd || point.eq)),
+          value: Number(point.value !== undefined ? point.value : usdtBalanceRawValue(point)),
           date: chartPointDate(point)
         };
       }).filter((point) => Number.isFinite(point.value));
       if (stored.length) return stored;
       const usdt = usdtBalanceDetail(balance);
-      const currentValue = Number(usdt && usdt.eq_usd);
+      const currentValue = Number(usdtBalanceRawValue(usdt));
       if (!Number.isFinite(currentValue)) return [];
-      const priced = (Array.isArray(pricePoints) ? pricePoints : []).map((point, index) => {
-        return { index: index, price: Number(point.close), date: chartPointDate(point) };
-      }).filter((point) => Number.isFinite(point.price));
-      if (!priced.length) {
-        return [{ index: 0, value: currentValue, date: balance && balance.updated_at ? new Date(balance.updated_at) : null }];
-      }
-      const latest = priced[priced.length - 1];
-      const multiplier = latest.price > 0 ? currentValue / latest.price : 0;
-      return priced.map((point) => {
-        return {
-          index: point.index,
-          value: multiplier > 0 ? point.price * multiplier : currentValue,
-          date: point.date
-        };
-      });
+      return [{ index: 0, value: currentValue, date: balance && balance.updated_at ? new Date(balance.updated_at) : null }];
     }
 
     function pill(text, tone) {
@@ -2484,7 +2478,7 @@ const tvbotHTML = `<!doctype html>
         $(prefix + "-avail").textContent = usdt ? formatUSDTBalance(usdt.avail_bal || usdt.avail_eq) + " USDT" : "-";
         $(prefix + "-api").textContent = item.api_id ? apiDisplayName(item.api_id, exchange) : "-";
         $(prefix + "-updated").textContent = balance.updated_at ? shanghaiTime(balance.updated_at) : (item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
-        const points = usdtValuationPoints(item.balance_points || [], [], balance);
+        const points = usdtBalancePoints(item.balance_points || [], balance);
         drawUSDTChart(points, prefix + "-usdt-chart", configured ? "暂无 " + label + " USDT 余额数据" : label + " 未配置", exchange === "binance" ? "#138a55" : "#1f6feb");
       });
       renderAnalysisExchangeBalances();
@@ -3127,12 +3121,11 @@ const tvbotHTML = `<!doctype html>
       $("analysis-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
       $("analysis-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : "-";
       $("analysis-okx-balance-status").textContent = exchangeBalanceStatusText(item, balance, "OKX");
-      $("analysis-okx-usdt-title").textContent = "USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
+      $("analysis-okx-usdt-title").textContent = "USDT余额 " + balanceWindowLabel(state.balanceWindowMinutes);
       $("analysis-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 USDT 资产余额");
       const overviewPoints = item ? (item.balance_points || []) : [];
       const fallbackPoints = state.analysis ? (state.analysis.balance_points || []) : [];
-      const pricePoints = state.analysis ? (state.analysis.price_points || []) : [];
-      const points = usdtValuationPoints(overviewPoints.length ? overviewPoints : fallbackPoints, overviewPoints.length ? [] : pricePoints, balance);
+      const points = usdtBalancePoints(overviewPoints.length ? overviewPoints : fallbackPoints, balance);
       drawUSDTChart(points, "usdt-chart", "暂无 OKX USDT 余额数据", "#1f6feb");
     }
 
@@ -3143,9 +3136,9 @@ const tvbotHTML = `<!doctype html>
       $("analysis-binance-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
       $("analysis-binance-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : (item && item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
       $("analysis-binance-balance-status").textContent = exchangeBalanceStatusText(item, balance, "Binance");
-      $("analysis-binance-usdt-title").textContent = "USDT估值 " + balanceWindowLabel(state.balanceWindowMinutes);
+      $("analysis-binance-usdt-title").textContent = "USDT余额 " + balanceWindowLabel(state.balanceWindowMinutes);
       $("analysis-binance-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 USDT 资产余额");
-      const points = usdtValuationPoints(item ? (item.balance_points || []) : [], [], balance);
+      const points = usdtBalancePoints(item ? (item.balance_points || []) : [], balance);
       drawUSDTChart(points, "analysis-binance-usdt-chart", item && item.configured ? "暂无 Binance USDT 余额数据" : "Binance 未配置", "#138a55");
     }
 
@@ -3191,14 +3184,14 @@ const tvbotHTML = `<!doctype html>
       svg.setAttribute("viewBox", "0 0 " + width + " " + height);
       svg.innerHTML = "";
       if (!points.length) {
-        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT估值数据") + '</text>';
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT余额数据") + '</text>';
         return;
       }
       const chartPoints = points.map((point, index) => {
         return { point: point, index: index, value: Number(point.value), date: chartPointDate(point) };
       }).filter((point) => Number.isFinite(point.value));
       if (!chartPoints.length) {
-        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT估值数据") + '</text>';
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT余额数据") + '</text>';
         return;
       }
       const values = chartPoints.map((point) => point.value);

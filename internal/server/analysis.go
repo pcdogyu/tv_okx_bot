@@ -1234,7 +1234,7 @@ func balancePointsFromSnapshots(snapshots []storage.USDTBalanceSnapshot) []analy
 		balancePoints = append(balancePoints, analysisBalancePoint{
 			Time:             time.UnixMilli(snapshot.BucketTS).UTC(),
 			TS:               snapshot.BucketTS,
-			Value:            snapshotValue(snapshot),
+			Value:            snapshotBalanceValue(snapshot),
 			Eq:               snapshot.Eq,
 			EqUsd:            snapshot.EqUsd,
 			AvailEq:          snapshot.AvailEq,
@@ -1289,8 +1289,8 @@ func balancePointBucket(minutes int) time.Duration {
 	return time.Minute
 }
 
-func snapshotValue(snapshot storage.USDTBalanceSnapshot) float64 {
-	for _, raw := range []string{snapshot.EqUsd, snapshot.Eq, snapshot.AvailEq, snapshot.AvailBal} {
+func snapshotBalanceValue(snapshot storage.USDTBalanceSnapshot) float64 {
+	for _, raw := range []string{snapshot.CashBal, snapshot.AvailBal, snapshot.Eq, snapshot.EqUsd} {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue
