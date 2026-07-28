@@ -684,6 +684,12 @@ func TestTVOrderAllowsUnconfiguredCoinpair(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	var resp struct {
+		SignalID string `json:"signal_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.Coinpair != "DOGEUSDT.P" || got.Action != trading.ActionShort {
@@ -692,6 +698,7 @@ func TestTVOrderAllowsUnconfiguredCoinpair(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
+	waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusSubmitted)
 }
 
 func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
