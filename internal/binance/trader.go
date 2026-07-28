@@ -104,7 +104,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	if orderSettings.OrderType == trading.OrderTypeLimit {
 		req.TimeInForce = "GTC"
 	}
-	ack, err := client.PlaceOrder(ctx, req)
+	ack, usedLeverage, err := t.placeOrderWithLeverageFallback(ctx, client, req, usedLeverage)
 	result := trading.OrderResult{
 		APIID:          apiID,
 		TargetExchange: trading.ExchangeBinance,
@@ -125,6 +125,40 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		t.Logger.Info("binance order submitted", "api_id", apiID, "symbol", symbol, "action", signal.Action, "client_order_id", clOrdID)
 	}
 	return result, nil
+}
+
+func (t Trader) placeOrderWithLeverageFallback(ctx context.Context, client Client, req PlaceOrderRequest, currentLeverage int) (OrderAck, int, error) {
+	ack, err := client.PlaceOrder(ctx, req)
+	if err == nil || !isBinanceMaxPositionAtLeverageError(err) || currentLeverage <= 1 {
+		return ack, currentLeverage, err
+	}
+	attempted := []int{currentLeverage}
+	lastErr := err
+	for leverage := currentLeverage - 1; leverage >= 1; leverage-- {
+		attempted = append(attempted, leverage)
+		if setErr := client.SetLeverage(ctx, req.Symbol, leverage); setErr != nil {
+			lastErr = setErr
+			if isBinanceLeverageFallbackError(setErr) {
+				if t.Logger != nil {
+					t.Logger.Warn("binance leverage fallback setup rejected after max-position error", "symbol", req.Symbol, "leverage", leverage, "error", setErr)
+				}
+				continue
+			}
+			return OrderAck{}, leverage, setErr
+		}
+		if t.Logger != nil {
+			t.Logger.Warn("binance order exceeded maximum position at leverage, retrying lower leverage", "symbol", req.Symbol, "previous_leverage", leverage+1, "leverage", leverage, "error", err)
+		}
+		ack, err = client.PlaceOrder(ctx, req)
+		if err == nil {
+			return ack, leverage, nil
+		}
+		lastErr = err
+		if !isBinanceMaxPositionAtLeverageError(err) {
+			return ack, leverage, err
+		}
+	}
+	return OrderAck{}, 1, fmt.Errorf("binance order exceeded maximum allowable position after trying leverage %s: %w", binanceLeverageAttemptsText(attempted), lastErr)
 }
 
 func (t Trader) ensureLeverage(ctx context.Context, client Client, symbol, posSide string, action trading.Side, desired int, state directionSwitchState) (int, error) {
@@ -207,6 +241,10 @@ func isBinanceLeverageFallbackError(err error) bool {
 		strings.Contains(text, "exceed") ||
 		strings.Contains(text, "less than") ||
 		strings.Contains(text, "greater than")
+}
+
+func isBinanceMaxPositionAtLeverageError(err error) bool {
+	return IsAPIErrorCode(err, -2027)
 }
 
 func minInt(a, b int) int {

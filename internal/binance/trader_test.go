@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -383,6 +384,254 @@ func TestTraderFallsBackBinanceLeverageBeforeOrder(t *testing.T) {
 	}
 }
 
+func TestTraderFallsBackOrderLeverageAfterMaxPositionError(t *testing.T) {
+	leverageAttempts := []string{}
+	orderLeverages := []int{}
+	currentLeverage := 0
+	var orderForm url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"MONUSDT","status":"TRADING","pricePrecision":4,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0001"},{"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			leverage := r.Form.Get("leverage")
+			leverageAttempts = append(leverageAttempts, leverage)
+			currentLeverage = mustAtoi(t, leverage)
+			_, _ = w.Write([]byte(`{"symbol":"MONUSDT","leverage":` + leverage + `}`))
+		case "/fapi/v1/order":
+			orderLeverages = append(orderLeverages, currentLeverage)
+			if currentLeverage > 8 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-2027,"msg":"Exceeded the maximum allowable position at current leverage."}`))
+				return
+			}
+			orderForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"MONUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"100","executedQty":"0","type":"MARKET","side":"SELL"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "MONUSDT",
+		Price:    trading.NewFlexibleFloat(1),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(leverageAttempts, []string{"10", "9", "8"}) {
+		t.Fatalf("leverage attempts = %#v", leverageAttempts)
+	}
+	if !reflect.DeepEqual(orderLeverages, []int{10, 9, 8}) {
+		t.Fatalf("order leverage attempts = %#v", orderLeverages)
+	}
+	if result.Leverage != 8 {
+		t.Fatalf("result leverage = %d, want 8", result.Leverage)
+	}
+	if orderForm.Get("symbol") != "MONUSDT" || orderForm.Get("side") != "SELL" || orderForm.Get("quantity") != "100" {
+		t.Fatalf("bad order form after order leverage fallback: %#v", orderForm)
+	}
+}
+
+func TestTraderDoesNotFallbackOrderLeverageForNonMaxPositionError(t *testing.T) {
+	leverageAttempts := []string{}
+	orderCalls := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"MONUSDT","status":"TRADING","pricePrecision":4,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0001"},{"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			leverageAttempts = append(leverageAttempts, r.Form.Get("leverage"))
+			_, _ = w.Write([]byte(`{"symbol":"MONUSDT","leverage":10}`))
+		case "/fapi/v1/order":
+			orderCalls++
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":-2019,"msg":"Margin is insufficient."}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	_, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "MONUSDT",
+		Price:    trading.NewFlexibleFloat(1),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err == nil || !strings.Contains(err.Error(), "-2019") {
+		t.Fatalf("expected non-2027 order error, got %v", err)
+	}
+	if !reflect.DeepEqual(leverageAttempts, []string{"10"}) || orderCalls != 1 {
+		t.Fatalf("unexpected fallback on non-2027 error: leverages=%#v orderCalls=%d", leverageAttempts, orderCalls)
+	}
+}
+
+func TestTraderFailsOrderLeverageFallbackAtOneWithoutRiskOrders(t *testing.T) {
+	leverageAttempts := []string{}
+	orderLeverages := []int{}
+	currentLeverage := 0
+	algoCalled := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"MONUSDT","status":"TRADING","pricePrecision":4,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0001"},{"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			leverage := r.Form.Get("leverage")
+			leverageAttempts = append(leverageAttempts, leverage)
+			currentLeverage = mustAtoi(t, leverage)
+			_, _ = w.Write([]byte(`{"symbol":"MONUSDT","leverage":` + leverage + `}`))
+		case "/fapi/v1/order":
+			orderLeverages = append(orderLeverages, currentLeverage)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":-2027,"msg":"Exceeded the maximum allowable position at current leverage."}`))
+		case "/fapi/v1/algoOrder":
+			algoCalled = true
+			t.Fatalf("risk order should not be created after failed main order")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskTPSL)
+	cfg.Trading.TakeProfitPct = 2
+	cfg.Trading.StopLossPct = 1
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	_, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "MONUSDT",
+		Price:    trading.NewFlexibleFloat(1),
+		Leverage: 3,
+		Amount:   trading.NewFlexibleFloat(100),
+		Risk: trading.Risk{
+			Type:  trading.RiskTPSL,
+			TPPct: ptrFlexible(2),
+			SLPct: ptrFlexible(1),
+		},
+	}, cfg)
+	if err == nil || !strings.Contains(err.Error(), "3x, 2x, 1x") || !strings.Contains(err.Error(), "-2027") {
+		t.Fatalf("expected clear 1x fallback failure, got %v", err)
+	}
+	if !reflect.DeepEqual(leverageAttempts, []string{"3", "2", "1"}) || !reflect.DeepEqual(orderLeverages, []int{3, 2, 1}) {
+		t.Fatalf("bad fallback attempts: leverages=%#v orders=%#v", leverageAttempts, orderLeverages)
+	}
+	if algoCalled {
+		t.Fatal("risk order should not be called")
+	}
+}
+
+func TestTraderSkipsInvalidLeverageDuringOrderFallback(t *testing.T) {
+	leverageAttempts := []string{}
+	orderLeverages := []int{}
+	currentLeverage := 0
+	var orderForm url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"MONUSDT","status":"TRADING","pricePrecision":4,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0001"},{"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			leverage := r.Form.Get("leverage")
+			leverageAttempts = append(leverageAttempts, leverage)
+			if leverage == "9" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-4028,"msg":"Leverage 9 is not valid"}`))
+				return
+			}
+			currentLeverage = mustAtoi(t, leverage)
+			_, _ = w.Write([]byte(`{"symbol":"MONUSDT","leverage":` + leverage + `}`))
+		case "/fapi/v1/order":
+			orderLeverages = append(orderLeverages, currentLeverage)
+			if currentLeverage > 8 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-2027,"msg":"Exceeded the maximum allowable position at current leverage."}`))
+				return
+			}
+			orderForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"MONUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"100","executedQty":"0","type":"MARKET","side":"BUY"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "MONUSDT",
+		Price:    trading.NewFlexibleFloat(1),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(leverageAttempts, []string{"10", "9", "8"}) || !reflect.DeepEqual(orderLeverages, []int{10, 8}) {
+		t.Fatalf("bad fallback attempts with invalid leverage: leverages=%#v orders=%#v", leverageAttempts, orderLeverages)
+	}
+	if result.Leverage != 8 || orderForm.Get("symbol") != "MONUSDT" {
+		t.Fatalf("bad result/order after invalid leverage skip: result=%#v order=%#v", result, orderForm)
+	}
+}
+
 func TestTraderCancelsReversePendingOrderBeforeNewDirection(t *testing.T) {
 	var paths []string
 	var canceledForm url.Values
@@ -619,6 +868,15 @@ func cloneValues(values url.Values) url.Values {
 func ptrFlexible(value float64) *trading.FlexibleFloat {
 	v := trading.NewFlexibleFloat(value)
 	return &v
+}
+
+func mustAtoi(t *testing.T, raw string) int {
+	t.Helper()
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		t.Fatalf("bad integer %q: %v", raw, err)
+	}
+	return value
 }
 
 func pathIndex(paths []string, want string) int {
