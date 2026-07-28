@@ -159,8 +159,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-entry-time-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-holding-time-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("仓位金额")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("<th>下单时间</th>")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("<th>持仓时间</th>")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "下单时间"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "持仓时间"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionAmount(row)")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionReturnRatio")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("formatHoldingSeconds")) ||
@@ -175,13 +175,21 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .position-actions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("gap: 8px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .pos-actions-col { width: 25%; }")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`colspan="14"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("positionTableColumnDefs")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`tableColumnCount("positions")`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-margin-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-actions-col")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`colspan="13"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pendingOrderTableColumnDefs")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`tableColumnCount("pending_orders")`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("当前挂单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("renderPendingOrders")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("renderTableStructure")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("saveTableColumnOrder")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("initTableColumnDrag")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-table-columns")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("table_columns")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pending_orders")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("委托价格")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("中间价")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("保证金")) ||
@@ -203,7 +211,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("限价平仓")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions/close")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-position-close")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("<th>操作</th>")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "操作"`)) ||
 		bytes.Contains(ui.Body.Bytes(), []byte(`<th>可用</th>`)) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("pos-available-col")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("<th>保证金模式</th>")) ||
@@ -414,6 +422,40 @@ func TestTVBotConfigSavesMenuSettings(t *testing.T) {
 		if item.Tab == "unknown" {
 			t.Fatalf("unknown menu item should be removed: %#v", cfg.UI.MenuItems)
 		}
+	}
+}
+
+func TestTVBotConfigSavesTableColumns(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{
+		"ui": {
+			"table_columns": {
+				"positions": ["upl", "exchange", "bad", "upl"],
+				"pending_orders": ["actions", "symbol", "unknown", "actions"]
+			}
+		}
+	}`)))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(rr.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.UI.TableColumns.Positions) != len(config.DefaultPositionTableColumns) ||
+		cfg.UI.TableColumns.Positions[0] != "upl" ||
+		cfg.UI.TableColumns.Positions[1] != "exchange" ||
+		strings.Contains(strings.Join(cfg.UI.TableColumns.Positions, ","), "bad") {
+		t.Fatalf("position table columns should be normalized and saved: %#v", cfg.UI.TableColumns.Positions)
+	}
+	if len(cfg.UI.TableColumns.PendingOrders) != len(config.DefaultPendingOrderTableColumns) ||
+		cfg.UI.TableColumns.PendingOrders[0] != "actions" ||
+		cfg.UI.TableColumns.PendingOrders[1] != "symbol" ||
+		strings.Contains(strings.Join(cfg.UI.TableColumns.PendingOrders, ","), "unknown") {
+		t.Fatalf("pending order table columns should be normalized and saved: %#v", cfg.UI.TableColumns.PendingOrders)
 	}
 }
 

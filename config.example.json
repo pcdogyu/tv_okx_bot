@@ -53,6 +53,39 @@
       { "tab": "orders", "hidden": false, "label": "订单" },
       { "tab": "menuSettings", "hidden": false, "label": "菜单设置" },
       { "tab": "upgrade", "hidden": false, "label": "升级" }
-    ]
+    ],
+    "table_columns": {
+      "positions": [
+        "exchange",
+        "symbol",
+        "side",
+        "size",
+        "avg_price",
+        "margin",
+        "leverage",
+        "position_amount",
+        "mark_price",
+        "upl",
+        "return_rate",
+        "entry_time",
+        "holding_time",
+        "actions"
+      ],
+      "pending_orders": [
+        "exchange",
+        "time",
+        "symbol",
+        "side",
+        "position_side",
+        "type",
+        "price",
+        "mid_price",
+        "size",
+        "margin",
+        "filled",
+        "state",
+        "actions"
+      ]
+    }
   }
 }

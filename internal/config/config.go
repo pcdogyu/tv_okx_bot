@@ -64,8 +64,14 @@ type SymbolConfig struct {
 }
 
 type UIConfig struct {
-	DefaultTab string           `json:"default_tab"`
-	MenuItems  []MenuItemConfig `json:"menu_items"`
+	DefaultTab   string             `json:"default_tab"`
+	MenuItems    []MenuItemConfig   `json:"menu_items"`
+	TableColumns TableColumnsConfig `json:"table_columns"`
+}
+
+type TableColumnsConfig struct {
+	Positions     []string `json:"positions"`
+	PendingOrders []string `json:"pending_orders"`
 }
 
 type MenuItemConfig struct {
@@ -91,6 +97,39 @@ var DefaultMenuTabs = []string{
 	"orders",
 	MenuSettingsTab,
 	"upgrade",
+}
+
+var DefaultPositionTableColumns = []string{
+	"exchange",
+	"symbol",
+	"side",
+	"size",
+	"avg_price",
+	"margin",
+	"leverage",
+	"position_amount",
+	"mark_price",
+	"upl",
+	"return_rate",
+	"entry_time",
+	"holding_time",
+	"actions",
+}
+
+var DefaultPendingOrderTableColumns = []string{
+	"exchange",
+	"time",
+	"symbol",
+	"side",
+	"position_side",
+	"type",
+	"price",
+	"mid_price",
+	"size",
+	"margin",
+	"filled",
+	"state",
+	"actions",
 }
 
 var defaultMenuLabels = map[string]string{
@@ -147,7 +186,7 @@ func Default() Config {
 				MinSz:    0.01,
 			},
 		},
-		UI: UIConfig{DefaultTab: DefaultHomeTab, MenuItems: defaultMenuItems()},
+		UI: UIConfig{DefaultTab: DefaultHomeTab, MenuItems: defaultMenuItems(), TableColumns: defaultTableColumns()},
 	}
 }
 
@@ -273,6 +312,7 @@ func (c *Config) Normalize() {
 	c.Symbols = normalized
 	c.UI.DefaultTab = normalizeDefaultMenuTab(c.UI.DefaultTab)
 	c.UI.MenuItems = normalizeMenuItems(c.UI.MenuItems)
+	c.UI.TableColumns = normalizeTableColumns(c.UI.TableColumns)
 }
 
 func (c Config) Validate() error {
@@ -412,6 +452,52 @@ func hasVisibleMenuSettings(items []MenuItemConfig) bool {
 		}
 	}
 	return false
+}
+
+func defaultTableColumns() TableColumnsConfig {
+	return TableColumnsConfig{
+		Positions:     cloneStrings(DefaultPositionTableColumns),
+		PendingOrders: cloneStrings(DefaultPendingOrderTableColumns),
+	}
+}
+
+func normalizeTableColumns(columns TableColumnsConfig) TableColumnsConfig {
+	return TableColumnsConfig{
+		Positions:     normalizeColumnOrder(columns.Positions, DefaultPositionTableColumns),
+		PendingOrders: normalizeColumnOrder(columns.PendingOrders, DefaultPendingOrderTableColumns),
+	}
+}
+
+func normalizeColumnOrder(columns, defaults []string) []string {
+	known := make(map[string]bool, len(defaults))
+	for _, col := range defaults {
+		known[col] = true
+	}
+	seen := make(map[string]bool, len(defaults))
+	out := make([]string, 0, len(defaults))
+	for _, col := range columns {
+		col = strings.TrimSpace(col)
+		if !known[col] || seen[col] {
+			continue
+		}
+		out = append(out, col)
+		seen[col] = true
+	}
+	for _, col := range defaults {
+		if !seen[col] {
+			out = append(out, col)
+		}
+	}
+	return out
+}
+
+func cloneStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 func (c Config) Symbol(coinpair string) (SymbolConfig, bool) {

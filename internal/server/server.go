@@ -1193,8 +1193,9 @@ type tradingPatch struct {
 }
 
 type uiPatch struct {
-	DefaultTab *string                  `json:"default_tab"`
-	MenuItems  *[]config.MenuItemConfig `json:"menu_items"`
+	DefaultTab   *string                    `json:"default_tab"`
+	MenuItems    *[]config.MenuItemConfig   `json:"menu_items"`
+	TableColumns *config.TableColumnsConfig `json:"table_columns"`
 }
 
 func applyConfigPatch(c *config.Config, patch configPatch) {
@@ -1213,6 +1214,9 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 		}
 		if patch.UI.MenuItems != nil {
 			c.UI.MenuItems = *patch.UI.MenuItems
+		}
+		if patch.UI.TableColumns != nil {
+			c.UI.TableColumns = *patch.UI.TableColumns
 		}
 	}
 	if patch.Trading == nil {

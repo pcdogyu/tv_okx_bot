@@ -772,6 +772,17 @@ const tvbotHTML = `<!doctype html>
       font-size: 12px;
       line-height: 1.35;
     }
+    .symbol-table th[draggable="true"] {
+      cursor: grab;
+      user-select: none;
+    }
+    .symbol-table th.is-dragging {
+      opacity: 0.55;
+    }
+    .symbol-table th.is-drop-target {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
     .positions-table .pos-exchange-col { width: 4.8%; }
     .positions-table .pos-symbol-col { width: 7.4%; }
     .positions-table .pos-side-col { width: 5.2%; }
@@ -979,25 +990,8 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="symbol-table-wrap">
         <table class="symbol-table positions-table">
-          <colgroup>
-            <col class="pos-exchange-col">
-            <col class="pos-symbol-col">
-            <col class="pos-side-col">
-            <col class="pos-size-col">
-            <col class="pos-price-col">
-            <col class="pos-margin-col">
-            <col class="pos-leverage-col">
-            <col class="pos-position-amount-col">
-            <col class="pos-price-col">
-            <col class="pos-pnl-col">
-            <col class="pos-rate-col">
-            <col class="pos-entry-time-col">
-            <col class="pos-holding-time-col">
-            <col class="pos-actions-col">
-          </colgroup>
-          <thead>
-            <tr><th>交易所</th><th>币对</th><th>方向</th><th>持仓量</th><th>均价</th><th>保证金</th><th>杠杆</th><th>仓位金额</th><th>标记价</th><th>未实现盈亏</th><th>收益率</th><th>下单时间</th><th>持仓时间</th><th>操作</th></tr>
-          </thead>
+          <colgroup id="position-cols"></colgroup>
+          <thead id="position-head"></thead>
           <tbody id="position-rows"></tbody>
         </table>
       </div>
@@ -1007,24 +1001,8 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="symbol-table-wrap">
         <table class="symbol-table pending-order-table">
-          <colgroup>
-            <col class="pending-exchange-col">
-            <col class="pending-time-col">
-            <col class="pending-symbol-col">
-            <col class="pending-side-col">
-            <col class="pending-pos-side-col">
-            <col class="pending-type-col">
-            <col class="pending-price-col">
-            <col class="pending-mid-col">
-            <col class="pending-size-col">
-            <col class="pending-margin-col">
-            <col class="pending-filled-col">
-            <col class="pending-state-col">
-            <col class="pending-actions-col">
-          </colgroup>
-          <thead>
-            <tr><th>交易所</th><th>时间</th><th>币对</th><th>方向</th><th>持仓方向</th><th>类型</th><th>委托价格</th><th>中间价</th><th>委托量</th><th>保证金</th><th>已成交</th><th>状态</th><th>操作</th></tr>
-          </thead>
+          <colgroup id="pending-order-cols"></colgroup>
+          <thead id="pending-order-head"></thead>
           <tbody id="pending-order-rows"></tbody>
         </table>
       </div>
@@ -1384,6 +1362,7 @@ const tvbotHTML = `<!doctype html>
     let analysisBalanceRefreshTimer = null;
     let analysisBalanceRefreshBusy = false;
     let menuSettingsSynced = false;
+    let tableColumnDrag = null;
     const analysisTradePageSize = 20;
     const analysisBalanceRefreshIntervalMs = 60000;
     const defaultMenuItems = [
@@ -1418,6 +1397,199 @@ const tvbotHTML = `<!doctype html>
       { minutes: 129600, label: "90d" }
     ];
     const $ = (id) => document.getElementById(id);
+
+    const positionTableColumnDefs = [
+      { id: "exchange", title: "交易所", colClass: "pos-exchange-col", cell: (row) => textTableCell(exchangeLabel(normalizeExchange(row._exchange || "okx"))) },
+      { id: "symbol", title: "币对", colClass: "pos-symbol-col", cell: (row) => textTableCell(asText(row.instId)) },
+      { id: "side", title: "方向", colClass: "pos-side-col", cell: (row) => positionSideCell(row) },
+      { id: "size", title: "持仓量", colClass: "pos-size-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.pos)) },
+      { id: "avg_price", title: "均价", colClass: "pos-price-col", cell: (row) => textTableCell(formatPriceAmount(row, row.avgPx)) },
+      { id: "margin", title: "保证金", colClass: "pos-margin-col", cell: (row) => textTableCell(formatNumber(row.margin)) },
+      { id: "leverage", title: "杠杆", colClass: "pos-leverage-col", cell: (row) => textTableCell(asText(row.lever)) },
+      { id: "position_amount", title: "仓位金额", colClass: "pos-position-amount-col", cell: (row) => textTableCell(positionAmount(row)) },
+      { id: "mark_price", title: "标记价", colClass: "pos-price-col", cell: (row) => textTableCell(formatPriceAmount(row, row.markPx)) },
+      { id: "upl", title: "未实现盈亏", colClass: "pos-pnl-col", cell: (row) => signedCell(row.upl, formatNumber(row.upl)) },
+      { id: "return_rate", title: "收益率", colClass: "pos-rate-col", cell: (row) => signedCell(positionReturnRatio(row), positionReturnPercent(row)) },
+      { id: "entry_time", title: "下单时间", colClass: "pos-entry-time-col", cell: (row) => positionEntryTimeCell(row) },
+      { id: "holding_time", title: "持仓时间", colClass: "pos-holding-time-col", cell: (row) => positionHoldingTimeCell(row) },
+      { id: "actions", title: "操作", colClass: "pos-actions-col", cell: (row) => positionActionCell(row) }
+    ];
+    const pendingOrderTableColumnDefs = [
+      { id: "exchange", title: "交易所", colClass: "pending-exchange-col", cell: (row) => textTableCell(exchangeLabel(normalizeExchange(row._exchange || "okx"))) },
+      { id: "time", title: "时间", colClass: "pending-time-col", cell: (row) => timeTableCell(shanghaiTimeFromOKX(row.cTime || row.uTime)) },
+      { id: "symbol", title: "币对", colClass: "pending-symbol-col", cell: (row) => textTableCell(asText(row.instId)) },
+      { id: "side", title: "方向", colClass: "pending-side-col", cell: (row) => textTableCell(tradeSideText(row.side)) },
+      { id: "position_side", title: "持仓方向", colClass: "pending-pos-side-col", cell: (row) => textTableCell(positionSideText(row.posSide, "")) },
+      { id: "type", title: "类型", colClass: "pending-type-col", cell: (row) => textTableCell(orderTypeText(row.ordType)) },
+      { id: "price", title: "委托价格", colClass: "pending-price-col", cell: (row) => textTableCell(formatPriceAmount(row, row.px)) },
+      { id: "mid_price", title: "中间价", colClass: "pending-mid-col", cell: (row) => textTableCell(row.price_error ? row.price_error : formatPriceAmount(row, row.mid_px)) },
+      { id: "size", title: "委托量", colClass: "pending-size-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.sz)) },
+      { id: "margin", title: "保证金", colClass: "pending-margin-col", cell: (row) => textTableCell(formatNumber(row.margin)) },
+      { id: "filled", title: "已成交", colClass: "pending-filled-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.accFillSz)) },
+      { id: "state", title: "状态", colClass: "pending-state-col", cell: (row) => textTableCell(pendingOrderStateText(row.state)) },
+      { id: "actions", title: "操作", colClass: "pending-actions-col", cell: (row) => pendingOrderActionCell(row) }
+    ];
+
+    function tableColumnDefs(tableID) {
+      return tableID === "pending_orders" ? pendingOrderTableColumnDefs : positionTableColumnDefs;
+    }
+
+    function tableColumnPartIDs(tableID) {
+      if (tableID === "pending_orders") return { cols: "pending-order-cols", head: "pending-order-head" };
+      return { cols: "position-cols", head: "position-head" };
+    }
+
+    function normalizeTableColumnOrder(tableID, order) {
+      const defs = tableColumnDefs(tableID);
+      const known = {};
+      const seen = {};
+      const out = [];
+      defs.forEach((def) => { known[def.id] = true; });
+      (Array.isArray(order) ? order : []).forEach((raw) => {
+        const id = String(raw || "").trim();
+        if (!known[id] || seen[id]) return;
+        out.push(id);
+        seen[id] = true;
+      });
+      defs.forEach((def) => {
+        if (!seen[def.id]) out.push(def.id);
+      });
+      return out;
+    }
+
+    function currentTableColumnOrder(tableID) {
+      const ui = state.config && state.config.ui ? state.config.ui : {};
+      const columns = ui.table_columns || {};
+      return normalizeTableColumnOrder(tableID, columns[tableID]);
+    }
+
+    function setCurrentTableColumnOrder(tableID, order) {
+      if (!state.config) state.config = {};
+      if (!state.config.ui) state.config.ui = {};
+      if (!state.config.ui.table_columns) state.config.ui.table_columns = {};
+      state.config.ui.table_columns[tableID] = normalizeTableColumnOrder(tableID, order);
+    }
+
+    function currentTableColumnDefs(tableID) {
+      const byID = {};
+      tableColumnDefs(tableID).forEach((def) => { byID[def.id] = def; });
+      return currentTableColumnOrder(tableID).map((id) => byID[id]).filter(Boolean);
+    }
+
+    function tableColumnCount(tableID) {
+      return currentTableColumnDefs(tableID).length;
+    }
+
+    function renderTableStructure(tableID) {
+      const parts = tableColumnPartIDs(tableID);
+      const cols = $(parts.cols);
+      const head = $(parts.head);
+      const columnDefs = currentTableColumnDefs(tableID);
+      if (cols) {
+        cols.innerHTML = columnDefs.map((col) => '<col class="' + escapeHTML(col.colClass) + '">').join("");
+      }
+      if (head) {
+        head.innerHTML = "<tr>" + columnDefs.map((col) =>
+          '<th draggable="true" data-table-columns="' + escapeHTML(tableID) + '" data-column-id="' + escapeHTML(col.id) + '" title="拖动调整栏目顺序">' + escapeHTML(col.title) + "</th>"
+        ).join("") + "</tr>";
+      }
+    }
+
+    function currentTableColumnsPatch() {
+      return {
+        positions: currentTableColumnOrder("positions"),
+        pending_orders: currentTableColumnOrder("pending_orders")
+      };
+    }
+
+    function renderTableByID(tableID) {
+      if (tableID === "pending_orders") {
+        renderPendingOrders();
+        return;
+      }
+      renderPositions();
+    }
+
+    async function saveTableColumnOrder(tableID, previousOrder) {
+      try {
+        const patch = { ui: { table_columns: currentTableColumnsPatch() } };
+        state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+        toast("栏目顺序已保存");
+      } catch (err) {
+        setCurrentTableColumnOrder(tableID, previousOrder);
+        renderTableByID(tableID);
+        toast(err.message);
+      }
+    }
+
+    function clearTableColumnDropTargets() {
+      document.querySelectorAll(".symbol-table th.is-drop-target, .symbol-table th.is-dragging").forEach((node) => {
+        node.classList.remove("is-drop-target");
+        node.classList.remove("is-dragging");
+      });
+    }
+
+    function handleTableColumnDragStart(event) {
+      const th = event.target.closest("th[data-table-columns][data-column-id]");
+      if (!th) return;
+      tableColumnDrag = { tableID: th.dataset.tableColumns, columnID: th.dataset.columnId };
+      th.classList.add("is-dragging");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", tableColumnDrag.columnID);
+      }
+    }
+
+    function handleTableColumnDragOver(event) {
+      const th = event.target.closest("th[data-table-columns][data-column-id]");
+      if (!th || !tableColumnDrag || th.dataset.tableColumns !== tableColumnDrag.tableID) return;
+      event.preventDefault();
+      th.classList.add("is-drop-target");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    }
+
+    function handleTableColumnDragLeave(event) {
+      const th = event.target.closest("th[data-table-columns][data-column-id]");
+      if (th) th.classList.remove("is-drop-target");
+    }
+
+    function handleTableColumnDragEnd() {
+      tableColumnDrag = null;
+      clearTableColumnDropTargets();
+    }
+
+    function handleTableColumnDrop(event) {
+      const th = event.target.closest("th[data-table-columns][data-column-id]");
+      if (!th || !tableColumnDrag || th.dataset.tableColumns !== tableColumnDrag.tableID) return;
+      event.preventDefault();
+      const tableID = tableColumnDrag.tableID;
+      const fromID = tableColumnDrag.columnID;
+      const toID = th.dataset.columnId;
+      const previousOrder = currentTableColumnOrder(tableID);
+      const fromIndex = previousOrder.indexOf(fromID);
+      const toIndex = previousOrder.indexOf(toID);
+      tableColumnDrag = null;
+      clearTableColumnDropTargets();
+      if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+      const nextOrder = previousOrder.slice();
+      const moved = nextOrder.splice(fromIndex, 1)[0];
+      nextOrder.splice(toIndex, 0, moved);
+      setCurrentTableColumnOrder(tableID, nextOrder);
+      renderTableByID(tableID);
+      saveTableColumnOrder(tableID, previousOrder).catch((err) => toast(err.message));
+    }
+
+    function initTableColumnDrag() {
+      ["position-head", "pending-order-head"].forEach((id) => {
+        const head = $(id);
+        if (!head) return;
+        head.addEventListener("dragstart", handleTableColumnDragStart);
+        head.addEventListener("dragover", handleTableColumnDragOver);
+        head.addEventListener("dragleave", handleTableColumnDragLeave);
+        head.addEventListener("dragend", handleTableColumnDragEnd);
+        head.addEventListener("drop", handleTableColumnDrop);
+      });
+    }
 
     async function api(path, options) {
       const res = await fetch(path, Object.assign({ credentials: "same-origin" }, options || {}));
@@ -1784,6 +1956,14 @@ const tvbotHTML = `<!doctype html>
       return String(v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
     }
 
+    function textTableCell(value) {
+      return "<td>" + escapeHTML(value) + "</td>";
+    }
+
+    function timeTableCell(value) {
+      return '<td class="time">' + escapeHTML(value) + "</td>";
+    }
+
     function menuDefinition(tabID) {
       return defaultMenuItems.find((item) => item.tab === tabID) || null;
     }
@@ -2053,6 +2233,8 @@ const tvbotHTML = `<!doctype html>
       renderConfig();
       renderOrderSettings();
       renderMenuSettings();
+      renderPositions();
+      renderPendingOrders();
       updateMetrics();
     }
 
@@ -2786,6 +2968,9 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderPositions() {
+      renderTableStructure("positions");
+      const columnDefs = currentTableColumnDefs("positions");
+      const colspan = tableColumnCount("positions");
       const rows = state.positions && Array.isArray(state.positions.positions) ? state.positions.positions : [];
       const totalUpl = positionSum(rows, "upl");
       const positionsReady = state.positions && state.positions.ok;
@@ -2795,61 +2980,33 @@ const tvbotHTML = `<!doctype html>
       $("positions-notional").textContent = positionsReady ? formatUSD(positionSum(rows, "notionalUsd")) : "-";
       $("positions-updated").textContent = state.positions ? combinedStatusText(state.positions) : "-";
       if (!state.positions) {
-        $("position-rows").innerHTML = '<tr><td colspan="14" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
+        $("position-rows").innerHTML = '<tr><td colspan="' + colspan + '" class="muted">' + escapeHTML(state.positionsError || "-") + '</td></tr>';
         return;
       }
       const positionRows = rows.map((row) => {
-        const exchange = normalizeExchange(row._exchange || "okx");
-        return "<tr>" +
-          "<td>" + escapeHTML(exchangeLabel(exchange)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
-          positionSideCell(row) +
-          "<td>" + escapeHTML(formatQuantityAmount(row, row.pos)) + "</td>" +
-          "<td>" + escapeHTML(formatPriceAmount(row, row.avgPx)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.lever)) + "</td>" +
-          "<td>" + escapeHTML(positionAmount(row)) + "</td>" +
-          "<td>" + escapeHTML(formatPriceAmount(row, row.markPx)) + "</td>" +
-          signedCell(row.upl, formatNumber(row.upl)) +
-          signedCell(positionReturnRatio(row), positionReturnPercent(row)) +
-          positionEntryTimeCell(row) +
-          positionHoldingTimeCell(row) +
-          positionActionCell(row) +
-          "</tr>";
+        return "<tr>" + columnDefs.map((col) => col.cell(row)).join("") + "</tr>";
       }).join("");
-      const warningRow = state.positionsError ? '<tr><td colspan="14" class="muted">' + escapeHTML(state.positionsError) + '</td></tr>' : "";
-      $("position-rows").innerHTML = positionRows + warningRow || '<tr><td colspan="14" class="muted">暂无当前持仓</td></tr>';
+      const warningRow = state.positionsError ? '<tr><td colspan="' + colspan + '" class="muted">' + escapeHTML(state.positionsError) + '</td></tr>' : "";
+      $("position-rows").innerHTML = positionRows + warningRow || '<tr><td colspan="' + colspan + '" class="muted">暂无当前持仓</td></tr>';
     }
 
     function renderPendingOrders() {
+      renderTableStructure("pending_orders");
+      const columnDefs = currentTableColumnDefs("pending_orders");
+      const colspan = tableColumnCount("pending_orders");
       const rows = state.pendingOrders && Array.isArray(state.pendingOrders.orders) ? state.pendingOrders.orders : [];
       if (!state.pendingOrders) {
         $("pending-orders-updated").textContent = state.pendingOrdersError || "-";
-        $("pending-order-rows").innerHTML = '<tr><td colspan="13" class="muted">' + escapeHTML(state.pendingOrdersError || "-") + '</td></tr>';
+        $("pending-order-rows").innerHTML = '<tr><td colspan="' + colspan + '" class="muted">' + escapeHTML(state.pendingOrdersError || "-") + '</td></tr>';
         return;
       }
       const pendingReady = state.pendingOrders && state.pendingOrders.ok;
       $("pending-orders-updated").textContent = "挂单数 " + (pendingReady ? asText(state.pendingOrders.count || rows.length) : "-") + " / " + combinedStatusText(state.pendingOrders);
       const orderRows = rows.map((row) => {
-        const exchange = normalizeExchange(row._exchange || "okx");
-        return "<tr>" +
-          "<td>" + escapeHTML(exchangeLabel(exchange)) + "</td>" +
-          '<td class="time">' + escapeHTML(shanghaiTimeFromOKX(row.cTime || row.uTime)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.instId)) + "</td>" +
-          "<td>" + escapeHTML(tradeSideText(row.side)) + "</td>" +
-          "<td>" + escapeHTML(positionSideText(row.posSide, "")) + "</td>" +
-          "<td>" + escapeHTML(orderTypeText(row.ordType)) + "</td>" +
-          "<td>" + escapeHTML(formatPriceAmount(row, row.px)) + "</td>" +
-          "<td>" + escapeHTML(row.price_error ? row.price_error : formatPriceAmount(row, row.mid_px)) + "</td>" +
-          "<td>" + escapeHTML(formatQuantityAmount(row, row.sz)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.margin)) + "</td>" +
-          "<td>" + escapeHTML(formatQuantityAmount(row, row.accFillSz)) + "</td>" +
-          "<td>" + escapeHTML(pendingOrderStateText(row.state)) + "</td>" +
-          pendingOrderActionCell(row) +
-          "</tr>";
+        return "<tr>" + columnDefs.map((col) => col.cell(row)).join("") + "</tr>";
       }).join("");
-      const warningRow = state.pendingOrdersError ? '<tr><td colspan="13" class="muted">' + escapeHTML(state.pendingOrdersError) + '</td></tr>' : "";
-      $("pending-order-rows").innerHTML = orderRows + warningRow || '<tr><td colspan="13" class="muted">暂无当前挂单</td></tr>';
+      const warningRow = state.pendingOrdersError ? '<tr><td colspan="' + colspan + '" class="muted">' + escapeHTML(state.pendingOrdersError) + '</td></tr>' : "";
+      $("pending-order-rows").innerHTML = orderRows + warningRow || '<tr><td colspan="' + colspan + '" class="muted">暂无当前挂单</td></tr>';
     }
 
     function renderAnalysis() {
@@ -3612,6 +3769,9 @@ const tvbotHTML = `<!doctype html>
 
     renderTemplateWebhookURL();
     updateBalanceWindowButtons();
+    initTableColumnDrag();
+    renderPositions();
+    renderPendingOrders();
     activateTab(initialTab(), false);
     loadAll().catch((err) => toast(err.message));
   </script>

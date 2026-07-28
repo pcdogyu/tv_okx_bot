@@ -19,6 +19,7 @@ func (s *Store) Get() Config {
 	cfg := s.cfg
 	cfg.Symbols = cloneSymbols(s.cfg.Symbols)
 	cfg.UI.MenuItems = cloneMenuItems(s.cfg.UI.MenuItems)
+	cfg.UI.TableColumns = cloneTableColumns(s.cfg.UI.TableColumns)
 	return cfg
 }
 
@@ -28,6 +29,7 @@ func (s *Store) Update(fn func(*Config) error) (Config, error) {
 	next := s.cfg
 	next.Symbols = cloneSymbols(s.cfg.Symbols)
 	next.UI.MenuItems = cloneMenuItems(s.cfg.UI.MenuItems)
+	next.UI.TableColumns = cloneTableColumns(s.cfg.UI.TableColumns)
 	if err := fn(&next); err != nil {
 		return Config{}, err
 	}
@@ -59,4 +61,11 @@ func cloneMenuItems(in []MenuItemConfig) []MenuItemConfig {
 	out := make([]MenuItemConfig, len(in))
 	copy(out, in)
 	return out
+}
+
+func cloneTableColumns(in TableColumnsConfig) TableColumnsConfig {
+	return TableColumnsConfig{
+		Positions:     cloneStrings(in.Positions),
+		PendingOrders: cloneStrings(in.PendingOrders),
+	}
 }

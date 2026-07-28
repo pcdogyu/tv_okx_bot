@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestNormalizeDefaultTab(t *testing.T) {
 	cfg := Default()
@@ -23,6 +26,40 @@ func TestNormalizeDefaultTab(t *testing.T) {
 	}
 }
 
+func TestNormalizeTableColumns(t *testing.T) {
+	cfg := Default()
+	cfg.UI.TableColumns = TableColumnsConfig{}
+	cfg.Normalize()
+	if !reflect.DeepEqual(cfg.UI.TableColumns.Positions, DefaultPositionTableColumns) {
+		t.Fatalf("blank position columns should use defaults: %#v", cfg.UI.TableColumns.Positions)
+	}
+	if !reflect.DeepEqual(cfg.UI.TableColumns.PendingOrders, DefaultPendingOrderTableColumns) {
+		t.Fatalf("blank pending order columns should use defaults: %#v", cfg.UI.TableColumns.PendingOrders)
+	}
+
+	cfg.UI.TableColumns = TableColumnsConfig{
+		Positions:     []string{"upl", "unknown", "exchange", "upl"},
+		PendingOrders: []string{"actions", "symbol", "bad", "actions"},
+	}
+	cfg.Normalize()
+	if len(cfg.UI.TableColumns.Positions) != len(DefaultPositionTableColumns) ||
+		cfg.UI.TableColumns.Positions[0] != "upl" ||
+		cfg.UI.TableColumns.Positions[1] != "exchange" {
+		t.Fatalf("position columns should keep known unique order then append defaults: %#v", cfg.UI.TableColumns.Positions)
+	}
+	if len(cfg.UI.TableColumns.PendingOrders) != len(DefaultPendingOrderTableColumns) ||
+		cfg.UI.TableColumns.PendingOrders[0] != "actions" ||
+		cfg.UI.TableColumns.PendingOrders[1] != "symbol" {
+		t.Fatalf("pending order columns should keep known unique order then append defaults: %#v", cfg.UI.TableColumns.PendingOrders)
+	}
+	if containsString(cfg.UI.TableColumns.Positions, "unknown") || containsString(cfg.UI.TableColumns.PendingOrders, "bad") {
+		t.Fatalf("unknown columns should be removed: %#v", cfg.UI.TableColumns)
+	}
+	if countString(cfg.UI.TableColumns.Positions, "upl") != 1 || countString(cfg.UI.TableColumns.PendingOrders, "actions") != 1 {
+		t.Fatalf("duplicate columns should be removed: %#v", cfg.UI.TableColumns)
+	}
+}
+
 func TestNormalizeBinanceBaseURLs(t *testing.T) {
 	cfg := Default()
 	cfg.Trading.BinanceBaseURL = "https://fapi.binance.com/"
@@ -34,4 +71,18 @@ func TestNormalizeBinanceBaseURLs(t *testing.T) {
 	if cfg.Trading.BinanceDemoBaseURL != "https://demo-fapi.binance.com" {
 		t.Fatalf("Binance demo base URL should default, got %q", cfg.Trading.BinanceDemoBaseURL)
 	}
+}
+
+func containsString(values []string, want string) bool {
+	return countString(values, want) > 0
+}
+
+func countString(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
 }
