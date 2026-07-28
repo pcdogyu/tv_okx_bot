@@ -1559,8 +1559,13 @@ func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
 			]}`))
 		case "/api/v5/trade/orders-algo-pending":
 			sawAlgoOrders = true
-			if r.URL.Query().Get("instType") != "SWAP" {
+			ordType := r.URL.Query().Get("ordType")
+			if r.URL.Query().Get("instType") != "SWAP" || ordType == "" {
 				t.Fatalf("bad pending algo query: %s", r.URL.RawQuery)
+			}
+			if ordType != "conditional" {
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+				return
 			}
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
 				{"instType":"SWAP","instId":"BTC-USDT-SWAP","algoId":"900","algoClOrdId":"algo-900","side":"sell","posSide":"long","ordType":"conditional","sz":"1","state":"live"}

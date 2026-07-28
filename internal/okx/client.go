@@ -257,6 +257,8 @@ type AlgoOrder struct {
 	RawJSON     string          `json:"-"`
 }
 
+var pendingAlgoOrderTypes = []string{"conditional", "trigger", "move_order_stop", "oco", "iceberg", "twap"}
+
 type CancelAlgoOrderRequest struct {
 	InstID      string `json:"instId"`
 	AlgoID      string `json:"algoId,omitempty"`
@@ -441,12 +443,40 @@ func (c Client) CancelOrder(ctx context.Context, req CancelOrderRequest) (Cancel
 }
 
 func (c Client) PendingAlgoOrders(ctx context.Context, instType, instID string) ([]AlgoOrder, Envelope, error) {
+	out := []AlgoOrder{}
+	seen := map[string]struct{}{}
+	var lastEnv Envelope
+	for _, ordType := range pendingAlgoOrderTypes {
+		orders, env, err := c.pendingAlgoOrdersByType(ctx, instType, instID, ordType)
+		if err != nil {
+			return nil, env, err
+		}
+		lastEnv = env
+		for _, order := range orders {
+			key := pendingAlgoOrderKey(order)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, order)
+		}
+	}
+	if lastEnv.Code == "" {
+		lastEnv.Code = "0"
+	}
+	return out, lastEnv, nil
+}
+
+func (c Client) pendingAlgoOrdersByType(ctx context.Context, instType, instID, ordType string) ([]AlgoOrder, Envelope, error) {
 	q := url.Values{}
 	if strings.TrimSpace(instType) != "" {
 		q.Set("instType", strings.ToUpper(strings.TrimSpace(instType)))
 	}
 	if strings.TrimSpace(instID) != "" {
 		q.Set("instId", strings.ToUpper(strings.TrimSpace(instID)))
+	}
+	if strings.TrimSpace(ordType) != "" {
+		q.Set("ordType", strings.ToLower(strings.TrimSpace(ordType)))
 	}
 	env, err := c.Do(ctx, http.MethodGet, "/api/v5/trade/orders-algo-pending", q, nil, true)
 	if err != nil {
@@ -466,6 +496,20 @@ func (c Client) PendingAlgoOrders(ctx context.Context, instType, instID string) 
 		out = append(out, order)
 	}
 	return out, env, nil
+}
+
+func pendingAlgoOrderKey(order AlgoOrder) string {
+	parts := []string{
+		strings.ToUpper(strings.TrimSpace(order.InstID)),
+		strings.TrimSpace(order.AlgoID),
+		strings.TrimSpace(order.AlgoClOrdID),
+		strings.ToLower(strings.TrimSpace(order.OrdType)),
+	}
+	key := strings.Join(parts, "|")
+	if strings.Trim(key, "|") != "" {
+		return key
+	}
+	return strings.TrimSpace(order.RawJSON)
 }
 
 func (c Client) CancelAlgoOrders(ctx context.Context, reqs []CancelAlgoOrderRequest) ([]CancelAlgoOrderAck, Envelope, error) {
