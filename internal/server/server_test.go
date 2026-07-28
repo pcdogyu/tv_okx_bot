@@ -251,8 +251,9 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-balance-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("#analysis .mini-usdt-chart {\n      height: 360px;")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("#analysis .mini-usdt-chart { height: 346px; }")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 币对盈亏比分析")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 币对盈亏比分析")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("balance-pnl-block")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 盈亏分析")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 盈亏分析")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-okx-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("成交历史")) ||

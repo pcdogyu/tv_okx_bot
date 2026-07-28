@@ -12,8 +12,14 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 	if got := strings.Count(tvbotHTML, `class="balance-table-wrap"`); got != 2 {
 		t.Fatalf("balance table wrappers=%d, want 2", got)
 	}
+	if got := strings.Count(tvbotHTML, `class="analysis-exchange-block balance-pnl-block"`); got != 2 {
+		t.Fatalf("embedded pnl blocks=%d, want 2", got)
+	}
 	for _, marker := range []string{
 		`.exchange-balance-metrics`,
+		`.balance-pnl-block`,
+		`OKX 盈亏分析`,
+		`Binance 盈亏分析`,
 		`.balance-table-wrap`,
 		"height: auto;\n      max-height: 188px;\n      overflow: auto;",
 		`#analysis .mini-usdt-chart`,
@@ -56,11 +62,18 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`analysis-asset-count`,
 		`analysis-binance-avail`,
 		`analysis-binance-api`,
+		`id="analysis-symbol-section"`,
 		".balance-table-wrap {\n      height: 188px;",
 	} {
 		if strings.Contains(tvbotHTML, old) {
 			t.Fatalf("tvbot ui should not include %s", old)
 		}
+	}
+	if okxPNL := strings.Index(tvbotHTML, `OKX 盈亏分析`); okxPNL < 0 || okxPNL > strings.Index(tvbotHTML, `id="analysis-balance-rows"`) {
+		t.Fatal("OKX pnl analysis should be inside the OKX balance card before the balance rows")
+	}
+	if binancePNL := strings.Index(tvbotHTML, `Binance 盈亏分析`); binancePNL < 0 || binancePNL > strings.Index(tvbotHTML, `id="analysis-binance-balance-rows"`) {
+		t.Fatal("Binance pnl analysis should be inside the Binance balance card before the balance rows")
 	}
 	if !strings.Contains(tvbotHTML, `String(row.ccy || "").toUpperCase() === "USDT"`) {
 		t.Fatal("balance rows should filter to USDT")
