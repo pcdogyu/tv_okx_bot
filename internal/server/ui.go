@@ -789,17 +789,10 @@ const tvbotHTML = `<!doctype html>
     .analysis-symbol-table {
       min-width: 1080px;
     }
-    .analysis-trade-table {
-      min-width: 1280px;
-    }
     .analysis-subsection {
       border-top: 1px solid var(--line);
       margin-top: 16px;
       padding-top: 12px;
-    }
-    #analysis-trade-history-section {
-      grid-column: 1 / -1;
-      margin-top: 0;
     }
     .analysis-usdt-chart-card {
       border-top: 1px solid var(--line);
@@ -1102,7 +1095,7 @@ const tvbotHTML = `<!doctype html>
           </div>
           <div class="analysis-usdt-block">
             <div class="section-head" style="margin-bottom:0">
-              <h3 id="analysis-okx-usdt-title">USDT 估值表</h3>
+              <h3>USDT 估值表</h3>
             </div>
             <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
               <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-usdt-eq">-</div></div>
@@ -1115,9 +1108,6 @@ const tvbotHTML = `<!doctype html>
                 </thead>
                 <tbody id="analysis-balance-rows"></tbody>
               </table>
-            </div>
-            <div class="analysis-usdt-chart-card">
-              <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT balance chart"></svg>
             </div>
           </div>
           <div class="analysis-exchange-block balance-pnl-block">
@@ -1141,6 +1131,12 @@ const tvbotHTML = `<!doctype html>
               </table>
             </div>
           </div>
+          <div class="analysis-usdt-chart-card">
+            <div class="section-head" style="margin:0 0 8px">
+              <h3 id="analysis-okx-usdt-title">USDT 权益图</h3>
+            </div>
+            <svg id="usdt-chart" class="mini-usdt-chart" role="img" aria-label="OKX USDT equity chart"></svg>
+          </div>
         </div>
         <div class="balance-chart-card exchange-balance-card">
           <div class="section-head" style="margin-bottom:0">
@@ -1149,7 +1145,7 @@ const tvbotHTML = `<!doctype html>
           </div>
           <div class="analysis-usdt-block">
             <div class="section-head" style="margin-bottom:0">
-              <h3 id="analysis-binance-usdt-title">USDT 估值表</h3>
+              <h3>USDT 估值表</h3>
             </div>
             <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
               <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-binance-usdt-eq">-</div></div>
@@ -1162,9 +1158,6 @@ const tvbotHTML = `<!doctype html>
                 </thead>
                 <tbody id="analysis-binance-balance-rows"></tbody>
               </table>
-            </div>
-            <div class="analysis-usdt-chart-card">
-              <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT balance chart"></svg>
             </div>
           </div>
           <div class="analysis-exchange-block balance-pnl-block">
@@ -1188,23 +1181,11 @@ const tvbotHTML = `<!doctype html>
               </table>
             </div>
           </div>
-        </div>
-        <div class="analysis-subsection" id="analysis-trade-history-section">
-          <div class="section-head" style="margin-top:0">
-            <h3>成交历史</h3>
-            <div class="analysis-pagination">
-              <span class="muted" id="analysis-trade-page-info">-</span>
-              <button class="btn small" type="button" id="analysis-trade-prev">上一页</button>
-              <button class="btn small" type="button" id="analysis-trade-next">下一页</button>
+          <div class="analysis-usdt-chart-card">
+            <div class="section-head" style="margin:0 0 8px">
+              <h3 id="analysis-binance-usdt-title">USDT 权益图</h3>
             </div>
-          </div>
-          <div class="analysis-table-wrap">
-            <table class="analysis-trade-table">
-              <thead>
-                <tr><th>交易所</th><th>成交时间</th><th>币对</th><th>方向</th><th>成交价</th><th>成交量</th><th>已实现盈亏</th><th>手续费</th><th>订单 ID</th><th>成交 ID</th></tr>
-              </thead>
-              <tbody id="analysis-trade-rows"></tbody>
-            </table>
+            <svg id="analysis-binance-usdt-chart" class="mini-usdt-chart" role="img" aria-label="Binance USDT equity chart"></svg>
           </div>
         </div>
       </div>
@@ -1432,7 +1413,6 @@ const tvbotHTML = `<!doctype html>
     let analysisBalanceRefreshBusy = false;
     let menuSettingsSynced = false;
     let tableColumnDrag = null;
-    const analysisTradePageSize = 20;
     const positionViewPollIntervalMs = 5000;
     const missingPositionEntrySyncIntervalMs = 180000;
     const analysisBalanceRefreshIntervalMs = 60000;
@@ -1957,18 +1937,15 @@ const tvbotHTML = `<!doctype html>
     }
 
     function usdtBalanceRawValue(row) {
-      for (const key of ["eq_usd", "eq", "cash_bal", "avail_bal"]) {
-        const raw = row && row[key];
-        if (raw !== undefined && raw !== null && String(raw).trim() !== "") return raw;
-      }
-      return "";
+      const raw = row && row.eq;
+      return raw !== undefined && raw !== null && String(raw).trim() !== "" ? raw : "";
     }
 
     function usdtBalancePoints(balancePoints, balance) {
       const stored = (Array.isArray(balancePoints) ? balancePoints : []).map((point, index) => {
         return {
           index: index,
-          value: Number(point.value !== undefined ? point.value : usdtBalanceRawValue(point)),
+          value: Number(usdtBalanceRawValue(point)),
           date: chartPointDate(point)
         };
       }).filter((point) => Number.isFinite(point.value));
@@ -3179,7 +3156,6 @@ const tvbotHTML = `<!doctype html>
         renderAnalysisExchangeBalances();
         renderAnalysisExchangeStats("okx", state.analysisError || "-");
         renderAnalysisExchangeStats("binance", state.analysisError || "-");
-        renderAnalysisTradeHistory(state.analysisError || "-");
         return;
       }
       renderAnalysisExchangeBalances();
@@ -3189,7 +3165,6 @@ const tvbotHTML = `<!doctype html>
       $("analysis-updated").textContent = shanghaiTime(state.analysis.refreshed_at) + " / API " + apiText;
       renderAnalysisExchangeStats("okx", "");
       renderAnalysisExchangeStats("binance", "");
-      renderAnalysisTradeHistory("");
     }
 
     function renderAnalysisExchangeStats(exchange, errorText) {
@@ -3235,49 +3210,6 @@ const tvbotHTML = `<!doctype html>
       return found || { exchange: normalizeExchange(exchange), trade_count: 0, wins: 0, losses: 0, net_pnl: 0, fees: 0, win_rate: 0, profit_factor: 0, payoff_ratio: 0 };
     }
 
-    function renderAnalysisTradeHistory(errorText) {
-      if (errorText) {
-        $("analysis-trade-page-info").textContent = "-";
-        $("analysis-trade-prev").disabled = true;
-        $("analysis-trade-next").disabled = true;
-        $("analysis-trade-rows").innerHTML = '<tr><td colspan="10" class="muted">' + escapeHTML(errorText) + '</td></tr>';
-        return;
-      }
-      const trades = state.analysis && Array.isArray(state.analysis.trades) ? state.analysis.trades : [];
-      const total = trades.length;
-      const totalPages = Math.max(1, Math.ceil(total / analysisTradePageSize));
-      const currentPage = Math.min(totalPages, Math.max(1, Math.floor(Number(state.analysisTradePage || 1))));
-      state.analysisTradePage = currentPage;
-      const start = total ? (currentPage - 1) * analysisTradePageSize : 0;
-      const end = total ? Math.min(total, start + analysisTradePageSize) : 0;
-      $("analysis-trade-page-info").textContent = total ? ((start + 1) + "-" + end + " / " + total) : "0 / 0";
-      $("analysis-trade-prev").disabled = currentPage <= 1 || total === 0;
-      $("analysis-trade-next").disabled = currentPage >= totalPages || total === 0;
-      const tradeRows = trades.slice(start, end).map((row) => {
-        const feeText = formatNumber(row.fee) + (row.fee_ccy ? " " + row.fee_ccy : "");
-        return "<tr>" +
-          "<td>" + escapeHTML(exchangeLabel(row.exchange)) + "</td>" +
-          '<td class="time">' + escapeHTML(shanghaiTime(row.fill_time)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.inst_id)) + "</td>" +
-          "<td>" + escapeHTML(tradeSideText(row.side)) + "</td>" +
-          "<td>" + escapeHTML(formatNumber(row.fill_px)) + "</td>" +
-          "<td>" + escapeHTML(formatAssetAmount(row.fill_sz)) + "</td>" +
-          signedCell(row.fill_pnl, formatNumber(row.fill_pnl)) +
-          signedCell(row.fee, feeText) +
-          "<td>" + escapeHTML(asText(row.ord_id)) + "</td>" +
-          "<td>" + escapeHTML(analysisTradeIDText(row)) + "</td>" +
-          "</tr>";
-      });
-      $("analysis-trade-rows").innerHTML = tradeRows.join("") || '<tr><td colspan="10" class="muted">暂无成交历史</td></tr>';
-    }
-
-    function analysisTradeIDText(row) {
-      const text = asText(row ? row.trade_id : "");
-      const fillCount = Number(row && row.fill_count ? row.fill_count : 0);
-      if (fillCount > 1) return text + " +" + (fillCount - 1);
-      return text;
-    }
-
     function renderAnalysisExchangeBalances() {
       const okxItem = balanceOverviewExchange("okx");
       const okxBalance = okxItem && okxItem.balance ? okxItem.balance : (state.analysis ? state.analysis.balance : null);
@@ -3291,12 +3223,12 @@ const tvbotHTML = `<!doctype html>
       $("analysis-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
       $("analysis-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : "-";
       $("analysis-okx-balance-status").textContent = exchangeBalanceStatusText(item, balance, "OKX");
-      $("analysis-okx-usdt-title").textContent = "USDT 估值表 " + balanceWindowLabel(state.balanceWindowMinutes);
+      $("analysis-okx-usdt-title").textContent = "USDT 权益图 " + balanceWindowLabel(state.balanceWindowMinutes);
       $("analysis-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 USDT 资产余额");
       const overviewPoints = item ? (item.balance_points || []) : [];
       const fallbackPoints = state.analysis ? (state.analysis.balance_points || []) : [];
       const points = usdtBalancePoints(overviewPoints.length ? overviewPoints : fallbackPoints, balance);
-      drawUSDTChart(points, "usdt-chart", "暂无 OKX USDT 估值数据", "#1f6feb");
+      drawUSDTChart(points, "usdt-chart", "暂无 OKX USDT 权益数据", "#1f6feb");
     }
 
     function renderAnalysisBinanceBalance(item) {
@@ -3306,10 +3238,10 @@ const tvbotHTML = `<!doctype html>
       $("analysis-binance-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
       $("analysis-binance-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : (item && item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
       $("analysis-binance-balance-status").textContent = exchangeBalanceStatusText(item, balance, "Binance");
-      $("analysis-binance-usdt-title").textContent = "USDT 估值表 " + balanceWindowLabel(state.balanceWindowMinutes);
+      $("analysis-binance-usdt-title").textContent = "USDT 权益图 " + balanceWindowLabel(state.balanceWindowMinutes);
       $("analysis-binance-balance-rows").innerHTML = balanceRowsHTML(details, "暂无 USDT 资产余额");
       const points = usdtBalancePoints(item ? (item.balance_points || []) : [], balance);
-      drawUSDTChart(points, "analysis-binance-usdt-chart", item && item.configured ? "暂无 Binance USDT 估值数据" : "Binance 未配置", "#138a55");
+      drawUSDTChart(points, "analysis-binance-usdt-chart", item && item.configured ? "暂无 Binance USDT 权益数据" : "Binance 未配置", "#138a55");
     }
 
     function exchangeBalanceStatusText(item, balance, label) {
@@ -3354,14 +3286,14 @@ const tvbotHTML = `<!doctype html>
       svg.setAttribute("viewBox", "0 0 " + width + " " + height);
       svg.innerHTML = "";
       if (!points.length) {
-        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT估值数据") + '</text>';
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT 权益数据") + '</text>';
         return;
       }
       const chartPoints = points.map((point, index) => {
         return { point: point, index: index, value: Number(point.value), date: chartPointDate(point) };
       }).filter((point) => Number.isFinite(point.value));
       if (!chartPoints.length) {
-        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT估值数据") + '</text>';
+        svg.innerHTML = '<text x="' + (width / 2) + '" y="' + (height / 2) + '" text-anchor="middle" fill="#647089">' + escapeHTML(emptyText || "暂无 USDT 权益数据") + '</text>';
         return;
       }
       const values = chartPoints.map((point) => point.value);
@@ -3903,14 +3835,6 @@ const tvbotHTML = `<!doctype html>
     $("sync-balance-history").addEventListener("click", () => syncBalanceHistory($("sync-balance-history")).catch((err) => toast(err.message)));
     $("analysis-api-id").addEventListener("change", () => loadAnalysis(false).catch((err) => toast(err.message)));
     $("refresh-analysis").addEventListener("click", () => loadAnalysis(true).then(() => toast("分析已刷新")).catch((err) => toast(err.message)));
-    $("analysis-trade-prev").addEventListener("click", () => {
-      state.analysisTradePage = Math.max(1, Number(state.analysisTradePage || 1) - 1);
-      renderAnalysisTradeHistory("");
-    });
-    $("analysis-trade-next").addEventListener("click", () => {
-      state.analysisTradePage = Number(state.analysisTradePage || 1) + 1;
-      renderAnalysisTradeHistory("");
-    });
     $("refresh-positions").addEventListener("click", () => loadPositionView(true).then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
     $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));

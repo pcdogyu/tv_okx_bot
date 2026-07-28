@@ -274,6 +274,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("OKX 订单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 订单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("USDT 估值表")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("USDT 权益图")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`data-balance-minutes="129600"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("重置基准")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("同步历史")) ||
@@ -289,10 +290,6 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance 盈亏分析")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-okx-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-binance-rows")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("成交历史")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-rows")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-page-info")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysisTradePageSize = 20")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisBalanceRefreshIntervalMs = 60000")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("refreshAnalysisBalanceOverviewAuto")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("visibilitychange")) ||
@@ -301,8 +298,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbolPrecisions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPNLWindowMinutes")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pnl_minutes")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-symbol-table")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-table")) {
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-symbol-table")) {
 		t.Fatalf("tvbot ui should include exchange balance analysis")
 	}
 	for _, removed := range [][]byte{
@@ -311,6 +307,12 @@ func TestRoutes(t *testing.T) {
 		[]byte("analysis-asset-count"),
 		[]byte("analysis-binance-avail"),
 		[]byte("analysis-binance-api"),
+		[]byte("analysis-trade-history-section"),
+		[]byte("analysis-trade-rows"),
+		[]byte("analysis-trade-page-info"),
+		[]byte("analysisTradePageSize"),
+		[]byte("analysis-trade-table"),
+		[]byte("成交历史"),
 	} {
 		if bytes.Contains(ui.Body.Bytes(), removed) {
 			t.Fatalf("tvbot analysis balance UI should not include removed metric %q", removed)
@@ -320,8 +322,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("chartTimeLabel")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("chartTickIndexes")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("usdtBalancePoints")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`["eq_usd", "eq", "cash_bal", "avail_bal"]`)) {
-		t.Fatalf("tvbot ui should render full-width chart grid and time axis")
+		!bytes.Contains(ui.Body.Bytes(), []byte("const raw = row && row.eq")) {
+		t.Fatalf("tvbot ui should render equity chart grid and time axis")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("账户名称")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`data-api-key-exchange="okx"`)) ||
@@ -1224,7 +1226,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if len(resp.PricePoints) != 2 || resp.PriceInstID != "USDT-USD" || resp.PriceBar != "1H" {
 		t.Fatalf("bad price data: %#v", resp)
 	}
-	if len(resp.BalancePoints) != 1 || math.Abs(resp.BalancePoints[0].Value-4996.65) > 0.0000001 || resp.BalancePoints[0].CashBal != "5000" {
+	if len(resp.BalancePoints) != 1 || math.Abs(resp.BalancePoints[0].Value-5000) > 0.0000001 || resp.BalancePoints[0].CashBal != "5000" {
 		t.Fatalf("bad balance points: %#v", resp.BalancePoints)
 	}
 	snapshots, err := srv.Orders.ListUSDTBalanceSnapshots("default", cfg.Trading.Env, time.Date(2026, 7, 24, 2, 0, 0, 0, time.UTC), 10)

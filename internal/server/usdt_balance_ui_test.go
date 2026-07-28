@@ -20,13 +20,12 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`.balance-pnl-block`,
 		`.analysis-period-row`,
 		`.analysis-time-status`,
-		`#analysis-trade-history-section`,
-		`grid-column: 1 / -1`,
 		`.analysis-usdt-chart-card`,
 		`订单时间`,
 		`OKX 订单`,
 		`Binance 订单`,
 		`USDT 估值表`,
+		`USDT 权益图`,
 		`OKX 盈亏分析`,
 		`Binance 盈亏分析`,
 		`.balance-table-wrap`,
@@ -44,10 +43,12 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`formatUSDTBalance(row.cash_bal)`,
 		`formatUSDTBalance(row.frozen_bal)`,
 		`function usdtBalanceRawValue(row)`,
-		`for (const key of ["eq_usd", "eq", "cash_bal", "avail_bal"])`,
+		`const raw = row && row.eq`,
+		`value: Number(usdtBalanceRawValue(point))`,
 		`function usdtBalancePoints(balancePoints, balance)`,
-		`"USDT 估值表 " + balanceWindowLabel(state.balanceWindowMinutes)`,
-		`暂无 USDT估值数据`,
+		`"USDT 权益图 " + balanceWindowLabel(state.balanceWindowMinutes)`,
+		`暂无 OKX USDT 权益数据`,
+		`暂无 Binance USDT 权益数据`,
 		`.balance-window-toolbar .balance-window-btn`,
 		`font-size: 16px`,
 		`data-balance-minutes="15"`,
@@ -78,6 +79,14 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`analysis-binance-avail`,
 		`analysis-binance-api`,
 		`id="analysis-symbol-section"`,
+		`id="analysis-trade-history-section"`,
+		`class="analysis-trade-table"`,
+		`id="analysis-trade-rows"`,
+		`id="analysis-trade-page-info"`,
+		`analysisTradePageSize`,
+		`renderAnalysisTradeHistory`,
+		`成交历史`,
+		`for (const key of ["eq_usd", "eq", "cash_bal", "avail_bal"])`,
 		".balance-table-wrap {\n      height: 188px;",
 	} {
 		if strings.Contains(tvbotHTML, old) {
@@ -97,31 +106,21 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 	binanceOrder := strings.Index(tvbotHTML, `Binance 订单`)
 	okxBalanceRows := strings.Index(tvbotHTML, `id="analysis-balance-rows"`)
 	binanceBalanceRows := strings.Index(tvbotHTML, `id="analysis-binance-balance-rows"`)
-	tradeSection := strings.Index(tvbotHTML, `id="analysis-trade-history-section"`)
 	okxChart := strings.Index(tvbotHTML, `id="usdt-chart" class="mini-usdt-chart"`)
 	binanceChart := strings.Index(tvbotHTML, `id="analysis-binance-usdt-chart" class="mini-usdt-chart"`)
 	okxPNL := strings.Index(tvbotHTML, `OKX 盈亏分析`)
 	binancePNL := strings.Index(tvbotHTML, `Binance 盈亏分析`)
-	if okxOrder < 0 || binanceOrder < 0 || okxBalanceRows < 0 || binanceBalanceRows < 0 || tradeSection < 0 || okxChart < 0 || binanceChart < 0 || okxPNL < 0 || binancePNL < 0 {
+	if okxOrder < 0 || binanceOrder < 0 || okxBalanceRows < 0 || binanceBalanceRows < 0 || okxChart < 0 || binanceChart < 0 || okxPNL < 0 || binancePNL < 0 {
 		t.Fatal("analysis layout markers are missing")
 	}
-	if !(okxOrder < binanceOrder && binanceOrder < tradeSection) {
-		t.Fatal("OKX and Binance order columns should appear before trade history")
+	if !(okxOrder < binanceOrder) {
+		t.Fatal("OKX and Binance order columns should be rendered side by side in order")
 	}
-	if !(okxBalanceRows < okxChart && okxChart < okxPNL) {
-		t.Fatal("OKX column should show USDT valuation table before pnl analysis")
+	if !(okxBalanceRows < okxPNL && okxPNL < okxChart) {
+		t.Fatal("OKX column should show USDT valuation table, pnl analysis, then equity chart")
 	}
-	if !(binanceBalanceRows < binanceChart && binanceChart < binancePNL) {
-		t.Fatal("Binance column should show USDT valuation table before pnl analysis")
-	}
-	if tradeSection < okxPNL || tradeSection < binancePNL {
-		t.Fatal("trade history should appear after both pnl analysis tables")
-	}
-	if got := strings.Count(tvbotHTML, `id="analysis-trade-history-section"`); got != 1 {
-		t.Fatalf("trade history sections=%d, want 1", got)
-	}
-	if got := strings.Count(tvbotHTML, `class="analysis-trade-table"`); got != 1 {
-		t.Fatalf("trade history tables=%d, want 1", got)
+	if !(binanceBalanceRows < binancePNL && binancePNL < binanceChart) {
+		t.Fatal("Binance column should show USDT valuation table, pnl analysis, then equity chart")
 	}
 	if !strings.Contains(tvbotHTML, `String(row.ccy || "").toUpperCase() === "USDT"`) {
 		t.Fatal("balance rows should filter to USDT")
