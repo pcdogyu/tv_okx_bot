@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -624,5 +625,51 @@ func TestClientFillsHistorySignsPrivateDemoRequest(t *testing.T) {
 	}
 	if len(fills) != 1 || fills[0].TradeID != "trade-1" || fills[0].RawJSON == "" {
 		t.Fatalf("bad fills: %#v", fills)
+	}
+}
+
+func TestClientAccountBillsArchiveSignsPrivateDemoRequest(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
+	begin := fixedNow.Add(-24 * time.Hour)
+	secret := "secret"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/account/bills-archive" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("instType") != "SWAP" || r.URL.Query().Get("begin") != strconv.FormatInt(begin.UnixMilli(), 10) || r.URL.Query().Get("end") != strconv.FormatInt(fixedNow.UnixMilli(), 10) || r.URL.Query().Get("after") != "bill-0" || r.URL.Query().Get("limit") != "100" {
+			t.Fatalf("bad query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("x-simulated-trading") != "1" {
+			t.Fatal("missing demo trading header")
+		}
+		if r.Header.Get("OK-ACCESS-KEY") != "key" || r.Header.Get("OK-ACCESS-PASSPHRASE") != "pass" {
+			t.Fatal("missing OKX auth headers")
+		}
+		timestamp := fixedNow.UTC().Format("2006-01-02T15:04:05.000Z")
+		wantSign := sign(timestamp, http.MethodGet, "/api/v5/account/bills-archive?"+r.URL.Query().Encode(), "", secret)
+		if r.Header.Get("OK-ACCESS-TIMESTAMP") != timestamp || r.Header.Get("OK-ACCESS-SIGN") != wantSign {
+			t.Fatal("invalid OKX signature headers")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"billId":"bill-1","instType":"SWAP","instId":"BTC-USDT-SWAP","ccy":"USDT","type":"8","subType":"173","balChg":"-0.12","ts":"1784876400000"}]}`))
+	}))
+	defer ts.Close()
+	client := Client{
+		BaseURL: ts.URL,
+		Credentials: Credentials{
+			APIKey:     "key",
+			SecretKey:  secret,
+			Passphrase: "pass",
+		},
+		Demo:       true,
+		HTTPClient: ts.Client(),
+		Now:        func() time.Time { return fixedNow },
+	}
+	bills, _, err := client.AccountBillsArchive(context.Background(), "SWAP", begin, fixedNow, "bill-0", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bills) != 1 || bills[0].BillID != "bill-1" || bills[0].SubType != "173" || bills[0].RawJSON == "" {
+		t.Fatalf("bad bills: %#v", bills)
 	}
 }

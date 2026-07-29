@@ -1155,9 +1155,7 @@ const tvbotHTML = `<!doctype html>
         </div>
         <div class="symbol-table-wrap">
           <table class="symbol-table analysis-trade-table">
-            <thead>
-              <tr><th>时间</th><th>币对</th><th>方向</th><th>成交价</th><th>数量</th><th>盈亏</th><th>手续费</th><th>订单号</th><th>成交笔数</th></tr>
-            </thead>
+            <thead id="analysis-trade-head"></thead>
             <tbody id="analysis-trade-rows"></tbody>
           </table>
         </div>
@@ -1422,6 +1420,21 @@ const tvbotHTML = `<!doctype html>
     const globalExchangeStorageKey = "tvbot.selectedExchange";
     const ordersPageSize = 20;
     const analysisTradePageSize = 20;
+    const analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v1";
+    const analysisTradeColumnDefs = [
+      { id: "time", title: "时间", tdClass: "time", render: (row) => shanghaiTime(row.fill_time) },
+      { id: "inst_id", title: "币对", render: (row) => asText(row.inst_id) },
+      { id: "side", title: "方向", render: (row) => asText(row.side) },
+      { id: "fill_px", title: "成交价", render: (row) => formattedTradeNumber(row.fill_px, "") },
+      { id: "fill_sz", title: "数量", render: (row) => formattedTradeNumber(row.fill_sz, "") },
+      { id: "margin", title: "保证金", render: (row) => formattedTradeNumber(row.margin, " USDT") },
+      { id: "leverage", title: "杠杆", render: (row) => row.leverage ? asText(row.leverage) + "x" : "-" },
+      { id: "fill_pnl", title: "盈亏", signedField: "fill_pnl", render: (row) => formattedTradeNumber(row.fill_pnl, " USDT") },
+      { id: "fee", title: "手续费", render: (row) => tradeFeeText(row) },
+      { id: "funding_fee", title: "资金费", signedField: "funding_fee", render: (row) => formattedTradeNumber(row.funding_fee, " USDT") },
+      { id: "net_pnl", title: "净盈亏", signedField: "net_pnl", render: (row) => formattedTradeNumber(row.net_pnl, " USDT") },
+      { id: "fill_count", title: "成交笔数", render: (row) => asText(row.fill_count || 1) }
+    ];
     const balanceWindowOptions = [
       { minutes: 0, label: "当前" },
       { minutes: 5, label: "5m" },
@@ -3262,6 +3275,60 @@ const tvbotHTML = `<!doctype html>
       return rows.filter((row) => normalizeExchange(row.exchange) === exchange);
     }
 
+    function analysisTradeColumnIDs() {
+      return analysisTradeColumnDefs.map((col) => col.id);
+    }
+
+    function normalizeAnalysisTradeColumnOrder(order) {
+      const valid = new Set(analysisTradeColumnIDs());
+      const next = [];
+      (Array.isArray(order) ? order : []).forEach((id) => {
+        id = String(id || "").trim();
+        if (!id || id === "order_id" || !valid.has(id) || next.includes(id)) return;
+        next.push(id);
+      });
+      analysisTradeColumnIDs().forEach((id) => {
+        if (!next.includes(id)) next.push(id);
+      });
+      return next;
+    }
+
+    function currentAnalysisTradeColumnOrder() {
+      let raw = null;
+      let parsed = null;
+      try {
+        raw = window.localStorage.getItem(analysisTradeColumnStorageKey);
+        parsed = raw ? JSON.parse(raw) : null;
+      } catch (_) {
+        parsed = null;
+      }
+      const normalized = normalizeAnalysisTradeColumnOrder(parsed);
+      try {
+        if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
+          window.localStorage.setItem(analysisTradeColumnStorageKey, JSON.stringify(normalized));
+        }
+      } catch (_) {}
+      return normalized;
+    }
+
+    function setAnalysisTradeColumnOrder(order) {
+      const normalized = normalizeAnalysisTradeColumnOrder(order);
+      try {
+        window.localStorage.setItem(analysisTradeColumnStorageKey, JSON.stringify(normalized));
+      } catch (_) {}
+      return normalized;
+    }
+
+    function currentAnalysisTradeColumns() {
+      const byID = {};
+      analysisTradeColumnDefs.forEach((col) => { byID[col.id] = col; });
+      return currentAnalysisTradeColumnOrder().map((id) => byID[id]).filter(Boolean);
+    }
+
+    function analysisTradeColumnCount() {
+      return currentAnalysisTradeColumnOrder().length;
+    }
+
     function formattedTradeNumber(value, suffix) {
       if (value === null || value === undefined || String(value).trim() === "") return "-";
       const formatted = formatNumber(value);
@@ -3276,6 +3343,25 @@ const tvbotHTML = `<!doctype html>
       return ccy ? fee + " " + ccy : fee;
     }
 
+    function renderAnalysisTradeHead() {
+      const head = $("analysis-trade-head");
+      if (!head) return;
+      head.innerHTML = "<tr>" + currentAnalysisTradeColumns().map((col) =>
+        '<th draggable="true" data-analysis-trade-column="' + escapeHTML(col.id) + '" title="拖动调整栏目顺序">' + escapeHTML(col.title) + "</th>"
+      ).join("") + "</tr>";
+    }
+
+    function analysisTradeCellHTML(col, row) {
+      const classes = [];
+      if (col.tdClass) classes.push(col.tdClass);
+      if (col.signedField) {
+        const tone = signedToneClass(row && row[col.signedField]);
+        if (tone) classes.push(tone);
+      }
+      const classAttr = classes.length ? ' class="' + classes.map(escapeHTML).join(" ") + '"' : "";
+      return "<td" + classAttr + ">" + escapeHTML(col.render(row || {})) + "</td>";
+    }
+
     function renderAnalysisTradeHistory(errorText) {
       const exchange = activeExchange();
       const label = exchangeLabel(exchange);
@@ -3286,9 +3372,10 @@ const tvbotHTML = `<!doctype html>
       const prev = $("analysis-trade-prev");
       const next = $("analysis-trade-next");
       if (title) title.textContent = label + " 历史成交明细";
+      renderAnalysisTradeHead();
       if (!rowsEl) return;
       if (errorText) {
-        rowsEl.innerHTML = '<tr><td colspan="9" class="muted">' + escapeHTML(errorText) + '</td></tr>';
+        rowsEl.innerHTML = '<tr><td colspan="' + analysisTradeColumnCount() + '" class="muted">' + escapeHTML(errorText) + '</td></tr>';
         if (status) status.textContent = errorText;
         if (pageInfo) pageInfo.textContent = "-";
         if (prev) prev.disabled = true;
@@ -3300,22 +3387,10 @@ const tvbotHTML = `<!doctype html>
       state.analysisTradePage = Math.min(Math.max(1, Number(state.analysisTradePage || 1)), totalPages);
       const start = (state.analysisTradePage - 1) * analysisTradePageSize;
       const pageRows = trades.slice(start, start + analysisTradePageSize);
+      const columns = currentAnalysisTradeColumns();
       rowsEl.innerHTML = pageRows.map((row) => {
-        const pnlValue = row && row.fill_pnl;
-        const pnlText = formattedTradeNumber(pnlValue, " USDT");
-        const pnlTone = signedToneClass(pnlValue);
-        return "<tr>" +
-          '<td class="time">' + escapeHTML(shanghaiTime(row.fill_time)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.inst_id)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.side)) + "</td>" +
-          "<td>" + escapeHTML(formattedTradeNumber(row.fill_px, "")) + "</td>" +
-          "<td>" + escapeHTML(formattedTradeNumber(row.fill_sz, "")) + "</td>" +
-          '<td' + (pnlTone ? ' class="' + pnlTone + '"' : "") + ">" + escapeHTML(pnlText) + "</td>" +
-          "<td>" + escapeHTML(tradeFeeText(row)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.ord_id || row.trade_id)) + "</td>" +
-          "<td>" + escapeHTML(asText(row.fill_count || 1)) + "</td>" +
-          "</tr>";
-      }).join("") || '<tr><td colspan="9" class="muted">暂无 ' + escapeHTML(label) + ' 成交明细</td></tr>';
+        return "<tr>" + columns.map((col) => analysisTradeCellHTML(col, row)).join("") + "</tr>";
+      }).join("") || '<tr><td colspan="' + analysisTradeColumnCount() + '" class="muted">暂无 ' + escapeHTML(label) + ' 成交明细</td></tr>';
       if (status) status.textContent = trades.length ? ("共 " + trades.length + " 条") : "-";
       if (pageInfo) pageInfo.textContent = trades.length ? ("第 " + state.analysisTradePage + " / " + totalPages + " 页") : "-";
       if (prev) prev.disabled = state.analysisTradePage <= 1;
@@ -3327,6 +3402,63 @@ const tvbotHTML = `<!doctype html>
       const totalPages = Math.max(1, Math.ceil(trades.length / analysisTradePageSize));
       state.analysisTradePage = Math.min(Math.max(1, Number(state.analysisTradePage || 1) + delta), totalPages);
       renderAnalysisTradeHistory("");
+    }
+
+    function handleAnalysisTradeColumnDragStart(event) {
+      const th = event.target.closest("th[data-analysis-trade-column]");
+      if (!th) return;
+      tableColumnDrag = { tableID: "analysis_trades", columnID: th.dataset.analysisTradeColumn };
+      th.classList.add("is-dragging");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", tableColumnDrag.columnID);
+      }
+    }
+
+    function handleAnalysisTradeColumnDragOver(event) {
+      const th = event.target.closest("th[data-analysis-trade-column]");
+      if (!th || !tableColumnDrag || tableColumnDrag.tableID !== "analysis_trades") return;
+      event.preventDefault();
+      th.classList.add("is-drop-target");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    }
+
+    function handleAnalysisTradeColumnDragLeave(event) {
+      const th = event.target.closest("th[data-analysis-trade-column]");
+      if (th) th.classList.remove("is-drop-target");
+    }
+
+    function handleAnalysisTradeColumnDragEnd() {
+      tableColumnDrag = null;
+      clearTableColumnDropTargets();
+    }
+
+    function handleAnalysisTradeColumnDrop(event) {
+      const th = event.target.closest("th[data-analysis-trade-column]");
+      if (!th || !tableColumnDrag || tableColumnDrag.tableID !== "analysis_trades") return;
+      event.preventDefault();
+      const previousOrder = currentAnalysisTradeColumnOrder();
+      const fromIndex = previousOrder.indexOf(tableColumnDrag.columnID);
+      const toIndex = previousOrder.indexOf(th.dataset.analysisTradeColumn);
+      tableColumnDrag = null;
+      clearTableColumnDropTargets();
+      if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+      const nextOrder = previousOrder.slice();
+      const moved = nextOrder.splice(fromIndex, 1)[0];
+      nextOrder.splice(toIndex, 0, moved);
+      setAnalysisTradeColumnOrder(nextOrder);
+      renderAnalysisTradeHistory("");
+      toast("栏目顺序已保存");
+    }
+
+    function initAnalysisTradeColumnDrag() {
+      const head = $("analysis-trade-head");
+      if (!head) return;
+      head.addEventListener("dragstart", handleAnalysisTradeColumnDragStart);
+      head.addEventListener("dragover", handleAnalysisTradeColumnDragOver);
+      head.addEventListener("dragleave", handleAnalysisTradeColumnDragLeave);
+      head.addEventListener("dragend", handleAnalysisTradeColumnDragEnd);
+      head.addEventListener("drop", handleAnalysisTradeColumnDrop);
     }
 
     function renderAnalysisExchangeBalances() {
@@ -4020,6 +4152,7 @@ const tvbotHTML = `<!doctype html>
     renderTemplateWebhookURL();
     updateBalanceWindowButtons();
     initTableColumnDrag();
+    initAnalysisTradeColumnDrag();
     renderPositions();
     renderPendingOrders();
     activateTab(initialTab(), false);

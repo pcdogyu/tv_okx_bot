@@ -141,6 +141,17 @@ type UserTrade struct {
 	Time            int64  `json:"time"`
 }
 
+type Income struct {
+	Symbol     string `json:"symbol"`
+	IncomeType string `json:"incomeType"`
+	Income     string `json:"income"`
+	Asset      string `json:"asset"`
+	Info       string `json:"info"`
+	TranID     int64  `json:"tranId"`
+	TradeID    string `json:"tradeId"`
+	Time       int64  `json:"time"`
+}
+
 type BookTicker struct {
 	Symbol   string `json:"symbol"`
 	BidPrice string `json:"bidPrice"`
@@ -448,6 +459,34 @@ func (c Client) UserTrades(ctx context.Context, symbol string, startTime, endTim
 		return nil, err
 	}
 	var out []UserTrade
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c Client) IncomeHistory(ctx context.Context, symbol, incomeType string, startTime, endTime time.Time, limit int) ([]Income, error) {
+	q := url.Values{}
+	if strings.TrimSpace(symbol) != "" {
+		q.Set("symbol", strings.ToUpper(strings.TrimSpace(symbol)))
+	}
+	if strings.TrimSpace(incomeType) != "" {
+		q.Set("incomeType", strings.ToUpper(strings.TrimSpace(incomeType)))
+	}
+	if !startTime.IsZero() {
+		q.Set("startTime", strconv.FormatInt(startTime.UTC().UnixMilli(), 10))
+	}
+	if !endTime.IsZero() {
+		q.Set("endTime", strconv.FormatInt(endTime.UTC().UnixMilli(), 10))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	b, err := c.Do(ctx, http.MethodGet, "/fapi/v1/income", q, true)
+	if err != nil {
+		return nil, err
+	}
+	var out []Income
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, err
 	}

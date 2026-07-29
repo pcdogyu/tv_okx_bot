@@ -382,6 +382,22 @@ type Fill struct {
 	RawJSON  string `json:"-"`
 }
 
+type AccountBill struct {
+	BillID   string `json:"billId"`
+	InstType string `json:"instType"`
+	InstID   string `json:"instId"`
+	Ccy      string `json:"ccy"`
+	Type     string `json:"type"`
+	SubType  string `json:"subType"`
+	BalChg   string `json:"balChg"`
+	Pnl      string `json:"pnl"`
+	Fee      string `json:"fee"`
+	OrdID    string `json:"ordId"`
+	TradeID  string `json:"tradeId"`
+	TS       string `json:"ts"`
+	RawJSON  string `json:"-"`
+}
+
 type PendingOrder struct {
 	InstType       string              `json:"instType"`
 	InstID         string              `json:"instId"`
@@ -738,6 +754,43 @@ func (c Client) FillsHistory(ctx context.Context, instType, after string, limit 
 		}
 		fill.RawJSON = string(item)
 		out = append(out, fill)
+	}
+	return out, env, nil
+}
+
+func (c Client) AccountBillsArchive(ctx context.Context, instType string, begin, end time.Time, after string, limit int) ([]AccountBill, Envelope, error) {
+	q := url.Values{}
+	if strings.TrimSpace(instType) != "" {
+		q.Set("instType", strings.ToUpper(strings.TrimSpace(instType)))
+	}
+	if !begin.IsZero() {
+		q.Set("begin", strconv.FormatInt(begin.UTC().UnixMilli(), 10))
+	}
+	if !end.IsZero() {
+		q.Set("end", strconv.FormatInt(end.UTC().UnixMilli(), 10))
+	}
+	if strings.TrimSpace(after) != "" {
+		q.Set("after", strings.TrimSpace(after))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	env, err := c.Do(ctx, http.MethodGet, "/api/v5/account/bills-archive", q, nil, true)
+	if err != nil {
+		return nil, env, err
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(env.Data, &raw); err != nil {
+		return nil, env, err
+	}
+	out := make([]AccountBill, 0, len(raw))
+	for _, item := range raw {
+		var bill AccountBill
+		if err := json.Unmarshal(item, &bill); err != nil {
+			return nil, env, err
+		}
+		bill.RawJSON = string(item)
+		out = append(out, bill)
 	}
 	return out, env, nil
 }

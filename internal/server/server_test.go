@@ -303,8 +303,18 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("pnl_minutes")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("历史成交明细")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-rows")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-head")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-page-info")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisTradePageSize = 20")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v1"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`window.localStorage.getItem(analysisTradeColumnStorageKey)`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`window.localStorage.setItem(analysisTradeColumnStorageKey`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`data-analysis-trade-column`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("handleAnalysisTradeColumnDrop")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "保证金"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "杠杆"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "资金费"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "净盈亏"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("renderAnalysisTradeHistory")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("exchange: activeExchange()")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("loadPositionExchange(activeExchange()")) ||
@@ -321,6 +331,7 @@ func TestRoutes(t *testing.T) {
 		[]byte(`id="analysis-binance-api-id"`),
 		[]byte(`id="refresh-analysis"`),
 		[]byte("刷新分析"),
+		[]byte("<tr><th>时间</th><th>币对</th><th>方向</th><th>成交价</th><th>数量</th><th>盈亏</th><th>手续费</th><th>订单号</th><th>成交笔数</th></tr>"),
 		[]byte("analysis-trade-history-section"),
 		[]byte("OKX 盈亏分析"),
 		[]byte("Binance 盈亏分析"),
@@ -1205,7 +1216,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	binanceTradeTime := time.Date(2026, 7, 23, 5, 0, 0, 0, time.UTC).UnixMilli()
 	candleTime1 := time.Date(2026, 7, 23, 2, 0, 0, 0, time.UTC).UnixMilli()
 	candleTime2 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
-	var sawBalance, sawCandles, sawFills bool
+	var sawBalance, sawCandles, sawFills, sawOKXFunding, sawBinanceFunding bool
 	expectedBinanceStart := windowStart
 	expectedBinanceAPIKey := "binance-alt-key"
 	sawBinanceSymbols := map[string]bool{}
@@ -1244,6 +1255,15 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 				{"instType":"SWAP","instId":"ETH-USDT-SWAP","tradeId":"t2","ordId":"o2","side":"buy","fillPx":"2500","fillSz":"1","fillPnl":"-1","fee":"-0.05","feeCcy":"USDT","fillTime":"%d"},
 				{"instType":"SWAP","instId":"OLD-USDT-SWAP","tradeId":"t-old","ordId":"o-old","side":"sell","fillPx":"1","fillSz":"1","fillPnl":"999","fee":"0","feeCcy":"USDT","fillTime":"%d"}
 			]}`, fillTime2, fillTime2+1000, fillTime1, oldTradeTime)))
+		case "/api/v5/account/bills-archive":
+			sawOKXFunding = true
+			if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
+				t.Fatalf("missing private OKX funding headers")
+			}
+			if r.URL.Query().Get("instType") != "SWAP" || r.URL.Query().Get("limit") != "100" || r.URL.Query().Get("begin") == "" || r.URL.Query().Get("end") == "" {
+				t.Fatalf("bad bills query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 		default:
 			t.Fatalf("unexpected OKX path %s", r.URL.Path)
 		}
@@ -1251,6 +1271,18 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	defer okxServer.Close()
 	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/fapi/v1/income" {
+			sawBinanceFunding = true
+			if r.Header.Get("X-MBX-APIKEY") != expectedBinanceAPIKey {
+				t.Fatalf("bad Binance funding API key: got %q want %q", r.Header.Get("X-MBX-APIKEY"), expectedBinanceAPIKey)
+			}
+			query := r.URL.Query()
+			if query.Get("incomeType") != "FUNDING_FEE" || query.Get("limit") != "1000" || query.Get("startTime") == "" || query.Get("endTime") == "" {
+				t.Fatalf("bad Binance income query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		if r.URL.Path != "/fapi/v1/userTrades" {
 			t.Fatalf("unexpected Binance path %s", r.URL.Path)
 		}
@@ -1332,8 +1364,8 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if rr.Code != http.StatusOK {
 		t.Fatalf("analysis code=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if !sawBalance || !sawCandles || !sawFills {
-		t.Fatalf("expected OKX balance, candle and fills calls balance=%v candles=%v fills=%v", sawBalance, sawCandles, sawFills)
+	if !sawBalance || !sawCandles || !sawFills || !sawOKXFunding || !sawBinanceFunding {
+		t.Fatalf("expected analysis calls balance=%v candles=%v fills=%v okxFunding=%v binanceFunding=%v", sawBalance, sawCandles, sawFills, sawOKXFunding, sawBinanceFunding)
 	}
 	if !sawBinanceSymbols["BTCUSDT"] || !sawBinanceSymbols["ETHUSDT"] {
 		t.Fatalf("expected Binance configured symbols to be queried, seen=%#v", sawBinanceSymbols)

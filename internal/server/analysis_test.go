@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
+	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
 func TestBalanceWindowQuerySupportsMinutesAndLegacyDays(t *testing.T) {
@@ -132,5 +134,74 @@ func TestBalancePointsFromSnapshotsUsesEquityForChartValue(t *testing.T) {
 	}
 	if points[0].EqUsd != "4852.64" || points[0].Eq != "4858.04" || points[0].FrozenBal != "39.83" {
 		t.Fatalf("snapshot fields should be preserved: %#v", points[0])
+	}
+}
+
+func TestEnrichAnalysisTradesUsesMatchedOrderLeverageAndComputesNetPnL(t *testing.T) {
+	cfg := config.Config{Symbols: map[string]config.SymbolConfig{
+		"BTC": {InstID: "BTC-USDT-SWAP", CtVal: 0.01},
+	}}
+	trades := []analysisTrade{
+		{
+			Exchange: trading.ExchangeOKX,
+			APIID:    "default",
+			InstID:   "BTC-USDT-SWAP",
+			OrdID:    "okx-order",
+			FillPx:   "50000",
+			FillSz:   "2",
+			FillPnl:  "3",
+			Fee:      "-0.12",
+			FeeCcy:   "USDT",
+		},
+		{
+			Exchange: trading.ExchangeBinance,
+			APIID:    "binance-alt",
+			InstID:   "BTCUSDT",
+			OrdID:    "8002",
+			FillPx:   "64000",
+			FillSz:   "0.03",
+			FillPnl:  "5",
+			Fee:      "-0.25",
+			FeeCcy:   "USDT",
+		},
+		{
+			Exchange: trading.ExchangeOKX,
+			APIID:    "default",
+			InstID:   "MISSING-USDT-SWAP",
+			OrdID:    "missing-ctval",
+			FillPx:   "10",
+			FillSz:   "1",
+			FillPnl:  "1",
+			Fee:      "-0.01",
+			FeeCcy:   "USDT",
+		},
+	}
+	records := []storage.OrderRecord{
+		{
+			APIID:          "default",
+			TargetExchange: trading.ExchangeOKX,
+			Result:         trading.OrderResult{APIID: "default", TargetExchange: trading.ExchangeOKX, InstID: "BTC-USDT-SWAP", OrdID: "okx-order", Leverage: 5},
+		},
+		{
+			APIID:          "binance-alt",
+			TargetExchange: trading.ExchangeBinance,
+			Result:         trading.OrderResult{APIID: "binance-alt", TargetExchange: trading.ExchangeBinance, InstID: "BTCUSDT", OrdID: "8001 / 8002", Leverage: 10},
+		},
+		{
+			APIID:          "default",
+			TargetExchange: trading.ExchangeOKX,
+			Result:         trading.OrderResult{APIID: "default", TargetExchange: trading.ExchangeOKX, InstID: "MISSING-USDT-SWAP", OrdID: "missing-ctval"},
+			Leverage:       3,
+		},
+	}
+	enrichAnalysisTrades(cfg, trades, records)
+	if trades[0].Leverage != 5 || trades[0].Margin != "200" || trades[0].NetPnL != "2.88" {
+		t.Fatalf("bad OKX enrichment: %#v", trades[0])
+	}
+	if trades[1].Leverage != 10 || trades[1].Margin != "192" || trades[1].NetPnL != "4.75" {
+		t.Fatalf("bad Binance enrichment: %#v", trades[1])
+	}
+	if trades[2].Leverage != 3 || trades[2].Margin != "" || trades[2].NetPnL != "0.99" {
+		t.Fatalf("missing ctVal should keep leverage/net pnl but omit margin: %#v", trades[2])
 	}
 }

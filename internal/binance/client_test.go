@@ -101,6 +101,52 @@ func TestClientUserTradesSignsPrivateRequest(t *testing.T) {
 	}
 }
 
+func TestClientIncomeHistorySignsPrivateRequest(t *testing.T) {
+	const secret = "unit-secret"
+	now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+	start := now.Add(-24 * time.Hour)
+	end := now
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/income" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-MBX-APIKEY") != "unit-key" {
+			t.Fatalf("missing API key header")
+		}
+		q := r.URL.Query()
+		if q.Get("symbol") != "BTCUSDT" || q.Get("incomeType") != "FUNDING_FEE" || q.Get("startTime") != strconv.FormatInt(start.UnixMilli(), 10) || q.Get("endTime") != strconv.FormatInt(end.UnixMilli(), 10) || q.Get("limit") != "1000" {
+			t.Fatalf("bad income query: %s", r.URL.RawQuery)
+		}
+		if q.Get("timestamp") != strconv.FormatInt(now.UnixMilli(), 10) {
+			t.Fatalf("bad timestamp: %s", r.URL.RawQuery)
+		}
+		payload, gotSig := splitSignatureTail(t, r.URL.RawQuery)
+		if payload != qWithoutSignature(q).Encode() {
+			t.Fatalf("signature payload does not match request query got=%s query=%s", payload, qWithoutSignature(q).Encode())
+		}
+		if gotSig != sign(payload, secret) {
+			t.Fatalf("bad signature got=%s payload=%s", gotSig, payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","incomeType":"FUNDING_FEE","income":"-0.12","asset":"USDT","time":1784880000000,"tranId":123}]`))
+	}))
+	defer ts.Close()
+
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "unit-key", SecretKey: secret},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return now },
+	}
+	incomes, err := client.IncomeHistory(context.Background(), "btcusdt", "funding_fee", start, end, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(incomes) != 1 || incomes[0].Symbol != "BTCUSDT" || incomes[0].IncomeType != "FUNDING_FEE" || incomes[0].Income != "-0.12" {
+		t.Fatalf("bad incomes: %#v", incomes)
+	}
+}
+
 func TestClientParsesAPIError(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
