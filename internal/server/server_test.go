@@ -839,6 +839,7 @@ func TestTVOrderAllowsUnconfiguredCoinpair(t *testing.T) {
 
 func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 	srv := newTestServer(t)
+	installOKXRetryTicker(t, srv, "BTC-USDT-SWAP", "50119", "50121", "50120")
 	signal := validSignal(t, srv)
 	signal.Action = trading.ActionShort
 	signal.APIID = "backup"
@@ -882,6 +883,7 @@ func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 	var retryResp struct {
 		SignalID string `json:"signal_id"`
 		RetryOf  string `json:"retry_of"`
+		Price    string `json:"price"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &retryResp); err != nil {
 		t.Fatal(err)
@@ -889,9 +891,12 @@ func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 	if retryResp.RetryOf != sourceID || retryResp.SignalID == "" || retryResp.SignalID == sourceID {
 		t.Fatalf("bad retry response: %#v", retryResp)
 	}
+	if retryResp.Price != "50120" {
+		t.Fatalf("retry response should include refreshed market price, got %#v", retryResp)
+	}
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
-		if got.Action != trading.ActionShort || got.APIID != "backup" || got.Coinpair != "BTC" || got.Price.Value != 50000 {
+		if got.Action != trading.ActionShort || got.APIID != "backup" || got.Coinpair != "BTC" || got.Price.Value != 50120 {
 			t.Fatalf("bad retry signal: %#v", got)
 		}
 		if got.Amount.Value != 100 || got.Risk.Type == "" {
@@ -910,6 +915,9 @@ func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 	}
 	if gotRetry.SignalID == sourceID {
 		t.Fatalf("retry should create a new record: %#v", gotRetry)
+	}
+	if gotRetry.Price != "50120" {
+		t.Fatalf("retry record should store refreshed market price: %#v", gotRetry)
 	}
 }
 
@@ -3344,6 +3352,25 @@ func newTestServer(t *testing.T) *Server {
 			return time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
 		},
 	}
+}
+
+func installOKXRetryTicker(t *testing.T, srv *Server, instID, bidPx, askPx, lastPx string) {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/market/ticker" {
+			t.Fatalf("unexpected OKX retry ticker path %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("instId") != instID {
+			t.Fatalf("bad OKX retry ticker query: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"` + instID + `","bidPx":"` + bidPx + `","askPx":"` + askPx + `","last":"` + lastPx + `","ts":"1784880000000"}]}`))
+	}))
+	t.Cleanup(ts.Close)
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = ts.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = ts.Client()
 }
 
 func waitOrderStatus(t *testing.T, store *storage.OrderStore, signalID string, want storage.OrderStatus) storage.OrderRecord {

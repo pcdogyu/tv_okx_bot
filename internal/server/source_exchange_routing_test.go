@@ -101,6 +101,7 @@ func TestTVOrderPreservesExplicitBinanceTargetForOKXSource(t *testing.T) {
 
 func TestOrderRetryPreservesStoredTargetExchange(t *testing.T) {
 	srv := newTestServer(t)
+	installOKXRetryTicker(t, srv, "BTC-USDT-SWAP", "50010", "50030", "50020")
 	signal := validSignal(t, srv)
 	signal.Exchange = "BINANCE"
 	signal.TargetExchange = trading.ExchangeOKX

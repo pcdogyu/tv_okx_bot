@@ -38,16 +38,21 @@ func TestOrderRetryExecutesBinanceTPSLFromStoredRisk(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
 		case "/fapi/v1/leverage":
 			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":8}`))
+		case "/fapi/v1/ticker/bookTicker":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" {
+				t.Fatalf("bad book ticker query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","bidPrice":"24999.9","bidQty":"1","askPrice":"25000.1","askQty":"2","time":1784880000000}`))
 		case "/fapi/v1/premiumIndex":
 			if r.URL.Query().Get("symbol") != "BTCUSDT" {
 				t.Fatalf("bad premium index query: %s", r.URL.RawQuery)
 			}
-			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","markPrice":"50000","indexPrice":"50000","lastFundingRate":"0","time":1784880000000}`))
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","markPrice":"25000","indexPrice":"25000","lastFundingRate":"0","time":1784880000000}`))
 		case "/fapi/v1/order":
 			mu.Lock()
 			orderForms = append(orderForms, cloneValues(r.Form))
 			mu.Unlock()
-			_, _ = w.Write([]byte(`{"orderId":321,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"0.002","executedQty":"0","type":"MARKET","side":"BUY"}`))
+			_, _ = w.Write([]byte(`{"orderId":321,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"0","origQty":"` + r.Form.Get("quantity") + `","executedQty":"0","type":"MARKET","side":"BUY"}`))
 		case "/fapi/v1/algoOrder":
 			mu.Lock()
 			algoForms = append(algoForms, cloneValues(r.Form))
@@ -116,9 +121,13 @@ func TestOrderRetryExecutesBinanceTPSLFromStoredRisk(t *testing.T) {
 	}
 	var retryResp struct {
 		SignalID string `json:"signal_id"`
+		Price    string `json:"price"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &retryResp); err != nil {
 		t.Fatal(err)
+	}
+	if retryResp.Price != "25000" {
+		t.Fatalf("retry should report refreshed Binance price, got %#v", retryResp)
 	}
 	waitOrderStatus(t, srv.Orders, retryResp.SignalID, storage.StatusSubmitted)
 
@@ -127,7 +136,7 @@ func TestOrderRetryExecutesBinanceTPSLFromStoredRisk(t *testing.T) {
 	if len(orderForms) != 1 {
 		t.Fatalf("expected one Binance main order, got %#v", orderForms)
 	}
-	if orderForms[0].Get("symbol") != "BTCUSDT" || orderForms[0].Get("side") != "BUY" || orderForms[0].Get("type") != "MARKET" || orderForms[0].Get("quantity") != "0.002" {
+	if orderForms[0].Get("symbol") != "BTCUSDT" || orderForms[0].Get("side") != "BUY" || orderForms[0].Get("type") != "MARKET" || orderForms[0].Get("quantity") != "0.004" {
 		t.Fatalf("bad retry order form: %#v", orderForms[0])
 	}
 	if len(algoForms) != 2 {

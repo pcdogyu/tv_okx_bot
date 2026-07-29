@@ -3768,7 +3768,8 @@ const tvbotHTML = `<!doctype html>
       renderOrders();
       try {
         const result = await api("/tvbot/orders/" + encodeURIComponent(signalID) + "/retry", { method: "POST" });
-        toast("重试已触发 " + asText(result.signal_id));
+        const retryPrice = result && result.price ? (" @ " + asText(result.price)) : "";
+        toast("按现价重试已触发 " + asText(result.signal_id) + retryPrice);
         await loadOrders();
         window.setTimeout(() => loadOrders().catch((err) => toast(err.message)), 1600);
       } finally {

@@ -819,7 +819,14 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 	}
 	cfg := s.ConfigStore.Get()
 	now := s.now()
-	signal, err := retrySignalFromRecord(source, cfg, now)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	price, err := s.currentRetryMarketPrice(ctx, cfg, source)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "retry_price_failed", err.Error())
+		return
+	}
+	signal, err := retrySignalFromRecord(source, cfg, now, price)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_retry_signal", err.Error())
 		return
@@ -843,13 +850,88 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		"status":    "accepted",
 		"signal_id": record.SignalID,
 		"retry_of":  source.SignalID,
+		"price":     trading.NormalizeFloat(signal.Price.Value),
 	})
 }
 
-func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.Time) (trading.Signal, error) {
-	price, err := parseOrderRecordFloat("price", rec.Price)
+func (s *Server) currentRetryMarketPrice(ctx context.Context, cfg config.Config, rec storage.OrderRecord) (float64, error) {
+	switch trading.NormalizeExchange(rec.TargetExchange) {
+	case trading.ExchangeBinance:
+		return s.currentBinanceRetryMarketPrice(ctx, cfg, rec)
+	default:
+		return s.currentOKXRetryMarketPrice(ctx, cfg, rec)
+	}
+}
+
+func (s *Server) currentOKXRetryMarketPrice(ctx context.Context, cfg config.Config, rec storage.OrderRecord) (float64, error) {
+	instID := strings.TrimSpace(rec.Result.InstID)
+	if instID != "" {
+		derived, _, err := okx.DeriveSwapInstrumentID(instID, "")
+		if err == nil {
+			instID = derived
+		}
+	}
+	if instID == "" {
+		if sym, ok := cfg.SymbolMeta(rec.Coinpair); ok {
+			instID = sym.InstID
+		}
+	}
+	if instID == "" {
+		var err error
+		instID, _, err = okx.DeriveSwapInstrumentID(rec.Coinpair, rec.Ticker)
+		if err != nil {
+			return 0, err
+		}
+	}
+	client := okx.Client{
+		BaseURL:    cfg.OKXBaseURL(),
+		Demo:       cfg.DemoTradingHeaderEnabled(),
+		HTTPClient: s.okxHTTPClient(),
+	}
+	ticker, _, err := client.MarketTicker(ctx, instID)
 	if err != nil {
-		return trading.Signal{}, err
+		return 0, fmt.Errorf("refresh OKX retry price for %s: %w", instID, err)
+	}
+	price, err := tickerMidPrice(ticker)
+	if err != nil {
+		return 0, err
+	}
+	return price, nil
+}
+
+func (s *Server) currentBinanceRetryMarketPrice(ctx context.Context, cfg config.Config, rec storage.OrderRecord) (float64, error) {
+	symbol := strings.TrimSpace(rec.Result.InstID)
+	if symbol != "" {
+		derived, err := binance.DeriveUSDMSymbol(symbol, rec.Ticker)
+		if err == nil {
+			symbol = derived
+		}
+	}
+	if symbol == "" {
+		var err error
+		symbol, err = binance.DeriveUSDMSymbol(rec.Coinpair, rec.Ticker)
+		if err != nil {
+			return 0, err
+		}
+	}
+	client := binance.Client{
+		BaseURL:    cfg.BinanceBaseURL(),
+		HTTPClient: s.binanceHTTPClient(),
+	}
+	ticker, err := client.BookTicker(ctx, symbol)
+	if err != nil {
+		return 0, fmt.Errorf("refresh Binance retry price for %s: %w", symbol, err)
+	}
+	price, err := binanceBookMidPrice(ticker)
+	if err != nil {
+		return 0, err
+	}
+	return price, nil
+}
+
+func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.Time, price float64) (trading.Signal, error) {
+	if price <= 0 {
+		return trading.Signal{}, fmt.Errorf("price %q is invalid: must be positive", trading.NormalizeFloat(price))
 	}
 	signal := trading.Signal{
 		Action:         rec.Action,
