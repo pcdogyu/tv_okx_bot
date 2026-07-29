@@ -1304,7 +1304,10 @@ const tvbotHTML = `<!doctype html>
 
     <section id="orders">
       <div class="section-head">
-        <h2>订单 / 信号历史</h2>
+        <div>
+          <h2>订单 / 信号历史</h2>
+          <span class="muted" id="order-history-status">-</span>
+        </div>
         <button class="btn" type="button" id="refresh-orders">刷新历史</button>
       </div>
       <table>
@@ -1313,6 +1316,11 @@ const tvbotHTML = `<!doctype html>
         </thead>
         <tbody id="order-rows"></tbody>
       </table>
+      <div class="analysis-pagination" style="margin-top:10px">
+        <button class="btn small" type="button" id="order-prev">上一页</button>
+        <span class="muted" id="order-page-info">-</span>
+        <button class="btn small" type="button" id="order-next">下一页</button>
+      </div>
     </section>
 
     <section id="menuSettings">
@@ -1364,6 +1372,8 @@ const tvbotHTML = `<!doctype html>
       apiKeyTestID: "",
       apiKeyTestExchange: "okx",
       orders: [],
+      ordersTotal: 0,
+      ordersPage: 1,
       retrying: {},
       positionClosing: {},
       positionProtecting: {},
@@ -1410,6 +1420,7 @@ const tvbotHTML = `<!doctype html>
     ];
     const positionExchanges = ["okx", "binance"];
     const globalExchangeStorageKey = "tvbot.selectedExchange";
+    const ordersPageSize = 20;
     const analysisTradePageSize = 20;
     const balanceWindowOptions = [
       { minutes: 0, label: "当前" },
@@ -1694,6 +1705,8 @@ const tvbotHTML = `<!doctype html>
       state.selectedExchange = selected;
       state.analysisTradePage = 1;
       state.orders = [];
+      state.ordersTotal = 0;
+      state.ordersPage = 1;
       state.positions = null;
       state.pendingOrders = null;
       try {
@@ -1704,7 +1717,7 @@ const tvbotHTML = `<!doctype html>
       renderAnalysis();
       renderOrders();
       updateMetrics();
-      loadOrders().catch((err) => toast(err.message));
+      loadOrders(true).catch((err) => toast(err.message));
       if (sectionActive("dashboard")) {
         loadBalanceOverview(true).then(() => renderDashboard()).catch((err) => toast(err.message));
       }
@@ -2396,10 +2409,23 @@ const tvbotHTML = `<!doctype html>
       renderBalanceOverview();
     }
 
-    async function loadOrders() {
-      const qs = new URLSearchParams({ limit: "50", exchange: activeExchange() });
+    function ordersTotalPages() {
+      return Math.max(1, Math.ceil(Number(state.ordersTotal || 0) / ordersPageSize));
+    }
+
+    async function loadOrders(resetPage) {
+      if (resetPage) state.ordersPage = 1;
+      state.ordersPage = Math.max(1, Number(state.ordersPage || 1));
+      const offset = (state.ordersPage - 1) * ordersPageSize;
+      const qs = new URLSearchParams({ limit: String(ordersPageSize), offset: String(offset), exchange: activeExchange() });
       const data = await api("/tvbot/orders?" + qs.toString());
       state.orders = data.orders || [];
+      state.ordersTotal = Number(data.total || 0);
+      const totalPages = ordersTotalPages();
+      if (state.ordersPage > totalPages) {
+        state.ordersPage = totalPages;
+        return loadOrders(false);
+      }
       renderOrders();
       updateMetrics();
     }
@@ -2605,7 +2631,7 @@ const tvbotHTML = `<!doctype html>
       $("metric-env").textContent = state.config && state.config.trading ? state.config.trading.env : "-";
       $("metric-api-keys").textContent = "OKX " + apiMetricText("okx") + " / Binance " + apiMetricText("binance");
       $("metric-amount").textContent = state.config && state.config.trading ? asText(state.config.trading.order_amount_usdt) + " USDT" : "-";
-      $("metric-orders").textContent = state.orders ? state.orders.length : "-";
+      $("metric-orders").textContent = Number.isFinite(Number(state.ordersTotal)) ? String(Number(state.ordersTotal || 0)) : (state.orders ? state.orders.length : "-");
     }
 
     function renderDashboard() {
@@ -3415,6 +3441,9 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderOrders() {
+      const total = Number(state.ordersTotal || 0);
+      const totalPages = ordersTotalPages();
+      state.ordersPage = Math.min(Math.max(1, Number(state.ordersPage || 1)), totalPages);
       const rows = (state.orders || []).map((order, index) => {
         const targetExchange = normalizeExchange(order.target_exchange || (order.result && order.result.target_exchange));
         const precisionInstID = order.result && order.result.inst_id ? order.result.inst_id : order.coinpair;
@@ -3444,6 +3473,22 @@ const tvbotHTML = `<!doctype html>
           "</tr>";
       });
       $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">-</td></tr>';
+      const status = $("order-history-status");
+      const pageInfo = $("order-page-info");
+      const prev = $("order-prev");
+      const next = $("order-next");
+      if (status) status.textContent = total ? ("共 " + total + " 条") : "-";
+      if (pageInfo) pageInfo.textContent = total ? ("第 " + state.ordersPage + " / " + totalPages + " 页") : "-";
+      if (prev) prev.disabled = state.ordersPage <= 1;
+      if (next) next.disabled = state.ordersPage >= totalPages;
+    }
+
+    function changeOrdersPage(delta) {
+      const totalPages = ordersTotalPages();
+      const nextPage = Math.min(Math.max(1, Number(state.ordersPage || 1) + delta), totalPages);
+      if (nextPage === state.ordersPage) return;
+      state.ordersPage = nextPage;
+      loadOrders(false).catch((err) => toast(err.message));
     }
 
     function renderUpgrade() {
@@ -3939,6 +3984,8 @@ const tvbotHTML = `<!doctype html>
       if (!button) return;
       retryOrder(button.dataset.retryId).catch((err) => toast(err.message));
     });
+    $("order-prev").addEventListener("click", () => changeOrdersPage(-1));
+    $("order-next").addEventListener("click", () => changeOrdersPage(1));
     $("position-rows").addEventListener("click", (event) => {
       const protectionButton = event.target.closest("button[data-position-protection]");
       if (protectionButton) {

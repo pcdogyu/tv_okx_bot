@@ -219,6 +219,19 @@ func (s *OrderStore) List(limit int) []OrderRecord {
 	return out
 }
 
+func (s *OrderStore) ListPage(limit, offset int) []OrderRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		records, err := s.listSQLitePageLocked(limit, offset)
+		if err == nil {
+			return records
+		}
+		return nil
+	}
+	return s.listPageMemoryLocked(limit, offset, "")
+}
+
 func (s *OrderStore) ListByTargetExchange(exchange string, limit int) []OrderRecord {
 	exchange = trading.NormalizeExchange(exchange)
 	s.mu.Lock()
@@ -240,6 +253,53 @@ func (s *OrderStore) ListByTargetExchange(exchange string, limit int) []OrderRec
 		}
 	}
 	return out
+}
+
+func (s *OrderStore) ListByTargetExchangePage(exchange string, limit, offset int) []OrderRecord {
+	exchange = trading.NormalizeExchange(exchange)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		records, err := s.listSQLiteByTargetExchangePageLocked(exchange, limit, offset)
+		if err == nil {
+			return records
+		}
+		return nil
+	}
+	return s.listPageMemoryLocked(limit, offset, exchange)
+}
+
+func (s *OrderStore) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		n, err := s.countSQLiteLocked("")
+		if err == nil {
+			return n
+		}
+		return 0
+	}
+	return len(s.state.Orders)
+}
+
+func (s *OrderStore) CountByTargetExchange(exchange string) int {
+	exchange = trading.NormalizeExchange(exchange)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		n, err := s.countSQLiteLocked(exchange)
+		if err == nil {
+			return n
+		}
+		return 0
+	}
+	n := 0
+	for i := range s.state.Orders {
+		if trading.NormalizeExchange(s.state.Orders[i].TargetExchange) == exchange {
+			n++
+		}
+	}
+	return n
 }
 
 func (s *OrderStore) Get(signalID string) (OrderRecord, bool) {
@@ -715,9 +775,19 @@ func (s *OrderStore) listSQLiteLocked(limit int) ([]OrderRecord, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	return s.listSQLitePageLocked(limit, 0)
+}
+
+func (s *OrderStore) listSQLitePageLocked(limit, offset int) ([]OrderRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
 		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
-		FROM orders ORDER BY accepted_at DESC, signal_id DESC LIMIT ?`, limit)
+		FROM orders ORDER BY accepted_at DESC, signal_id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -737,9 +807,19 @@ func (s *OrderStore) listSQLiteByTargetExchangeLocked(exchange string, limit int
 	if limit <= 0 {
 		limit = 50
 	}
+	return s.listSQLiteByTargetExchangePageLocked(exchange, limit, 0)
+}
+
+func (s *OrderStore) listSQLiteByTargetExchangePageLocked(exchange string, limit, offset int) ([]OrderRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
 		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
-		FROM orders WHERE target_exchange = ? ORDER BY accepted_at DESC, signal_id DESC LIMIT ?`, trading.NormalizeExchange(exchange), limit)
+		FROM orders WHERE target_exchange = ? ORDER BY accepted_at DESC, signal_id DESC LIMIT ? OFFSET ?`, trading.NormalizeExchange(exchange), limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -753,6 +833,39 @@ func (s *OrderStore) listSQLiteByTargetExchangeLocked(exchange string, limit int
 		out = append(out, rec)
 	}
 	return out, rows.Err()
+}
+
+func (s *OrderStore) countSQLiteLocked(exchange string) (int, error) {
+	if strings.TrimSpace(exchange) != "" {
+		var n int
+		err := s.db.QueryRow(`SELECT COUNT(*) FROM orders WHERE target_exchange = ?`, trading.NormalizeExchange(exchange)).Scan(&n)
+		return n, err
+	}
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM orders`).Scan(&n)
+	return n, err
+}
+
+func (s *OrderStore) listPageMemoryLocked(limit, offset int, exchange string) []OrderRecord {
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]OrderRecord, 0, min(limit, len(s.state.Orders)))
+	skipped := 0
+	for i := len(s.state.Orders) - 1; i >= 0 && len(out) < limit; i-- {
+		if exchange != "" && trading.NormalizeExchange(s.state.Orders[i].TargetExchange) != exchange {
+			continue
+		}
+		if skipped < offset {
+			skipped++
+			continue
+		}
+		out = append(out, s.state.Orders[i])
+	}
+	return out
 }
 
 func (s *OrderStore) findSQLiteLocked(signalID string) (OrderRecord, error) {

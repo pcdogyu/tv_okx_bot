@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -140,6 +141,57 @@ func TestOrderStoreListByTargetExchangeFiltersMemoryAndSQLite(t *testing.T) {
 		binance := store.ListByTargetExchange(trading.ExchangeBinance, 10)
 		if len(binance) != 1 || binance[0].TargetExchange != trading.ExchangeBinance || binance[0].Coinpair != "ETH" {
 			t.Fatalf("bad Binance filtered orders: %#v", binance)
+		}
+	}
+	t.Run("memory", func(t *testing.T) {
+		store, err := NewOrderStore("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run(t, store)
+	})
+	t.Run("sqlite", func(t *testing.T) {
+		store, err := NewSQLiteOrderStore(filepath.Join(t.TempDir(), "tvbot.db"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		run(t, store)
+	})
+}
+
+func TestOrderStoreListPageAndCountMemoryAndSQLite(t *testing.T) {
+	run := func(t *testing.T, store *OrderStore) {
+		t.Helper()
+		now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+		for i := 0; i < 5; i++ {
+			exchange := trading.ExchangeBinance
+			if i%2 == 0 {
+				exchange = trading.ExchangeOKX
+			}
+			signal := trading.Signal{
+				Action:         trading.ActionLong,
+				TargetExchange: exchange,
+				Coinpair:       "COIN" + strconv.Itoa(i),
+				Ticker:         "COIN" + strconv.Itoa(i) + "USDT",
+			}
+			if _, _, err := store.RecordAccepted(signal, "page-"+strconv.Itoa(i), now.Add(time.Duration(i)*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		page := store.ListPage(2, 1)
+		if len(page) != 2 || page[0].Coinpair != "COIN3" || page[1].Coinpair != "COIN2" {
+			t.Fatalf("bad unfiltered page: %#v", page)
+		}
+		okxPage := store.ListByTargetExchangePage(trading.ExchangeOKX, 1, 1)
+		if len(okxPage) != 1 || okxPage[0].Coinpair != "COIN2" {
+			t.Fatalf("bad OKX page: %#v", okxPage)
+		}
+		if got := store.Count(); got != 5 {
+			t.Fatalf("count = %d", got)
+		}
+		if got := store.CountByTargetExchange(trading.ExchangeOKX); got != 3 {
+			t.Fatalf("OKX count = %d", got)
 		}
 	}
 	t.Run("memory", func(t *testing.T) {

@@ -753,16 +753,39 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			offset = parsed
+		}
+	}
 	exchange := strings.TrimSpace(r.URL.Query().Get("exchange"))
+	var orders []storage.OrderRecord
+	var total int
 	if exchange != "" {
 		if !trading.ValidTargetExchange(exchange) {
 			writeError(w, http.StatusBadRequest, "invalid_exchange", "exchange must be okx or binance")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"orders": s.Orders.ListByTargetExchange(exchange, limit)})
-		return
+		orders = s.Orders.ListByTargetExchangePage(exchange, limit, offset)
+		total = s.Orders.CountByTargetExchange(exchange)
+	} else {
+		orders = s.Orders.ListPage(limit, offset)
+		total = s.Orders.Count()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"orders": s.Orders.List(limit)})
+	totalPages := 0
+	if limit > 0 && total > 0 {
+		totalPages = (total + limit - 1) / limit
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"orders":      orders,
+		"total":       total,
+		"limit":       limit,
+		"offset":      offset,
+		"page":        offset/limit + 1,
+		"page_size":   limit,
+		"total_pages": totalPages,
+	})
 }
 
 func isOrderRetryPath(path string) bool {

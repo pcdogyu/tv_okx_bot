@@ -745,6 +745,51 @@ func TestHandleOrdersFiltersByTargetExchange(t *testing.T) {
 	}
 }
 
+func TestHandleOrdersReturnsPaginatedMetadata(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Date(2026, 7, 24, 4, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		signal := validSignal(t, srv)
+		signal.TargetExchange = trading.ExchangeOKX
+		signal.Coinpair = fmt.Sprintf("COIN%d", i)
+		signal.Ticker = fmt.Sprintf("OKX:COIN%dUSDT.P", i)
+		if _, _, err := srv.Orders.RecordAccepted(signal, fmt.Sprintf("paged-okx-%d", i), now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binanceSignal := validSignal(t, srv)
+	binanceSignal.TargetExchange = trading.ExchangeBinance
+	binanceSignal.Coinpair = "BNB"
+	binanceSignal.Ticker = "BINANCE:BNBUSDT.P"
+	if _, _, err := srv.Orders.RecordAccepted(binanceSignal, "paged-binance", now.Add(10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/orders?limit=2&offset=2&exchange=okx", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("orders status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Orders     []storage.OrderRecord `json:"orders"`
+		Total      int                   `json:"total"`
+		Limit      int                   `json:"limit"`
+		Offset     int                   `json:"offset"`
+		Page       int                   `json:"page"`
+		TotalPages int                   `json:"total_pages"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 5 || resp.Limit != 2 || resp.Offset != 2 || resp.Page != 2 || resp.TotalPages != 3 {
+		t.Fatalf("bad pagination metadata: %#v", resp)
+	}
+	if len(resp.Orders) != 2 || resp.Orders[0].Coinpair != "COIN2" || resp.Orders[1].Coinpair != "COIN1" {
+		t.Fatalf("bad page orders: %#v", resp.Orders)
+	}
+}
+
 func TestTVOrderAllowsUnconfiguredCoinpair(t *testing.T) {
 	srv := newTestServer(t)
 	cfg := srv.ConfigStore.Get()
