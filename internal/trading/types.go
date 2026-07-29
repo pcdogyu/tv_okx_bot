@@ -134,19 +134,33 @@ type TemplateResponse struct {
 }
 
 type OrderResult struct {
-	SignalID       string `json:"signal_id"`
-	APIID          string `json:"api_id,omitempty"`
-	TargetExchange string `json:"target_exchange,omitempty"`
-	InstID         string `json:"inst_id"`
-	ClOrdID        string `json:"cl_ord_id"`
-	OrdType        string `json:"ord_type,omitempty"`
-	Px             string `json:"px,omitempty"`
-	Leverage       int    `json:"leverage,omitempty"`
-	OrdID          string `json:"ord_id,omitempty"`
-	OKXCode        string `json:"okx_code,omitempty"`
-	OKXMsg         string `json:"okx_msg,omitempty"`
-	BinanceCode    int    `json:"binance_code,omitempty"`
-	BinanceMsg     string `json:"binance_msg,omitempty"`
+	SignalID       string            `json:"signal_id"`
+	APIID          string            `json:"api_id,omitempty"`
+	TargetExchange string            `json:"target_exchange,omitempty"`
+	InstID         string            `json:"inst_id"`
+	ClOrdID        string            `json:"cl_ord_id"`
+	OrdType        string            `json:"ord_type,omitempty"`
+	Px             string            `json:"px,omitempty"`
+	Leverage       int               `json:"leverage,omitempty"`
+	OrdID          string            `json:"ord_id,omitempty"`
+	OKXCode        string            `json:"okx_code,omitempty"`
+	OKXMsg         string            `json:"okx_msg,omitempty"`
+	BinanceCode    int               `json:"binance_code,omitempty"`
+	BinanceMsg     string            `json:"binance_msg,omitempty"`
+	RiskOrders     []RiskOrderResult `json:"risk_orders,omitempty"`
+}
+
+type RiskOrderResult struct {
+	Exchange      string `json:"exchange,omitempty"`
+	AlgoID        string `json:"algo_id,omitempty"`
+	ClientAlgoID  string `json:"client_algo_id,omitempty"`
+	OrderType     string `json:"order_type,omitempty"`
+	Side          string `json:"side,omitempty"`
+	PositionSide  string `json:"position_side,omitempty"`
+	Quantity      string `json:"quantity,omitempty"`
+	TriggerPrice  string `json:"trigger_price,omitempty"`
+	ActivatePrice string `json:"activate_price,omitempty"`
+	CallbackRate  string `json:"callback_rate,omitempty"`
 }
 
 type Executor interface {

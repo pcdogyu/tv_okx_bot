@@ -36,23 +36,40 @@ type ServerConfig struct {
 }
 
 type TradingConfig struct {
-	Env                       string  `json:"env"`
-	AllowLiveTrading          bool    `json:"allow_live_trading"`
-	BaseURL                   string  `json:"base_url"`
-	BinanceBaseURL            string  `json:"binance_base_url"`
-	BinanceDemoBaseURL        string  `json:"binance_demo_base_url"`
-	DefaultMarginMode         string  `json:"default_margin_mode"`
-	PositionMode              string  `json:"position_mode"`
-	SignalTTLSeconds          int     `json:"signal_ttl_seconds"`
-	OrderAmountUSDT           float64 `json:"order_amount_usdt"`
-	Leverage                  int     `json:"leverage"`
-	OrderType                 string  `json:"order_type"`
-	RiskType                  string  `json:"risk_type"`
-	TakeProfitPct             float64 `json:"take_profit_pct"`
-	StopLossPct               float64 `json:"stop_loss_pct"`
-	TrailingPct               float64 `json:"trailing_pct"`
-	LongLimitPriceMultiplier  float64 `json:"long_limit_price_multiplier"`
-	ShortLimitPriceMultiplier float64 `json:"short_limit_price_multiplier"`
+	Env                       string            `json:"env"`
+	AllowLiveTrading          bool              `json:"allow_live_trading"`
+	BaseURL                   string            `json:"base_url"`
+	BinanceBaseURL            string            `json:"binance_base_url"`
+	BinanceDemoBaseURL        string            `json:"binance_demo_base_url"`
+	DefaultMarginMode         string            `json:"default_margin_mode"`
+	PositionMode              string            `json:"position_mode"`
+	SignalTTLSeconds          int               `json:"signal_ttl_seconds"`
+	OrderAmountUSDT           float64           `json:"order_amount_usdt"`
+	Leverage                  int               `json:"leverage"`
+	OrderType                 string            `json:"order_type"`
+	RiskType                  string            `json:"risk_type"`
+	TakeProfitPct             float64           `json:"take_profit_pct"`
+	StopLossPct               float64           `json:"stop_loss_pct"`
+	TrailingPct               float64           `json:"trailing_pct"`
+	LongLimitPriceMultiplier  float64           `json:"long_limit_price_multiplier"`
+	ShortLimitPriceMultiplier float64           `json:"short_limit_price_multiplier"`
+	FillMonitor               FillMonitorConfig `json:"fill_monitor"`
+	AutoReentry               AutoReentryConfig `json:"auto_reentry"`
+}
+
+type FillMonitorConfig struct {
+	Enabled             bool     `json:"enabled"`
+	PollIntervalSeconds int      `json:"poll_interval_seconds"`
+	LookbackHours       int      `json:"lookback_hours"`
+	Exchanges           []string `json:"exchange"`
+}
+
+type AutoReentryConfig struct {
+	Enabled                bool    `json:"enabled"`
+	MaxReentries           int     `json:"max_reentries"`
+	ReentryAmountPct       float64 `json:"reentry_amount_pct"`
+	CooldownAfterStopHours int     `json:"cooldown_after_stop_hours"`
+	OnlyBotOrders          bool    `json:"only_bot_orders"`
 }
 
 type SymbolConfig struct {
@@ -95,6 +112,7 @@ var DefaultMenuTabs = []string{
 	"orderSettings",
 	"template",
 	"orders",
+	"tradeMonitor",
 	MenuSettingsTab,
 	"upgrade",
 }
@@ -142,6 +160,7 @@ var defaultMenuLabels = map[string]string{
 	"orderSettings": "下单设置",
 	"template":      "告警模板",
 	"orders":        "订单",
+	"tradeMonitor":  "成交监听",
 	MenuSettingsTab: "菜单设置",
 	"upgrade":       "升级",
 }
@@ -169,6 +188,19 @@ func Default() Config {
 			TrailingPct:               1,
 			LongLimitPriceMultiplier:  0.997,
 			ShortLimitPriceMultiplier: 1.003,
+			FillMonitor: FillMonitorConfig{
+				Enabled:             true,
+				PollIntervalSeconds: 20,
+				LookbackHours:       72,
+				Exchanges:           []string{trading.ExchangeBinance},
+			},
+			AutoReentry: AutoReentryConfig{
+				Enabled:                false,
+				MaxReentries:           1,
+				ReentryAmountPct:       50,
+				CooldownAfterStopHours: 24,
+				OnlyBotOrders:          true,
+			},
 		},
 		Symbols: map[string]SymbolConfig{
 			"BTC": {
@@ -296,6 +328,25 @@ func (c *Config) Normalize() {
 	if c.Trading.ShortLimitPriceMultiplier <= 0 {
 		c.Trading.ShortLimitPriceMultiplier = 1.003
 	}
+	if c.Trading.FillMonitor.PollIntervalSeconds <= 0 {
+		c.Trading.FillMonitor.PollIntervalSeconds = 20
+	}
+	if c.Trading.FillMonitor.LookbackHours <= 0 {
+		c.Trading.FillMonitor.LookbackHours = 72
+	}
+	c.Trading.FillMonitor.Exchanges = normalizeFillMonitorExchanges(c.Trading.FillMonitor.Exchanges)
+	if c.Trading.AutoReentry.MaxReentries <= 0 {
+		c.Trading.AutoReentry.MaxReentries = 1
+	}
+	if c.Trading.AutoReentry.ReentryAmountPct <= 0 {
+		c.Trading.AutoReentry.ReentryAmountPct = 50
+	}
+	if c.Trading.AutoReentry.CooldownAfterStopHours <= 0 {
+		c.Trading.AutoReentry.CooldownAfterStopHours = 24
+	}
+	if !c.Trading.AutoReentry.OnlyBotOrders {
+		c.Trading.AutoReentry.OnlyBotOrders = true
+	}
 	if c.Symbols == nil {
 		c.Symbols = map[string]SymbolConfig{}
 	}
@@ -356,6 +407,26 @@ func (c Config) Validate() error {
 	if c.Trading.LongLimitPriceMultiplier <= 0 || c.Trading.ShortLimitPriceMultiplier <= 0 {
 		return errors.New("limit price multipliers must be positive")
 	}
+	if c.Trading.FillMonitor.PollIntervalSeconds <= 0 {
+		return errors.New("fill_monitor.poll_interval_seconds must be positive")
+	}
+	if c.Trading.FillMonitor.LookbackHours <= 0 {
+		return errors.New("fill_monitor.lookback_hours must be positive")
+	}
+	for _, exchange := range c.Trading.FillMonitor.Exchanges {
+		if trading.NormalizeExchange(exchange) != trading.ExchangeBinance {
+			return fmt.Errorf("fill_monitor.exchange only supports %q in this version", trading.ExchangeBinance)
+		}
+	}
+	if c.Trading.AutoReentry.MaxReentries <= 0 {
+		return errors.New("auto_reentry.max_reentries must be positive")
+	}
+	if c.Trading.AutoReentry.ReentryAmountPct <= 0 || c.Trading.AutoReentry.ReentryAmountPct > 100 {
+		return errors.New("auto_reentry.reentry_amount_pct must be greater than 0 and at most 100")
+	}
+	if c.Trading.AutoReentry.CooldownAfterStopHours <= 0 {
+		return errors.New("auto_reentry.cooldown_after_stop_hours must be positive")
+	}
 	for key, sym := range c.Symbols {
 		if sym.Coinpair == "" || sym.InstID == "" {
 			return fmt.Errorf("symbol %q requires coinpair and inst_id", key)
@@ -368,6 +439,26 @@ func (c Config) Validate() error {
 		return errors.New("menuSettings must be visible")
 	}
 	return nil
+}
+
+func normalizeFillMonitorExchanges(exchanges []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(exchanges))
+	for _, exchange := range exchanges {
+		if strings.TrimSpace(exchange) == "" {
+			continue
+		}
+		normalized := trading.NormalizeExchange(exchange)
+		if normalized == "" || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		out = append(out, normalized)
+	}
+	if len(out) == 0 {
+		out = append(out, trading.ExchangeBinance)
+	}
+	return out
 }
 
 func defaultMenuItems() []MenuItemConfig {

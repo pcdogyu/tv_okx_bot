@@ -961,6 +961,7 @@ const tvbotHTML = `<!doctype html>
           <button type="button" data-tab="orderSettings">下单设置</button>
           <button type="button" data-tab="template">告警模板</button>
           <button type="button" data-tab="orders">订单</button>
+          <button type="button" data-tab="tradeMonitor">成交监听</button>
           <button type="button" data-tab="menuSettings">菜单设置</button>
           <button type="button" data-tab="upgrade">升级</button>
         </nav>
@@ -1321,6 +1322,49 @@ const tvbotHTML = `<!doctype html>
       </div>
     </section>
 
+    <section id="tradeMonitor">
+      <div class="section-head">
+        <div>
+          <h2>成交监听</h2>
+          <span class="muted" id="trade-monitor-status">-</span>
+        </div>
+        <button class="btn" type="button" id="refresh-trade-monitor">刷新状态</button>
+      </div>
+      <div class="analysis-metrics symbol-metrics">
+        <div class="analysis-card"><div class="label">监听状态</div><div class="value" id="trade-monitor-running">-</div></div>
+        <div class="analysis-card"><div class="label">自动补回</div><div class="value" id="trade-monitor-reentry">-</div></div>
+        <div class="analysis-card"><div class="label">Lifecycle</div><div class="value" id="trade-monitor-lifecycle-count">-</div></div>
+        <div class="analysis-card"><div class="label">最近事件</div><div class="value" id="trade-monitor-event-count">-</div></div>
+      </div>
+      <div class="section-head" style="margin:18px 0 10px">
+        <h3>监听 Checkpoint</h3>
+      </div>
+      <div class="symbol-table-wrap">
+        <table class="symbol-table">
+          <thead><tr><th>交易所</th><th>API</th><th>Symbol</th><th>最近成交</th><th>最近轮询</th><th>错误</th></tr></thead>
+          <tbody id="trade-monitor-checkpoints"></tbody>
+        </table>
+      </div>
+      <div class="section-head" style="margin:18px 0 10px">
+        <h3>Lifecycle</h3>
+      </div>
+      <div class="symbol-table-wrap">
+        <table class="symbol-table">
+          <thead><tr><th>最近更新</th><th>状态</th><th>API</th><th>Symbol</th><th>方向</th><th>入口订单</th><th>退出订单</th><th>补回</th></tr></thead>
+          <tbody id="trade-monitor-lifecycles"></tbody>
+        </table>
+      </div>
+      <div class="section-head" style="margin:18px 0 10px">
+        <h3>最近事件</h3>
+      </div>
+      <div class="symbol-table-wrap">
+        <table class="symbol-table">
+          <thead><tr><th>时间</th><th>事件</th><th>API</th><th>Symbol</th><th>状态</th><th>说明</th></tr></thead>
+          <tbody id="trade-monitor-events"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="menuSettings">
       <div class="section-head">
         <h2>菜单设置</h2>
@@ -1390,6 +1434,8 @@ const tvbotHTML = `<!doctype html>
       pendingOrdersError: "",
       symbols: null,
       symbolsError: "",
+      tradeMonitor: null,
+      tradeMonitorError: "",
       upgrade: null
     };
     let positionViewPollTimer = null;
@@ -1413,6 +1459,7 @@ const tvbotHTML = `<!doctype html>
       { tab: "orderSettings", label: "下单设置" },
       { tab: "template", label: "告警模板" },
       { tab: "orders", label: "订单" },
+      { tab: "tradeMonitor", label: "成交监听" },
       { tab: "menuSettings", label: "菜单设置", locked: true },
       { tab: "upgrade", label: "升级" }
     ];
@@ -2369,6 +2416,9 @@ const tvbotHTML = `<!doctype html>
       if (target === "symbols" && !state.symbols) {
         loadSymbols(true).catch((err) => toast(err.message));
       }
+      if (target === "tradeMonitor" && !state.tradeMonitor) {
+        loadTradeMonitor().catch((err) => toast(err.message));
+      }
     }
 
     function initialTab() {
@@ -2379,7 +2429,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadAll() {
-      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadUpgrade(), loadBalanceOverview()]);
+      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadTradeMonitor(), loadUpgrade(), loadBalanceOverview()]);
       await loadAnalysis(false);
       renderDashboard();
     }
@@ -2447,6 +2497,21 @@ const tvbotHTML = `<!doctype html>
       state.upgrade = await api("/upgrade");
       renderUpgrade();
       updateMetrics();
+    }
+
+    async function loadTradeMonitor() {
+      try {
+        state.tradeMonitor = await api("/tvbot/trade-monitor?exchange=binance");
+        const errors = Array.isArray(state.tradeMonitor.errors) ? state.tradeMonitor.errors : [];
+        state.tradeMonitorError = errors.join(" / ");
+      } catch (err) {
+        state.tradeMonitor = null;
+        state.tradeMonitorError = err.message;
+        renderTradeMonitor();
+        throw err;
+      }
+      renderTradeMonitor();
+      renderDashboard();
     }
 
     async function loadAnalysis(refresh) {
@@ -2651,6 +2716,9 @@ const tvbotHTML = `<!doctype html>
       if (!state.config) return;
       renderGlobalExchangeSwitch();
       const t = state.config.trading || {};
+      const fillMonitor = t.fill_monitor || {};
+      const fillMonitorExchanges = Array.isArray(fillMonitor.exchange) ? fillMonitor.exchange.join(", ") : "binance";
+      const autoReentry = t.auto_reentry || {};
       const rows = [
         ["服务地址", state.config.server ? state.config.server.addr : "-"],
         ["数据文件", state.config.data_file],
@@ -2668,7 +2736,9 @@ const tvbotHTML = `<!doctype html>
         ["订单类型", orderTypeText(t.order_type || "market")],
         ["风控模式", riskText(t.risk_type)],
         ["多单限价", "当前价格 x " + asText(t.long_limit_price_multiplier)],
-        ["空单限价", "当前价格 x " + asText(t.short_limit_price_multiplier)]
+        ["空单限价", "当前价格 x " + asText(t.short_limit_price_multiplier)],
+        ["成交监听", fillMonitor.enabled ? ("enabled / " + fillMonitorExchanges + " / " + asText(fillMonitor.poll_interval_seconds) + "s") : "disabled"],
+        ["自动补回", autoReentry.enabled ? ("enabled / " + asText(autoReentry.reentry_amount_pct) + "%") : "disabled"]
       ];
       $("dashboard-config").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(asText(row[1])) + "</td></tr>").join("");
       renderBalanceOverview();
@@ -3623,6 +3693,107 @@ const tvbotHTML = `<!doctype html>
       loadOrders(false).catch((err) => toast(err.message));
     }
 
+    function tradeMonitorTime(value) {
+      if (!value) return "-";
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) return shanghaiTime(numeric);
+      return shanghaiTime(value);
+    }
+
+    function tradeMonitorStatusText(value) {
+      const status = String(value || "").toLowerCase();
+      if (status === "entry_pending") return "等待入口";
+      if (status === "open") return "持仓中";
+      if (status === "exited") return "已退出";
+      if (status === "sl_hit") return "止损";
+      if (status === "tp_hit") return "止盈";
+      if (status === "reentry_submitted") return "已补回";
+      if (status === "cooldown") return "冷却";
+      if (status === "blocked") return "阻止";
+      return asText(value);
+    }
+
+    function tradeMonitorStatusTone(value) {
+      const status = String(value || "").toLowerCase();
+      if (status === "open" || status === "tp_hit" || status === "reentry_submitted") return "ok";
+      if (status === "sl_hit" || status === "cooldown" || status === "blocked") return "warn";
+      return "";
+    }
+
+    function tradeMonitorEventText(value) {
+      const eventType = String(value || "").toLowerCase();
+      if (eventType === "poll_error") return "轮询错误";
+      if (eventType === "lifecycle_open") return "入口成交";
+      if (eventType === "lifecycle_exit") return "退出成交";
+      if (eventType === "auto_reentry_cooldown") return "补回冷却";
+      if (eventType === "auto_reentry_blocked") return "补回阻止";
+      if (eventType === "auto_reentry_failed") return "补回失败";
+      if (eventType === "auto_reentry_submitted") return "补回提交";
+      return asText(value);
+    }
+
+    function tradeMonitorActionText(action) {
+      const value = String(action || "").toLowerCase();
+      if (value === "buy") return "多";
+      if (value === "sell") return "空";
+      return asText(action);
+    }
+
+    function tradeMonitorListText(values) {
+      if (!Array.isArray(values) || values.length === 0) return "-";
+      return values.filter((item) => item !== null && item !== undefined && String(item).trim() !== "").join(", ") || "-";
+    }
+
+    function renderTradeMonitor() {
+      const data = state.tradeMonitor || {};
+      const checkpoints = Array.isArray(data.checkpoints) ? data.checkpoints : [];
+      const lifecycles = Array.isArray(data.lifecycles) ? data.lifecycles : [];
+      const events = Array.isArray(data.events) ? data.events : [];
+      const fillMonitor = data.fill_monitor || {};
+      const autoReentry = data.auto_reentry || {};
+      const statusText = state.tradeMonitorError || (data.updated_at ? "更新于 " + shanghaiTime(data.updated_at) : "-");
+      $("trade-monitor-status").textContent = statusText;
+      $("trade-monitor-running").textContent = data.running ? "running" : (fillMonitor.enabled ? "waiting" : "disabled");
+      $("trade-monitor-reentry").textContent = autoReentry.enabled ? ("enabled / " + asText(autoReentry.reentry_amount_pct) + "%") : "disabled";
+      $("trade-monitor-lifecycle-count").textContent = asText(lifecycles.length);
+      $("trade-monitor-event-count").textContent = asText(events.length);
+      $("trade-monitor-checkpoints").innerHTML = checkpoints.map((row) => {
+        return "<tr>" +
+          "<td>" + escapeHTML(exchangeLabel(row.exchange)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.api_id)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.symbol)) + "</td>" +
+          "<td>" + escapeHTML(tradeMonitorTime(row.last_fill_time)) + "</td>" +
+          "<td>" + escapeHTML(tradeMonitorTime(row.last_polled_at)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.last_error)) + "</td>" +
+          "</tr>";
+      }).join("") || '<tr><td colspan="6" class="muted">暂无 checkpoint</td></tr>';
+      $("trade-monitor-lifecycles").innerHTML = lifecycles.map((row) => {
+        const entryIDs = tradeMonitorListText(row.entry_order_ids);
+        const exitID = row.exit_price ? (asText(row.exit_price) + " / " + asText(row.realized_pnl) + " USDT") : "-";
+        const reentry = row.reentry_signal_id ? asText(row.reentry_signal_id) : ("次数 " + asText(row.reentry_count || 0));
+        return "<tr>" +
+          '<td class="time">' + escapeHTML(tradeMonitorTime(row.updated_at)) + "</td>" +
+          "<td>" + pill(tradeMonitorStatusText(row.status), tradeMonitorStatusTone(row.status)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.api_id)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.symbol)) + "</td>" +
+          "<td>" + escapeHTML(tradeMonitorActionText(row.action)) + "</td>" +
+          "<td>" + escapeHTML(entryIDs) + "</td>" +
+          "<td>" + escapeHTML(exitID) + "</td>" +
+          "<td>" + escapeHTML(reentry) + "</td>" +
+          "</tr>";
+      }).join("") || '<tr><td colspan="8" class="muted">暂无 lifecycle</td></tr>';
+      $("trade-monitor-events").innerHTML = events.map((row) => {
+        return "<tr>" +
+          '<td class="time">' + escapeHTML(tradeMonitorTime(row.event_time)) + "</td>" +
+          "<td>" + escapeHTML(tradeMonitorEventText(row.event_type)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.api_id)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.symbol)) + "</td>" +
+          "<td>" + escapeHTML(tradeMonitorStatusText(row.status)) + "</td>" +
+          "<td>" + escapeHTML(asText(row.message)) + "</td>" +
+          "</tr>";
+      }).join("") || '<tr><td colspan="6" class="muted">暂无事件</td></tr>';
+    }
+
     function renderUpgrade() {
       $("upgrade-output").textContent = JSON.stringify(state.upgrade || {}, null, 2);
     }
@@ -4119,6 +4290,7 @@ const tvbotHTML = `<!doctype html>
     });
     $("order-prev").addEventListener("click", () => changeOrdersPage(-1));
     $("order-next").addEventListener("click", () => changeOrdersPage(1));
+    $("refresh-trade-monitor").addEventListener("click", () => loadTradeMonitor().then(() => toast("成交监听已刷新")).catch((err) => toast(err.message)));
     $("position-rows").addEventListener("click", (event) => {
       const protectionButton = event.target.closest("button[data-position-protection]");
       if (protectionButton) {

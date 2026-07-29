@@ -21,7 +21,20 @@
     "stop_loss_pct": 1,
     "trailing_pct": 1,
     "long_limit_price_multiplier": 0.997,
-    "short_limit_price_multiplier": 1.003
+    "short_limit_price_multiplier": 1.003,
+    "fill_monitor": {
+      "enabled": true,
+      "poll_interval_seconds": 20,
+      "lookback_hours": 72,
+      "exchange": ["binance"]
+    },
+    "auto_reentry": {
+      "enabled": false,
+      "max_reentries": 1,
+      "reentry_amount_pct": 50,
+      "cooldown_after_stop_hours": 24,
+      "only_bot_orders": true
+    }
   },
   "symbols": {
     "BTC": {
@@ -51,6 +64,7 @@
       { "tab": "orderSettings", "hidden": false, "label": "下单设置" },
       { "tab": "template", "hidden": false, "label": "告警模板" },
       { "tab": "orders", "hidden": false, "label": "订单" },
+      { "tab": "tradeMonitor", "hidden": false, "label": "成交监听" },
       { "tab": "menuSettings", "hidden": false, "label": "菜单设置" },
       { "tab": "upgrade", "hidden": false, "label": "升级" }
     ],

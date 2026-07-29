@@ -324,6 +324,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handleTemplates(w, r)
 	case path == "/orders":
 		s.handleOrders(w, r)
+	case path == "/trade-monitor":
+		s.handleTradeMonitor(w, r)
 	case isOrderRetryPath(path):
 		s.handleOrderRetry(w, r, path)
 	case path == "/analysis":
@@ -1325,23 +1327,25 @@ type serverPatch struct {
 }
 
 type tradingPatch struct {
-	Env                       *string  `json:"env"`
-	AllowLiveTrading          *bool    `json:"allow_live_trading"`
-	BaseURL                   *string  `json:"base_url"`
-	BinanceBaseURL            *string  `json:"binance_base_url"`
-	BinanceDemoBaseURL        *string  `json:"binance_demo_base_url"`
-	DefaultMarginMode         *string  `json:"default_margin_mode"`
-	PositionMode              *string  `json:"position_mode"`
-	SignalTTLSeconds          *int     `json:"signal_ttl_seconds"`
-	OrderAmountUSDT           *float64 `json:"order_amount_usdt"`
-	Leverage                  *int     `json:"leverage"`
-	OrderType                 *string  `json:"order_type"`
-	RiskType                  *string  `json:"risk_type"`
-	TakeProfitPct             *float64 `json:"take_profit_pct"`
-	StopLossPct               *float64 `json:"stop_loss_pct"`
-	TrailingPct               *float64 `json:"trailing_pct"`
-	LongLimitPriceMultiplier  *float64 `json:"long_limit_price_multiplier"`
-	ShortLimitPriceMultiplier *float64 `json:"short_limit_price_multiplier"`
+	Env                       *string                   `json:"env"`
+	AllowLiveTrading          *bool                     `json:"allow_live_trading"`
+	BaseURL                   *string                   `json:"base_url"`
+	BinanceBaseURL            *string                   `json:"binance_base_url"`
+	BinanceDemoBaseURL        *string                   `json:"binance_demo_base_url"`
+	DefaultMarginMode         *string                   `json:"default_margin_mode"`
+	PositionMode              *string                   `json:"position_mode"`
+	SignalTTLSeconds          *int                      `json:"signal_ttl_seconds"`
+	OrderAmountUSDT           *float64                  `json:"order_amount_usdt"`
+	Leverage                  *int                      `json:"leverage"`
+	OrderType                 *string                   `json:"order_type"`
+	RiskType                  *string                   `json:"risk_type"`
+	TakeProfitPct             *float64                  `json:"take_profit_pct"`
+	StopLossPct               *float64                  `json:"stop_loss_pct"`
+	TrailingPct               *float64                  `json:"trailing_pct"`
+	LongLimitPriceMultiplier  *float64                  `json:"long_limit_price_multiplier"`
+	ShortLimitPriceMultiplier *float64                  `json:"short_limit_price_multiplier"`
+	FillMonitor               *config.FillMonitorConfig `json:"fill_monitor"`
+	AutoReentry               *config.AutoReentryConfig `json:"auto_reentry"`
 }
 
 type uiPatch struct {
@@ -1424,6 +1428,12 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.Trading.ShortLimitPriceMultiplier != nil {
 		c.Trading.ShortLimitPriceMultiplier = *patch.Trading.ShortLimitPriceMultiplier
+	}
+	if patch.Trading.FillMonitor != nil {
+		c.Trading.FillMonitor = *patch.Trading.FillMonitor
+	}
+	if patch.Trading.AutoReentry != nil {
+		c.Trading.AutoReentry = *patch.Trading.AutoReentry
 	}
 }
 

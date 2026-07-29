@@ -61,9 +61,10 @@ Future AI agents should read `AGENTS.md` before making changes. It records the d
 
 - `GET /` returns `302` to `https://www.mext.go.jp/`.
 - `POST /tvorder` accepts TradingView alerts.
-- `/tvbot/` is the browser dashboard. `/tvbot/config`, `/tvbot/api-keys`, `/tvbot/api-keys/test`, `/tvbot/templates`, `/tvbot/orders`, and `/tvbot/check-okx` remain JSON APIs. Admin access accepts browser Basic Auth. Default credentials are `admin` / `Admin123`. `X-Admin-Token` is still supported when `ADMIN_TOKEN` is set.
+- `/tvbot/` is the browser dashboard. `/tvbot/config`, `/tvbot/api-keys`, `/tvbot/api-keys/test`, `/tvbot/templates`, `/tvbot/orders`, `/tvbot/trade-monitor`, and `/tvbot/check-okx` remain JSON APIs. Admin access accepts browser Basic Auth. Default credentials are `admin` / `Admin123`. `X-Admin-Token` is still supported when `ADMIN_TOKEN` is set.
 - `TradingView` alert JSON can include optional `api_id` and `target_exchange`; when omitted the active OKX API is used for backward compatibility. The existing `exchange` field remains the TradingView signal source.
 - OKX orders keep the existing behavior. Binance USD-M Futures supports market and limit entries; `tp_sl` places protective Binance algo orders after the main order, while Binance trailing stop is explicitly rejected in this version.
+- Binance USD-M fills are monitored server-side through REST polling when `trading.fill_monitor.enabled` is true. The monitor persists fills, checkpoints, lifecycle state, and events in SQLite; `trading.auto_reentry.enabled` defaults to false.
 - `POST /upgrade` runs `git pull --ff-only`, `go test ./...`, `go build`, replaces the service binary, and restarts the Ubuntu systemd service.
 - `GET /upgrade` returns the latest upgrade status.
 - Every other path returns local JSON `404`.

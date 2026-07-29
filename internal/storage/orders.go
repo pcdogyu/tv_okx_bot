@@ -437,6 +437,84 @@ func (s *OrderStore) migrateSQLite() error {
 			PRIMARY KEY(exchange, api_id, env, bucket_ts)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_usdt_balance_snapshots_time ON usdt_balance_snapshots(exchange, api_id, env, bucket_ts)`,
+		`CREATE TABLE IF NOT EXISTS binance_fills (
+			api_id TEXT NOT NULL,
+			symbol TEXT NOT NULL,
+			trade_id TEXT NOT NULL,
+			order_id TEXT,
+			side TEXT,
+			position_side TEXT,
+			price TEXT,
+			qty TEXT,
+			quote_qty TEXT,
+			realized_pnl TEXT,
+			commission TEXT,
+			commission_asset TEXT,
+			buyer INTEGER NOT NULL DEFAULT 0,
+			maker INTEGER NOT NULL DEFAULT 0,
+			fill_time INTEGER NOT NULL,
+			raw_json TEXT,
+			fetched_at TEXT NOT NULL,
+			PRIMARY KEY(api_id, symbol, trade_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_binance_fills_time ON binance_fills(api_id, symbol, fill_time)`,
+		`CREATE TABLE IF NOT EXISTS trade_lifecycles (
+			lifecycle_id TEXT PRIMARY KEY,
+			source_signal_id TEXT NOT NULL,
+			root_signal_id TEXT NOT NULL,
+			reentry_of_lifecycle_id TEXT,
+			reentry_signal_id TEXT,
+			exchange TEXT NOT NULL,
+			api_id TEXT NOT NULL,
+			symbol TEXT NOT NULL,
+			action TEXT NOT NULL,
+			status TEXT NOT NULL,
+			entry_order_ids TEXT,
+			entry_client_order_ids TEXT,
+			tp_algo_ids TEXT,
+			tp_client_algo_ids TEXT,
+			tp_trigger_prices TEXT,
+			sl_algo_ids TEXT,
+			sl_client_algo_ids TEXT,
+			sl_trigger_prices TEXT,
+			entry_price TEXT,
+			entry_qty TEXT,
+			exit_price TEXT,
+			exit_qty TEXT,
+			realized_pnl TEXT,
+			reentry_count INTEGER NOT NULL DEFAULT 0,
+			cooldown_until TEXT,
+			last_fill_time INTEGER,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_trade_lifecycles_status ON trade_lifecycles(exchange, api_id, symbol, status)`,
+		`CREATE TABLE IF NOT EXISTS trade_monitor_checkpoints (
+			exchange TEXT NOT NULL,
+			api_id TEXT NOT NULL,
+			symbol TEXT NOT NULL,
+			last_fill_time INTEGER NOT NULL DEFAULT 0,
+			last_trade_id TEXT,
+			last_polled_at TEXT NOT NULL,
+			last_error TEXT,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY(exchange, api_id, symbol)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_trade_monitor_checkpoints_time ON trade_monitor_checkpoints(exchange, api_id, updated_at)`,
+		`CREATE TABLE IF NOT EXISTS trade_monitor_events (
+			event_id TEXT PRIMARY KEY,
+			event_time TEXT NOT NULL,
+			exchange TEXT NOT NULL,
+			api_id TEXT NOT NULL,
+			symbol TEXT,
+			lifecycle_id TEXT,
+			source_signal_id TEXT,
+			event_type TEXT NOT NULL,
+			status TEXT,
+			message TEXT,
+			raw_json TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_trade_monitor_events_time ON trade_monitor_events(event_time)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -719,6 +797,23 @@ func (s *OrderStore) markFailedSQLiteLocked(signalID string, failErr error, now 
 	return nil
 }
 
+func orderResultPresent(result trading.OrderResult) bool {
+	return strings.TrimSpace(result.SignalID) != "" ||
+		strings.TrimSpace(result.APIID) != "" ||
+		strings.TrimSpace(result.TargetExchange) != "" ||
+		strings.TrimSpace(result.InstID) != "" ||
+		strings.TrimSpace(result.ClOrdID) != "" ||
+		strings.TrimSpace(result.OrdType) != "" ||
+		strings.TrimSpace(result.Px) != "" ||
+		strings.TrimSpace(result.OrdID) != "" ||
+		strings.TrimSpace(result.OKXCode) != "" ||
+		strings.TrimSpace(result.OKXMsg) != "" ||
+		result.BinanceCode != 0 ||
+		strings.TrimSpace(result.BinanceMsg) != "" ||
+		result.Leverage != 0 ||
+		len(result.RiskOrders) > 0
+}
+
 func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 	if rec.AcceptedAt.IsZero() {
 		rec.AcceptedAt = time.Now().UTC()
@@ -727,7 +822,7 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 		rec.UpdatedAt = rec.AcceptedAt
 	}
 	resultJSON := ""
-	if rec.Result != (trading.OrderResult{}) {
+	if orderResultPresent(rec.Result) {
 		b, err := json.Marshal(rec.Result)
 		if err != nil {
 			return err

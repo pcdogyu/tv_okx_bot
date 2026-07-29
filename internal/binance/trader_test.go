@@ -49,7 +49,9 @@ func TestTraderPlacesLimitOrderAndTPSLAlgoOrders(t *testing.T) {
 			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"49850","origQty":"0.002","executedQty":"0","type":"LIMIT","side":"BUY"}`))
 		case "/fapi/v1/algoOrder":
 			algoForms = append(algoForms, cloneValues(r.Form))
-			_, _ = w.Write([]byte(`{"algoId":456,"clientAlgoId":"algo","orderType":"TAKE_PROFIT_MARKET","symbol":"BTCUSDT","side":"SELL","quantity":"0.002","algoStatus":"NEW","triggerPrice":"50847"}`))
+			orderType := r.Form.Get("type")
+			triggerPrice := r.Form.Get("triggerPrice")
+			_, _ = w.Write([]byte(`{"algoId":456,"clientAlgoId":"algo","orderType":"` + orderType + `","symbol":"BTCUSDT","side":"SELL","quantity":"0.002","algoStatus":"NEW","triggerPrice":"` + triggerPrice + `"}`))
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -82,6 +84,19 @@ func TestTraderPlacesLimitOrderAndTPSLAlgoOrders(t *testing.T) {
 	}
 	if result.TargetExchange != trading.ExchangeBinance || result.OrdID != "123" || result.Px != "49850" {
 		t.Fatalf("bad result: %#v", result)
+	}
+	if len(result.RiskOrders) != 2 {
+		t.Fatalf("expected TP/SL risk order metadata, got %#v", result.RiskOrders)
+	}
+	riskByType := map[string]trading.RiskOrderResult{}
+	for _, order := range result.RiskOrders {
+		riskByType[order.OrderType] = order
+	}
+	if riskByType["TAKE_PROFIT_MARKET"].AlgoID != "456" || riskByType["TAKE_PROFIT_MARKET"].ClientAlgoID == "" || riskByType["TAKE_PROFIT_MARKET"].TriggerPrice != "50847" {
+		t.Fatalf("bad TP risk order metadata: %#v", riskByType["TAKE_PROFIT_MARKET"])
+	}
+	if riskByType["STOP_MARKET"].AlgoID != "456" || riskByType["STOP_MARKET"].ClientAlgoID == "" || riskByType["STOP_MARKET"].TriggerPrice != "49351.5" {
+		t.Fatalf("bad SL risk order metadata: %#v", riskByType["STOP_MARKET"])
 	}
 	if orderForm.Get("symbol") != "BTCUSDT" || orderForm.Get("side") != "BUY" || orderForm.Get("type") != "LIMIT" || orderForm.Get("timeInForce") != "GTC" || orderForm.Get("quantity") != "0.002" || orderForm.Get("price") != "49850" {
 		t.Fatalf("bad order form: %#v", orderForm)

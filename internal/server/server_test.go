@@ -88,6 +88,15 @@ func TestRoutes(t *testing.T) {
 	if basic.Code != http.StatusOK {
 		t.Fatalf("tvbot with basic auth code=%d body=%s", basic.Code, basic.Body.String())
 	}
+	monitorReq := httptest.NewRequest(http.MethodGet, "/tvbot/trade-monitor", nil)
+	monitorReq.SetBasicAuth("admin", "Admin123")
+	monitor := httptest.NewRecorder()
+	srv.ServeHTTP(monitor, monitorReq)
+	if monitor.Code != http.StatusOK ||
+		!bytes.Contains(monitor.Body.Bytes(), []byte(`"fill_monitor"`)) ||
+		!bytes.Contains(monitor.Body.Bytes(), []byte(`"auto_reentry"`)) {
+		t.Fatalf("trade monitor status code=%d body=%s", monitor.Code, monitor.Body.String())
+	}
 	loginPage := httptest.NewRecorder()
 	srv.ServeHTTP(loginPage, httptest.NewRequest(http.MethodGet, "/tvbot/login?next=/tvbot/config", nil))
 	if loginPage.Code != http.StatusOK || !bytes.Contains(loginPage.Body.Bytes(), []byte("管理员登录")) {
@@ -245,6 +254,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) {
 		t.Fatalf("tvbot ui should include symbol and order config tabs")
+	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("成交监听")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/trade-monitor")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("trade-monitor-lifecycles")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("refresh-trade-monitor")) {
+		t.Fatalf("tvbot ui should include trade monitor tab")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("菜单设置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("menu-settings-rows")) ||
