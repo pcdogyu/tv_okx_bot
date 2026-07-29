@@ -396,8 +396,22 @@ func TestExchangeInfoFiltersAndSymbolDerivation(t *testing.T) {
 	if filters.StepSizeForOrderType("MARKET") != 0.01 || filters.MinQtyForOrderType("MARKET") != "0.01" || filters.MaxQtyForOrderType("MARKET") != "50" || filters.MaxQtyForOrderType("LIMIT") != "100" {
 		t.Fatalf("bad order-specific filters: %#v", filters)
 	}
-	symbol, err := DeriveUSDMSymbol("BINANCE:ETHUSDT.P", "")
-	if err != nil || symbol != "ETHUSDT" {
-		t.Fatalf("bad derived symbol %q err=%v", symbol, err)
+	cases := []struct {
+		coinpair string
+		ticker   string
+		want     string
+	}{
+		{coinpair: "BINANCE:ETHUSDT.P", want: "ETHUSDT"},
+		{coinpair: "PENGUUSDC", want: "PENGUUSDC"},
+		{coinpair: "BINANCE:PENGUUSDC.P", want: "PENGUUSDC"},
+		{coinpair: "PENGU-USDC-SWAP", want: "PENGUUSDC"},
+		{coinpair: "PENGU/USDC", want: "PENGUUSDC"},
+		{coinpair: "PENGU", want: "PENGUUSDT"},
+	}
+	for _, tc := range cases {
+		symbol, err := DeriveUSDMSymbol(tc.coinpair, tc.ticker)
+		if err != nil || symbol != tc.want {
+			t.Fatalf("DeriveUSDMSymbol(%q, %q)=%q err=%v, want %q", tc.coinpair, tc.ticker, symbol, err, tc.want)
+		}
 	}
 }

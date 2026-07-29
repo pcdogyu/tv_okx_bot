@@ -913,8 +913,8 @@ func deriveBinanceAnalysisSymbol(candidates ...string) (string, bool) {
 		}
 		if strings.Contains(raw, "-") {
 			parts := strings.Split(raw, "-")
-			if len(parts) >= 2 && parts[1] == "USDT" {
-				raw = parts[0] + "USDT"
+			if len(parts) >= 2 && analysisBinanceQuoteAsset(parts[1]) {
+				raw = parts[0] + parts[1]
 			}
 		}
 		symbol, err := binance.DeriveUSDMSymbol(raw, raw)
@@ -922,11 +922,29 @@ func deriveBinanceAnalysisSymbol(candidates ...string) (string, bool) {
 			continue
 		}
 		symbol = strings.ToUpper(strings.TrimSpace(symbol))
-		if strings.HasSuffix(symbol, "USDT") {
+		if analysisBinanceSymbolSupported(symbol) {
 			return symbol, true
 		}
 	}
 	return "", false
+}
+
+func analysisBinanceSymbolSupported(symbol string) bool {
+	for _, quote := range []string{"USDT", "USDC"} {
+		if strings.HasSuffix(symbol, quote) && len(symbol) > len(quote) {
+			return true
+		}
+	}
+	return false
+}
+
+func analysisBinanceQuoteAsset(quote string) bool {
+	for _, supported := range []string{"USDT", "USDC"} {
+		if quote == supported {
+			return true
+		}
+	}
+	return false
 }
 
 func analysisTradeFromOKXFill(fill storage.OKXFill) (analysisTrade, bool) {

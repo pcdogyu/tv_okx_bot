@@ -205,3 +205,21 @@ func TestEnrichAnalysisTradesUsesMatchedOrderLeverageAndComputesNetPnL(t *testin
 		t.Fatalf("missing ctVal should keep leverage/net pnl but omit margin: %#v", trades[2])
 	}
 }
+
+func TestDeriveBinanceAnalysisSymbolSupportsUSDCContracts(t *testing.T) {
+	cases := []struct {
+		candidates []string
+		want       string
+	}{
+		{candidates: []string{"PENGUUSDC"}, want: "PENGUUSDC"},
+		{candidates: []string{"BINANCE:PENGUUSDC.P"}, want: "PENGUUSDC"},
+		{candidates: []string{"PENGU-USDC-SWAP"}, want: "PENGUUSDC"},
+		{candidates: []string{"", "PENGU"}, want: "PENGUUSDT"},
+	}
+	for _, tc := range cases {
+		got, ok := deriveBinanceAnalysisSymbol(tc.candidates...)
+		if !ok || got != tc.want {
+			t.Fatalf("deriveBinanceAnalysisSymbol(%#v)=%q ok=%v, want %q", tc.candidates, got, ok, tc.want)
+		}
+	}
+}

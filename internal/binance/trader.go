@@ -22,6 +22,8 @@ const (
 	maxBinanceOrderSplits      = 50
 )
 
+var binanceUSDMQuoteAssets = []string{"USDT", "USDC"}
+
 type Trader struct {
 	Credentials        Credentials
 	CredentialProvider CredentialProvider
@@ -590,16 +592,62 @@ func DeriveUSDMSymbol(coinpair, ticker string) (string, error) {
 	raw = strings.ToUpper(strings.TrimSpace(raw))
 	raw = strings.TrimSuffix(raw, ".P")
 	raw = strings.TrimSuffix(raw, "PERP")
+	raw = strings.TrimSuffix(raw, "SWAP")
+	if symbol, ok := deriveDelimitedUSDMSymbol(raw); ok {
+		return symbol, nil
+	}
 	raw = strings.ReplaceAll(raw, "-", "")
 	raw = strings.ReplaceAll(raw, "_", "")
 	raw = strings.ReplaceAll(raw, "/", "")
+	raw = strings.ReplaceAll(raw, " ", "")
 	if raw == "" {
 		return "", fmt.Errorf("coinpair or ticker is required")
 	}
-	if strings.HasSuffix(raw, "USDT") {
+	if isBinanceUSDMSymbol(raw) {
 		return raw, nil
 	}
 	return raw + "USDT", nil
+}
+
+func deriveDelimitedUSDMSymbol(raw string) (string, bool) {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '-' || r == '_' || r == '/' || r == ' '
+	})
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "SWAP" || part == "PERP" {
+			continue
+		}
+		cleaned = append(cleaned, part)
+	}
+	if len(cleaned) < 2 {
+		return "", false
+	}
+	base := cleaned[0]
+	quote := cleaned[1]
+	if base == "" || !isBinanceUSDMQuoteAsset(quote) {
+		return "", false
+	}
+	return base + quote, true
+}
+
+func isBinanceUSDMSymbol(symbol string) bool {
+	for _, quote := range binanceUSDMQuoteAssets {
+		if strings.HasSuffix(symbol, quote) && len(symbol) > len(quote) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBinanceUSDMQuoteAsset(quote string) bool {
+	for _, supported := range binanceUSDMQuoteAssets {
+		if quote == supported {
+			return true
+		}
+	}
+	return false
 }
 
 func binanceSide(action trading.Side) string {
