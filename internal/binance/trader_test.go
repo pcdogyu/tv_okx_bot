@@ -39,6 +39,11 @@ func TestTraderPlacesLimitOrderAndTPSLAlgoOrders(t *testing.T) {
 				t.Fatalf("bad leverage form: %#v", r.Form)
 			}
 			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":10}`))
+		case "/fapi/v1/premiumIndex":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" {
+				t.Fatalf("bad premium index query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","markPrice":"50000","indexPrice":"50000","lastFundingRate":"0","time":1784880000000}`))
 		case "/fapi/v1/order":
 			orderForm = cloneValues(r.Form)
 			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"49850","origQty":"0.002","executedQty":"0","type":"LIMIT","side":"BUY"}`))
@@ -180,6 +185,11 @@ func TestTraderSplitsMarketOrderAboveBinanceMaxQty(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
 		case "/fapi/v1/leverage":
 			_, _ = w.Write([]byte(`{"symbol":"DYMUSDT","leverage":10}`))
+		case "/fapi/v1/premiumIndex":
+			if r.URL.Query().Get("symbol") != "DYMUSDT" {
+				t.Fatalf("bad premium index query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"DYMUSDT","markPrice":"0.25","indexPrice":"0.25","lastFundingRate":"0","time":1784880000000}`))
 		case "/fapi/v1/order":
 			if compareDecimal(r.Form.Get("quantity"), "10000") > 0 {
 				w.WriteHeader(http.StatusBadRequest)
@@ -245,6 +255,82 @@ func TestTraderSplitsMarketOrderAboveBinanceMaxQty(t *testing.T) {
 	}
 	if !reflect.DeepEqual(byTypeQty["TAKE_PROFIT_MARKET"], wantQty) || !reflect.DeepEqual(byTypeQty["STOP_MARKET"], wantQty) {
 		t.Fatalf("bad split risk quantities: %#v", byTypeQty)
+	}
+}
+
+func TestTraderAdjustsBinanceTPSLAwayFromMarkPrice(t *testing.T) {
+	const markPrice = "0.005866"
+	algoForms := []url.Values{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"PENGUUSDC","status":"TRADING","pricePrecision":7,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0000010"},{"filterType":"LOT_SIZE","minQty":"1","maxQty":"200000000","stepSize":"1"},{"filterType":"MARKET_LOT_SIZE","minQty":"1","maxQty":"20000000","stepSize":"1"}]}]}`))
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			_, _ = w.Write([]byte(`{"symbol":"PENGUUSDC","leverage":10}`))
+		case "/fapi/v1/premiumIndex":
+			if r.URL.Query().Get("symbol") != "PENGUUSDC" {
+				t.Fatalf("bad premium index query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"PENGUUSDC","markPrice":"` + markPrice + `","indexPrice":"0.00587242","lastFundingRate":"0","time":1784880000000}`))
+		case "/fapi/v1/order":
+			_, _ = w.Write([]byte(`{"orderId":123,"symbol":"PENGUUSDC","status":"NEW","clientOrderId":"entry","price":"0","origQty":"831117","executedQty":"0","type":"MARKET","side":"SELL"}`))
+		case "/fapi/v1/algoOrder":
+			form := cloneValues(r.Form)
+			if form.Get("type") == "TAKE_PROFIT_MARKET" && compareDecimal(form.Get("triggerPrice"), markPrice) >= 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-2021,"msg":"Order would immediately trigger."}`))
+				return
+			}
+			algoForms = append(algoForms, form)
+			_, _ = w.Write([]byte(`{"algoId":456,"clientAlgoId":"algo","algoType":"CONDITIONAL","orderType":"` + form.Get("type") + `","symbol":"PENGUUSDC","side":"BUY","quantity":"831117","algoStatus":"NEW","triggerPrice":"` + form.Get("triggerPrice") + `"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskTPSL)
+	cfg.Trading.TakeProfitPct = 2
+	cfg.Trading.StopLossPct = 1
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "PENGUUSDC.P",
+		Ticker:   "PENGUUSDC.P",
+		Price:    trading.NewFlexibleFloat(0.006016),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(5000),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.InstID != "PENGUUSDC" || result.OrdID != "123" {
+		t.Fatalf("bad result: %#v", result)
+	}
+	if len(algoForms) != 2 {
+		t.Fatalf("expected adjusted TP and SL, got %#v", algoForms)
+	}
+	types := map[string]url.Values{}
+	for _, form := range algoForms {
+		types[form.Get("type")] = form
+	}
+	if types["TAKE_PROFIT_MARKET"].Get("triggerPrice") != "0.005865" || types["TAKE_PROFIT_MARKET"].Get("side") != "BUY" {
+		t.Fatalf("bad adjusted TP form: %#v", types["TAKE_PROFIT_MARKET"])
+	}
+	if types["STOP_MARKET"].Get("triggerPrice") != "0.006077" || types["STOP_MARKET"].Get("side") != "BUY" {
+		t.Fatalf("bad adjusted SL form: %#v", types["STOP_MARKET"])
 	}
 }
 

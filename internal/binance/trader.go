@@ -354,6 +354,20 @@ func (t Trader) placeRiskOrders(ctx context.Context, client Client, signal tradi
 		closeSide = "BUY"
 	}
 	tpPx, slPx := riskTriggerPrices(signal.Action, entryPx, risk.TPPct.Value, risk.SLPct.Value)
+	tpTrigger := formatStep(tpPx, filters.TickSize, signal.Action == trading.ActionLong)
+	slTrigger := formatStep(slPx, filters.TickSize, signal.Action == trading.ActionShort)
+	if markPx, err := binanceMarkPrice(ctx, client, order.Symbol); err == nil {
+		var adjusted bool
+		tpTrigger, slTrigger, adjusted, err = safeBinanceTPSLTriggers(signal.Action, tpTrigger, slTrigger, markPx, filters.TickSize)
+		if err != nil {
+			return err
+		}
+		if adjusted && t.Logger != nil {
+			t.Logger.Warn("binance tp/sl trigger adjusted away from mark price", "symbol", order.Symbol, "mark_price", trading.NormalizeFloat(markPx), "tp_trigger", tpTrigger, "sl_trigger", slTrigger)
+		}
+	} else if t.Logger != nil {
+		t.Logger.Warn("binance mark price unavailable before tp/sl placement", "symbol", order.Symbol, "error", err)
+	}
 	tpID := trimClientID(order.NewClientOrderID, 32-2) + "TP"
 	slID := trimClientID(order.NewClientOrderID, 32-2) + "SL"
 	if err := t.placeSplitAlgoOrder(ctx, client, AlgoOrderRequest{
@@ -362,7 +376,7 @@ func (t Trader) placeRiskOrders(ctx context.Context, client Client, signal tradi
 		PositionSide:     order.PositionSide,
 		Type:             "TAKE_PROFIT_MARKET",
 		Quantity:         order.Quantity,
-		TriggerPrice:     formatStep(tpPx, filters.TickSize, signal.Action == trading.ActionLong),
+		TriggerPrice:     tpTrigger,
 		WorkingType:      "MARK_PRICE",
 		NewClientOrderID: tpID,
 		ReduceOnly:       order.PositionSide == "",
@@ -375,7 +389,7 @@ func (t Trader) placeRiskOrders(ctx context.Context, client Client, signal tradi
 		PositionSide:     order.PositionSide,
 		Type:             "STOP_MARKET",
 		Quantity:         order.Quantity,
-		TriggerPrice:     formatStep(slPx, filters.TickSize, signal.Action == trading.ActionShort),
+		TriggerPrice:     slTrigger,
 		WorkingType:      "MARK_PRICE",
 		NewClientOrderID: slID,
 		ReduceOnly:       order.PositionSide == "",
@@ -800,6 +814,86 @@ func riskTriggerPrices(action trading.Side, entryPx, tpPct, slPct float64) (floa
 		return entryPx * (1 - tpPct/100), entryPx * (1 + slPct/100)
 	}
 	return entryPx * (1 + tpPct/100), entryPx * (1 - slPct/100)
+}
+
+func binanceMarkPrice(ctx context.Context, client Client, symbol string) (float64, error) {
+	premium, err := client.PremiumIndex(ctx, symbol)
+	if err != nil {
+		return 0, err
+	}
+	markPx, err := strconv.ParseFloat(strings.TrimSpace(premium.MarkPrice), 64)
+	if err != nil || markPx <= 0 {
+		if err == nil {
+			err = fmt.Errorf("must be positive")
+		}
+		return 0, fmt.Errorf("invalid Binance mark price %q: %w", premium.MarkPrice, err)
+	}
+	return markPx, nil
+}
+
+func safeBinanceTPSLTriggers(action trading.Side, tpTrigger, slTrigger string, markPx, tickSize float64) (string, string, bool, error) {
+	if markPx <= 0 || tickSize <= 0 {
+		return tpTrigger, slTrigger, false, nil
+	}
+	tpPx, err := strconv.ParseFloat(strings.TrimSpace(tpTrigger), 64)
+	if err != nil || tpPx <= 0 {
+		return "", "", false, fmt.Errorf("invalid Binance TP trigger price %q", tpTrigger)
+	}
+	slPx, err := strconv.ParseFloat(strings.TrimSpace(slTrigger), 64)
+	if err != nil || slPx <= 0 {
+		return "", "", false, fmt.Errorf("invalid Binance SL trigger price %q", slTrigger)
+	}
+	adjusted := false
+	switch action {
+	case trading.ActionShort:
+		if tpPx >= markPx {
+			tpPx = markPx - tickSize
+			adjusted = true
+		}
+		if slPx <= markPx {
+			slPx = markPx + tickSize
+			adjusted = true
+		}
+	default:
+		if tpPx <= markPx {
+			tpPx = markPx + tickSize
+			adjusted = true
+		}
+		if slPx >= markPx {
+			slPx = markPx - tickSize
+			adjusted = true
+		}
+	}
+	if tpPx <= 0 || slPx <= 0 {
+		return "", "", false, fmt.Errorf("Binance TP/SL trigger adjustment failed: mark price %s is too close to zero", trading.NormalizeFloat(markPx))
+	}
+	if !adjusted {
+		return tpTrigger, slTrigger, false, nil
+	}
+	tpTrigger = formatStep(tpPx, tickSize, action == trading.ActionLong)
+	slTrigger = formatStep(slPx, tickSize, action == trading.ActionShort)
+	if err := validateBinanceTPSLTriggerSide(action, tpTrigger, slTrigger, markPx); err != nil {
+		return "", "", false, err
+	}
+	return tpTrigger, slTrigger, true, nil
+}
+
+func validateBinanceTPSLTriggerSide(action trading.Side, tpTrigger, slTrigger string, markPx float64) error {
+	tpPx, tpErr := strconv.ParseFloat(strings.TrimSpace(tpTrigger), 64)
+	slPx, slErr := strconv.ParseFloat(strings.TrimSpace(slTrigger), 64)
+	if tpErr != nil || slErr != nil {
+		return fmt.Errorf("invalid Binance TP/SL trigger prices after adjustment: tp=%q sl=%q", tpTrigger, slTrigger)
+	}
+	if action == trading.ActionShort {
+		if tpPx >= markPx || slPx <= markPx {
+			return fmt.Errorf("Binance short TP/SL trigger prices would immediately trigger: mark=%s tp=%s sl=%s", trading.NormalizeFloat(markPx), tpTrigger, slTrigger)
+		}
+		return nil
+	}
+	if tpPx <= markPx || slPx >= markPx {
+		return fmt.Errorf("Binance long TP/SL trigger prices would immediately trigger: mark=%s tp=%s sl=%s", trading.NormalizeFloat(markPx), tpTrigger, slTrigger)
+	}
+	return nil
 }
 
 func formatStep(value, step float64, ceil bool) string {

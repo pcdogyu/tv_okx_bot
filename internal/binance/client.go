@@ -161,6 +161,14 @@ type BookTicker struct {
 	Time     int64  `json:"time"`
 }
 
+type PremiumIndex struct {
+	Symbol          string `json:"symbol"`
+	MarkPrice       string `json:"markPrice"`
+	IndexPrice      string `json:"indexPrice"`
+	LastFundingRate string `json:"lastFundingRate"`
+	Time            int64  `json:"time"`
+}
+
 type ExchangeInfo struct {
 	Symbols []SymbolInfo `json:"symbols"`
 }
@@ -505,6 +513,22 @@ func (c Client) BookTicker(ctx context.Context, symbol string) (BookTicker, erro
 	var out BookTicker
 	if err := json.Unmarshal(b, &out); err != nil {
 		return BookTicker{}, err
+	}
+	return out, nil
+}
+
+func (c Client) PremiumIndex(ctx context.Context, symbol string) (PremiumIndex, error) {
+	q := url.Values{}
+	if strings.TrimSpace(symbol) != "" {
+		q.Set("symbol", strings.ToUpper(strings.TrimSpace(symbol)))
+	}
+	b, err := c.Do(ctx, http.MethodGet, "/fapi/v1/premiumIndex", q, false)
+	if err != nil {
+		return PremiumIndex{}, err
+	}
+	var out PremiumIndex
+	if err := json.Unmarshal(b, &out); err != nil {
+		return PremiumIndex{}, err
 	}
 	return out, nil
 }

@@ -207,6 +207,11 @@ func TestClientTradingEndpoints(t *testing.T) {
 				t.Fatalf("bad book ticker query: %s", r.URL.RawQuery)
 			}
 			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","bidPrice":"49999.9","bidQty":"1","askPrice":"50000.1","askQty":"2","time":1784880000000}`))
+		case "/fapi/v1/premiumIndex":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" {
+				t.Fatalf("bad premium index query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","markPrice":"50000.0","indexPrice":"50001.0","lastFundingRate":"0.0001","time":1784880000000}`))
 		case "/fapi/v1/order":
 			switch r.Method {
 			case http.MethodPost:
@@ -263,6 +268,10 @@ func TestClientTradingEndpoints(t *testing.T) {
 	ticker, err := client.BookTicker(context.Background(), "btcusdt")
 	if err != nil || ticker.Symbol != "BTCUSDT" || ticker.BidPrice != "49999.9" || ticker.AskPrice != "50000.1" {
 		t.Fatalf("bad book ticker err=%v ticker=%#v", err, ticker)
+	}
+	premium, err := client.PremiumIndex(context.Background(), "btcusdt")
+	if err != nil || premium.Symbol != "BTCUSDT" || premium.MarkPrice != "50000.0" || premium.LastFundingRate != "0.0001" {
+		t.Fatalf("bad premium index err=%v premium=%#v", err, premium)
 	}
 	ack, err := client.PlaceOrder(context.Background(), PlaceOrderRequest{
 		Symbol:           "BTCUSDT",

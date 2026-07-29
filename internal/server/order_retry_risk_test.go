@@ -38,6 +38,11 @@ func TestOrderRetryExecutesBinanceTPSLFromStoredRisk(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
 		case "/fapi/v1/leverage":
 			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":8}`))
+		case "/fapi/v1/premiumIndex":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" {
+				t.Fatalf("bad premium index query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","markPrice":"50000","indexPrice":"50000","lastFundingRate":"0","time":1784880000000}`))
 		case "/fapi/v1/order":
 			mu.Lock()
 			orderForms = append(orderForms, cloneValues(r.Form))
