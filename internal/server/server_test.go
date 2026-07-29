@@ -2270,6 +2270,82 @@ func TestTVBotBinancePendingOrderCancelStopsChaseAndCancels(t *testing.T) {
 	}
 }
 
+func TestTVBotBinancePendingOrderCancelTreatsUnknownOrderAsFinished(t *testing.T) {
+	oldJobs := pendingOrderChaseJobs
+	pendingOrderChaseJobs = newPendingOrderChaseRegistry()
+	defer func() {
+		pendingOrderChaseJobs = oldJobs
+	}()
+
+	srv := newTestServer(t)
+	var cancelForms []url.Values
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key for %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/fapi/v1/openOrders":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" {
+				t.Fatalf("bad open orders query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","orderId":123456,"clientOrderId":"client-1","price":"50000","origQty":"0.2","executedQty":"0.1","side":"BUY","positionSide":"BOTH","type":"LIMIT","status":"PARTIALLY_FILLED","time":1784880000000,"updateTime":1784880005000}]`))
+		case "/fapi/v1/order":
+			if r.Method != http.MethodDelete {
+				t.Fatalf("cancel should only call DELETE /fapi/v1/order, got %s", r.Method)
+			}
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			cancelForms = append(cancelForms, cloneValues(r.Form))
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":-2011,"msg":"Unknown order sent."}`))
+		default:
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+	}))
+	defer binanceServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.BinanceHTTPClient = binanceServer.Client()
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:          "main",
+		Active:      true,
+		Credentials: binance.Credentials{APIKey: "binance-key", SecretKey: "binance-secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"exchange":"binance","api_id":"main","inst_id":"BTCUSDT","ord_id":"123456","cl_ord_id":"client-1"}`
+	key := pendingOrderChaseKey(pendingOrderChaseRequest{Exchange: trading.ExchangeBinance, APIID: "main", InstID: "BTCUSDT", OrdID: "123456", ClOrdID: "client-1"})
+	_, chaseCancel := context.WithCancel(context.Background())
+	if !pendingOrderChaseJobs.start(key, chaseCancel) {
+		t.Fatal("failed to seed chase job")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/cancel", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cancel code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp pendingOrderChaseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "finished" || resp.APIID != "main" || resp.OrdID != "123456" || resp.ClOrdID != "client-1" {
+		t.Fatalf("bad cancel response: %#v", resp)
+	}
+	if pendingOrderChaseJobs.activeKey(key) {
+		t.Fatal("cancel should stop active Binance chase job when order is gone")
+	}
+	if len(cancelForms) != 1 || cancelForms[0].Get("symbol") != "BTCUSDT" || cancelForms[0].Get("orderId") != "123456" {
+		t.Fatalf("bad cancel forms: %#v", cancelForms)
+	}
+}
+
 func TestTVBotPendingOrderChaseRebuildsNakedOrderWithRiskControls(t *testing.T) {
 	oldInterval := pendingOrderChaseInterval
 	oldTimeout := pendingOrderChaseTimeout

@@ -409,6 +409,13 @@ func (s *Server) handlePendingOrderCancel(w http.ResponseWriter, r *http.Request
 	resp.OrdID = order.OrdID
 	resp.ClOrdID = order.ClOrdID
 	if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
+		if binancePendingOrderNoLongerOpen(err) {
+			pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+			resp.Status = "finished"
+			resp.Message = "pending order is no longer open"
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
 		writeError(w, http.StatusBadGateway, "pending_order_cancel_failed", err.Error())
 		return
 	}
@@ -2297,6 +2304,10 @@ func cancelBinancePendingOrder(ctx context.Context, client binance.Client, order
 		OrigClientOrderID: strings.TrimSpace(order.ClOrdID),
 	})
 	return err
+}
+
+func binancePendingOrderNoLongerOpen(err error) bool {
+	return binance.IsAPIErrorCode(err, -2011, -2013)
 }
 
 func binancePendingPositionSide(posSide string) string {
