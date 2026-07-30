@@ -755,6 +755,9 @@ func filterOKXUSDTInstruments(instruments []okx.Instrument) []okx.Instrument {
 }
 
 func okxUSDTInstrument(inst okx.Instrument) bool {
+	if okxUSDCInstrument(inst) {
+		return false
+	}
 	quote := strings.ToUpper(strings.TrimSpace(inst.QuoteCcy))
 	settle := strings.ToUpper(strings.TrimSpace(inst.SettleCcy))
 	if quote != "" || settle != "" {
@@ -762,6 +765,22 @@ func okxUSDTInstrument(inst okx.Instrument) bool {
 	}
 	instID := strings.ToUpper(strings.TrimSpace(inst.InstID))
 	return strings.Contains(instID, "-USDT-") || strings.HasSuffix(instID, "-USDT")
+}
+
+func okxUSDCInstrument(inst okx.Instrument) bool {
+	for _, value := range []string{
+		inst.InstID,
+		inst.Uly,
+		inst.InstFamily,
+		inst.BaseCcy,
+		inst.QuoteCcy,
+		inst.SettleCcy,
+	} {
+		if strings.Contains(strings.ToUpper(strings.TrimSpace(value)), "USDC") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {

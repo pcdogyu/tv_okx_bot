@@ -592,7 +592,8 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
 				{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
 				{"instType":"SWAP","instId":"DOGE-USDT-SWAP","baseCcy":"DOGE","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"1000","ctValCcy":"DOGE","lotSz":"1","minSz":"1","lever":"50","state":"live"},
-				{"instType":"SWAP","instId":"SOL-USDC-SWAP","baseCcy":"SOL","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"1","ctValCcy":"SOL","lotSz":"0.01","minSz":"0.01","lever":"50","state":"live"}
+				{"instType":"SWAP","instId":"SOL-USDC-SWAP","baseCcy":"SOL","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"1","ctValCcy":"SOL","lotSz":"0.01","minSz":"0.01","lever":"50","state":"live"},
+				{"instType":"SWAP","instId":"USDC-USDT-SWAP","uly":"USDC-USDT","instFamily":"USDC-USDT","settleCcy":"USDT","ctVal":"1","ctValCcy":"USDC","lotSz":"1","minSz":"1","lever":"50","state":"live"}
 			]}`))
 			return
 		}
@@ -600,7 +601,8 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
 			{"instType":"SWAP","instId":"ETH-USDT-SWAP","baseCcy":"ETH","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.1","ctValCcy":"ETH","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
 			{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
-			{"instType":"SWAP","instId":"BTC-USDC-SWAP","baseCcy":"BTC","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"}
+			{"instType":"SWAP","instId":"BTC-USDC-SWAP","baseCcy":"BTC","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
+			{"instType":"SWAP","instId":"USDC-USDT-SWAP","uly":"USDC-USDT","instFamily":"USDC-USDT","settleCcy":"USDT","ctVal":"1","ctValCcy":"USDC","lotSz":"1","minSz":"1","lever":"50","state":"live"}
 		]}`))
 	}))
 	defer ts.Close()
