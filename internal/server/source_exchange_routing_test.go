@@ -29,6 +29,7 @@ func TestTVOrderPreservesExplicitOKXTargetForBinanceSource(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	resp := decodeTVOrderSignalResponse(t, rr.Body.Bytes())
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.Exchange != "BINANCE" || got.TargetExchange != trading.ExchangeOKX || got.APIID != "okx-moni" {
@@ -37,6 +38,7 @@ func TestTVOrderPreservesExplicitOKXTargetForBinanceSource(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
+	waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusSubmitted)
 	records := srv.Orders.List(10)
 	if len(records) != 1 || records[0].SourceExchange != "BINANCE" || records[0].TargetExchange != trading.ExchangeOKX || records[0].APIID != "okx-moni" {
 		t.Fatalf("order record should preserve explicit OKX target: %#v", records)
@@ -59,6 +61,7 @@ func TestTVOrderRoutesMissingTargetExchangeBySource(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	resp := decodeTVOrderSignalResponse(t, rr.Body.Bytes())
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.Exchange != "BINANCE" || got.TargetExchange != trading.ExchangeBinance || got.APIID != "" {
@@ -67,6 +70,7 @@ func TestTVOrderRoutesMissingTargetExchangeBySource(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
+	waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusSubmitted)
 	records := srv.Orders.List(10)
 	if len(records) != 1 || records[0].SourceExchange != "BINANCE" || records[0].TargetExchange != trading.ExchangeBinance || records[0].APIID != "" {
 		t.Fatalf("order record should save source-derived Binance target: %#v", records)
@@ -89,6 +93,7 @@ func TestTVOrderPreservesExplicitBinanceTargetForOKXSource(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	resp := decodeTVOrderSignalResponse(t, rr.Body.Bytes())
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.Exchange != "OKX" || got.TargetExchange != trading.ExchangeBinance || got.APIID != "binance-main" {
@@ -97,6 +102,7 @@ func TestTVOrderPreservesExplicitBinanceTargetForOKXSource(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
+	waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusSubmitted)
 }
 
 func TestOrderRetryPreservesStoredTargetExchange(t *testing.T) {
@@ -124,6 +130,12 @@ func TestOrderRetryPreservesStoredTargetExchange(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("retry status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	var retryResp struct {
+		SignalID string `json:"signal_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &retryResp); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.Exchange != "BINANCE" || got.TargetExchange != trading.ExchangeOKX || got.APIID != "okx-moni" {
@@ -132,6 +144,7 @@ func TestOrderRetryPreservesStoredTargetExchange(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("retry order was not executed")
 	}
+	waitOrderStatus(t, srv.Orders, retryResp.SignalID, storage.StatusSubmitted)
 	records := srv.Orders.List(10)
 	if len(records) != 2 {
 		t.Fatalf("orders len=%d records=%#v", len(records), records)

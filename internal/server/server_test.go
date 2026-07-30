@@ -643,6 +643,7 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 	if first.Code != http.StatusAccepted {
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 	}
+	firstResp := decodeTVOrderSignalResponse(t, first.Body.Bytes())
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.Coinpair != "BTC" || got.Action != trading.ActionLong {
@@ -654,6 +655,7 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
+	waitOrderStatus(t, srv.Orders, firstResp.SignalID, storage.StatusSubmitted)
 	second := httptest.NewRecorder()
 	srv.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
 	if second.Code != http.StatusAccepted {
@@ -715,6 +717,7 @@ func TestTVOrderRoutesTargetExchangeBinance(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	resp := decodeTVOrderSignalResponse(t, rr.Body.Bytes())
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.TargetExchange != trading.ExchangeBinance || got.APIID != "binance-main" {
@@ -723,6 +726,7 @@ func TestTVOrderRoutesTargetExchangeBinance(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
+	waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusSubmitted)
 	records := srv.Orders.List(10)
 	if len(records) != 1 || records[0].TargetExchange != trading.ExchangeBinance {
 		t.Fatalf("order record should save Binance target exchange: %#v", records)
@@ -993,6 +997,7 @@ func TestTVOrderPassesSelectedAPIID(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	resp := decodeTVOrderSignalResponse(t, rr.Body.Bytes())
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.APIID != "backup" {
@@ -1001,6 +1006,7 @@ func TestTVOrderPassesSelectedAPIID(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
+	waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusSubmitted)
 }
 
 func TestTVOrderRecordsRejectedSignals(t *testing.T) {
@@ -1124,6 +1130,7 @@ func TestTVOrderAppliesConfiguredOrderSettings(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	resp := decodeTVOrderSignalResponse(t, rr.Body.Bytes())
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.Amount.Value != 250 || got.Leverage != 8 || got.Risk.Type != trading.RiskTrailing {
@@ -1135,6 +1142,7 @@ func TestTVOrderAppliesConfiguredOrderSettings(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
+	waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusSubmitted)
 }
 
 func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {

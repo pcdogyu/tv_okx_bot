@@ -228,10 +228,12 @@ func configureBinanceCloseTestServer(t *testing.T, srv *Server, binanceServer *h
 	}
 }
 
-func postTVOrderSignal(t *testing.T, srv *Server, signal trading.Signal) struct {
+type tvOrderSignalResponse struct {
 	Status   string `json:"status"`
 	SignalID string `json:"signal_id"`
-} {
+}
+
+func postTVOrderSignal(t *testing.T, srv *Server, signal trading.Signal) tvOrderSignalResponse {
 	t.Helper()
 	body, err := json.Marshal(signal)
 	if err != nil {
@@ -242,15 +244,17 @@ func postTVOrderSignal(t *testing.T, srv *Server, signal trading.Signal) struct 
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("tvorder status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	var resp struct {
-		Status   string `json:"status"`
-		SignalID string `json:"signal_id"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+	return decodeTVOrderSignalResponse(t, rr.Body.Bytes())
+}
+
+func decodeTVOrderSignalResponse(t *testing.T, body []byte) tvOrderSignalResponse {
+	t.Helper()
+	var resp tvOrderSignalResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatal(err)
 	}
 	if resp.SignalID == "" {
-		t.Fatalf("tvorder response missing signal_id: %s", rr.Body.String())
+		t.Fatalf("tvorder response missing signal_id: %s", string(body))
 	}
 	return resp
 }
