@@ -591,14 +591,16 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 			sawDemo = true
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
 				{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
-				{"instType":"SWAP","instId":"DOGE-USDT-SWAP","baseCcy":"DOGE","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"1000","ctValCcy":"DOGE","lotSz":"1","minSz":"1","lever":"50","state":"live"}
+				{"instType":"SWAP","instId":"DOGE-USDT-SWAP","baseCcy":"DOGE","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"1000","ctValCcy":"DOGE","lotSz":"1","minSz":"1","lever":"50","state":"live"},
+				{"instType":"SWAP","instId":"SOL-USDC-SWAP","baseCcy":"SOL","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"1","ctValCcy":"SOL","lotSz":"0.01","minSz":"0.01","lever":"50","state":"live"}
 			]}`))
 			return
 		}
 		sawLive = true
 		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
 			{"instType":"SWAP","instId":"ETH-USDT-SWAP","baseCcy":"ETH","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.1","ctValCcy":"ETH","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
-			{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"}
+			{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
+			{"instType":"SWAP","instId":"BTC-USDC-SWAP","baseCcy":"BTC","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"}
 		]}`))
 	}))
 	defer ts.Close()
@@ -631,6 +633,11 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 	}
 	if resp.OKX.Live.Instruments[0].InstID != "BTC-USDT-SWAP" || resp.OKX.Demo.Instruments[1].InstID != "DOGE-USDT-SWAP" {
 		t.Fatalf("instruments should be sorted and parsed: %#v", resp.OKX)
+	}
+	for _, inst := range append(resp.OKX.Live.Instruments, resp.OKX.Demo.Instruments...) {
+		if strings.Contains(inst.InstID, "USDC") || inst.QuoteCcy == "USDC" || inst.SettleCcy == "USDC" {
+			t.Fatalf("USDC instruments should be filtered out: %#v", resp.OKX)
+		}
 	}
 	if resp.OKX.Live.Error != "" || resp.OKX.Demo.Error != "" {
 		t.Fatalf("unexpected OKX errors: %#v", resp.OKX)

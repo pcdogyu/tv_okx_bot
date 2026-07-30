@@ -735,12 +735,33 @@ func (s *Server) fetchOKXInstrumentSet(ctx context.Context, cfg config.Config, d
 		set.Error = err.Error()
 		return set
 	}
+	instruments = filterOKXUSDTInstruments(instruments)
 	sort.Slice(instruments, func(i, j int) bool {
 		return strings.Compare(instruments[i].InstID, instruments[j].InstID) < 0
 	})
 	set.Instruments = instruments
 	set.Count = len(instruments)
 	return set
+}
+
+func filterOKXUSDTInstruments(instruments []okx.Instrument) []okx.Instrument {
+	filtered := make([]okx.Instrument, 0, len(instruments))
+	for _, inst := range instruments {
+		if okxUSDTInstrument(inst) {
+			filtered = append(filtered, inst)
+		}
+	}
+	return filtered
+}
+
+func okxUSDTInstrument(inst okx.Instrument) bool {
+	quote := strings.ToUpper(strings.TrimSpace(inst.QuoteCcy))
+	settle := strings.ToUpper(strings.TrimSpace(inst.SettleCcy))
+	if quote != "" || settle != "" {
+		return quote == "USDT" || settle == "USDT"
+	}
+	instID := strings.ToUpper(strings.TrimSpace(inst.InstID))
+	return strings.Contains(instID, "-USDT-") || strings.HasSuffix(instID, "-USDT")
 }
 
 func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {
