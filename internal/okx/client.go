@@ -688,6 +688,20 @@ func (c Client) MarketTicker(ctx context.Context, instID string) (Ticker, Envelo
 	return data[0], env, nil
 }
 
+func (c Client) MarketTickers(ctx context.Context, instType string) ([]Ticker, Envelope, error) {
+	q := url.Values{}
+	q.Set("instType", strings.ToUpper(strings.TrimSpace(instType)))
+	env, err := c.Do(ctx, http.MethodGet, "/api/v5/market/tickers", q, nil, false)
+	if err != nil {
+		return nil, env, err
+	}
+	var data []Ticker
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return nil, env, err
+	}
+	return data, env, nil
+}
+
 func (c Client) MarketCandles(ctx context.Context, instID, bar string, limit int) ([]MarketCandle, Envelope, error) {
 	q := url.Values{}
 	q.Set("instId", strings.ToUpper(strings.TrimSpace(instID)))

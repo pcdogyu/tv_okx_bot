@@ -769,6 +769,15 @@ const tvbotHTML = `<!doctype html>
     .symbol-table {
       min-width: 980px;
     }
+    .symbol-catalog-table {
+      min-width: 1180px;
+    }
+    .symbol-table th[data-symbol-sort] {
+      cursor: pointer;
+    }
+    .symbol-table th[data-symbol-sort][draggable="true"] {
+      cursor: grab;
+    }
     .balance-pnl-block {
       border-top: 1px solid var(--line);
       padding-top: 10px;
@@ -1231,10 +1240,9 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="muted" id="symbol-errors" style="margin:0 0 10px"></div>
       <div class="symbol-table-wrap">
-        <table class="symbol-table">
-          <thead>
-            <tr><th>交易环境</th><th>币对</th><th>本地配置</th><th>OKX 状态</th><th>基础 / 计价</th><th>结算币</th><th>合约面值</th><th>最小下单</th><th>数量步长</th><th>杠杆</th></tr>
-          </thead>
+        <table class="symbol-table symbol-catalog-table">
+          <colgroup id="symbol-cols"></colgroup>
+          <thead id="symbol-head"></thead>
           <tbody id="symbol-rows"></tbody>
         </table>
       </div>
@@ -1436,6 +1444,7 @@ const tvbotHTML = `<!doctype html>
       pendingOrdersError: "",
       symbols: null,
       symbolsError: "",
+      symbolSort: null,
       tradeMonitor: null,
       tradeMonitorError: "",
       upgrade: null
@@ -1448,6 +1457,7 @@ const tvbotHTML = `<!doctype html>
     let analysisBalanceRefreshBusy = false;
     let menuSettingsSynced = false;
     let tableColumnDrag = null;
+    let tableColumnDropSuppressClick = false;
     const positionViewPollIntervalMs = 5000;
     const missingPositionEntrySyncIntervalMs = 180000;
     const analysisBalanceRefreshIntervalMs = 60000;
@@ -1534,13 +1544,29 @@ const tvbotHTML = `<!doctype html>
       { id: "state", title: "状态", colClass: "pending-state-col", cell: (row) => textTableCell(pendingOrderStateText(row.state)) },
       { id: "actions", title: "操作", colClass: "pending-actions-col", cell: (row) => pendingOrderActionCell(row) }
     ];
+    const symbolTableColumnDefs = [
+      { id: "env", title: "交易环境", colClass: "symbol-env-col", sortType: "text", cell: (row) => tableCell(pill(row.label, row.env === "live" ? "ok" : "warn")), sortValue: (row) => row.label },
+      { id: "symbol", title: "币对", colClass: "symbol-symbol-col", sortType: "text", cell: (row) => textTableCell(asText((row.instrument || {}).instId)), sortValue: (row) => (row.instrument || {}).instId },
+      { id: "configured", title: "本地配置", colClass: "symbol-configured-col", sortType: "text", cell: (row) => symbolConfiguredCell(row), sortValue: (row) => symbolConfigured(row) ? "1" : "0" },
+      { id: "state", title: "OKX 状态", colClass: "symbol-state-col", sortType: "text", cell: (row) => textTableCell(asText((row.instrument || {}).state)), sortValue: (row) => (row.instrument || {}).state },
+      { id: "base_quote", title: "基础 / 计价", colClass: "symbol-base-quote-col", sortType: "text", cell: (row) => textTableCell(symbolBaseQuoteText(row)), sortValue: (row) => symbolBaseQuoteText(row) },
+      { id: "settle", title: "结算币", colClass: "symbol-settle-col", sortType: "text", cell: (row) => textTableCell(asText((row.instrument || {}).settleCcy)), sortValue: (row) => (row.instrument || {}).settleCcy },
+      { id: "ct_val", title: "合约面值", colClass: "symbol-ct-val-col", sortType: "number", cell: (row) => textTableCell(valueWithUnit((row.instrument || {}).ctVal, (row.instrument || {}).ctValCcy)), sortValue: (row) => (row.instrument || {}).ctVal },
+      { id: "min_size", title: "最小下单", colClass: "symbol-min-size-col", sortType: "number", cell: (row) => textTableCell(asText((row.instrument || {}).minSz)), sortValue: (row) => (row.instrument || {}).minSz },
+      { id: "lot_size", title: "数量步长", colClass: "symbol-lot-size-col", sortType: "number", cell: (row) => textTableCell(asText((row.instrument || {}).lotSz)), sortValue: (row) => (row.instrument || {}).lotSz },
+      { id: "leverage", title: "杠杆", colClass: "symbol-leverage-col", sortType: "number", cell: (row) => textTableCell(asText((row.instrument || {}).lever)), sortValue: (row) => (row.instrument || {}).lever },
+      { id: "turnover", title: "今日累计成交金额", colClass: "symbol-turnover-col", sortType: "number", defaultSort: "desc", cell: (row) => textTableCell(formatSymbolTurnover((row.instrument || {}).turnover_usdt_24h)), sortValue: (row) => (row.instrument || {}).turnover_usdt_24h }
+    ];
 
     function tableColumnDefs(tableID) {
-      return tableID === "pending_orders" ? pendingOrderTableColumnDefs : positionTableColumnDefs;
+      if (tableID === "pending_orders") return pendingOrderTableColumnDefs;
+      if (tableID === "symbols") return symbolTableColumnDefs;
+      return positionTableColumnDefs;
     }
 
     function tableColumnPartIDs(tableID) {
       if (tableID === "pending_orders") return { cols: "pending-order-cols", head: "pending-order-head" };
+      if (tableID === "symbols") return { cols: "symbol-cols", head: "symbol-head" };
       return { cols: "position-cols", head: "position-head" };
     }
 
@@ -1595,21 +1621,47 @@ const tvbotHTML = `<!doctype html>
       }
       if (head) {
         head.innerHTML = "<tr>" + columnDefs.map((col) =>
-          '<th draggable="true" data-table-columns="' + escapeHTML(tableID) + '" data-column-id="' + escapeHTML(col.id) + '" title="拖动调整栏目顺序">' + escapeHTML(col.title) + "</th>"
+          tableColumnHeaderHTML(tableID, col)
         ).join("") + "</tr>";
       }
+    }
+
+    function tableColumnHeaderHTML(tableID, col) {
+      const attrs = [
+        'draggable="true"',
+        'data-table-columns="' + escapeHTML(tableID) + '"',
+        'data-column-id="' + escapeHTML(col.id) + '"'
+      ];
+      let title = "拖动调整栏目顺序";
+      let label = col.title;
+      if (tableID === "symbols" && col.sortType) {
+        attrs.push('data-symbol-sort="' + escapeHTML(col.id) + '"');
+        title = "点击排序，拖动调整栏目顺序";
+        const sort = state.symbolSort || {};
+        if (sort.column === col.id) {
+          label += sort.direction === "desc" ? " ▼" : " ▲";
+          attrs.push('aria-sort="' + (sort.direction === "desc" ? "descending" : "ascending") + '"');
+        }
+      }
+      attrs.push('title="' + escapeHTML(title) + '"');
+      return "<th " + attrs.join(" ") + ">" + escapeHTML(label) + "</th>";
     }
 
     function currentTableColumnsPatch() {
       return {
         positions: currentTableColumnOrder("positions"),
-        pending_orders: currentTableColumnOrder("pending_orders")
+        pending_orders: currentTableColumnOrder("pending_orders"),
+        symbols: currentTableColumnOrder("symbols")
       };
     }
 
     function renderTableByID(tableID) {
       if (tableID === "pending_orders") {
         renderPendingOrders();
+        return;
+      }
+      if (tableID === "symbols") {
+        renderSymbols();
         return;
       }
       renderPositions();
@@ -1675,6 +1727,10 @@ const tvbotHTML = `<!doctype html>
       const toIndex = previousOrder.indexOf(toID);
       tableColumnDrag = null;
       clearTableColumnDropTargets();
+      if (tableID === "symbols") {
+        tableColumnDropSuppressClick = true;
+        window.setTimeout(() => { tableColumnDropSuppressClick = false; }, 0);
+      }
       if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
       const nextOrder = previousOrder.slice();
       const moved = nextOrder.splice(fromIndex, 1)[0];
@@ -1685,7 +1741,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     function initTableColumnDrag() {
-      ["position-head", "pending-order-head"].forEach((id) => {
+      ["position-head", "pending-order-head", "symbol-head"].forEach((id) => {
         const head = $(id);
         if (!head) return;
         head.addEventListener("dragstart", handleTableColumnDragStart);
@@ -1804,6 +1860,13 @@ const tvbotHTML = `<!doctype html>
       const n = Number(v);
       if (!Number.isFinite(n)) return "-";
       return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " USD";
+    }
+
+    function formatSymbolTurnover(v) {
+      if (v === null || v === undefined || String(v).trim() === "") return "-";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " USDT";
     }
 
     function formatAssetAmount(v) {
@@ -2119,6 +2182,10 @@ const tvbotHTML = `<!doctype html>
 
     function textTableCell(value) {
       return "<td>" + escapeHTML(value) + "</td>";
+    }
+
+    function tableCell(html) {
+      return "<td>" + html + "</td>";
     }
 
     function timeTableCell(value) {
@@ -2806,35 +2873,21 @@ const tvbotHTML = `<!doctype html>
       const live = catalog.live || {};
       const demo = catalog.demo || {};
       const configured = data.symbols || {};
-      const configuredLookup = configuredSymbolMap();
-      const rows = filteredSymbolRows();
+      const rows = sortedSymbolRows(filteredSymbolRows());
       $("symbol-live-count").textContent = asText(live.count || (Array.isArray(live.instruments) ? live.instruments.length : 0));
       $("symbol-demo-count").textContent = asText(demo.count || (Array.isArray(demo.instruments) ? demo.instruments.length : 0));
       $("symbol-configured-count").textContent = asText(Object.keys(configured).length);
       $("symbol-visible-count").textContent = asText(rows.length);
+      renderTableStructure("symbols");
       const errors = [];
       if (state.symbolsError) errors.push(state.symbolsError);
       if (live.error) errors.push("live: " + live.error);
       if (demo.error) errors.push("模拟: " + demo.error);
+      if (live.ticker_error) errors.push("live ticker: " + live.ticker_error);
+      if (demo.ticker_error) errors.push("模拟 ticker: " + demo.ticker_error);
       $("symbol-errors").textContent = errors.join(" / ");
-      $("symbol-rows").innerHTML = rows.map((row) => {
-        const inst = row.instrument || {};
-        const base = inst.baseCcy || baseFromInstID(inst.instId);
-        const quote = inst.quoteCcy || quoteFromInstID(inst.instId);
-        const isConfigured = configuredLookup[String(inst.instId || "").toUpperCase()] || configuredLookup[String(base || "").toUpperCase()];
-        return "<tr>" +
-          "<td>" + pill(row.label, row.env === "live" ? "ok" : "warn") + "</td>" +
-          "<td>" + escapeHTML(asText(inst.instId)) + "</td>" +
-          "<td>" + pill(isConfigured ? "已配置" : "未配置", isConfigured ? "ok" : "") + "</td>" +
-          "<td>" + escapeHTML(asText(inst.state)) + "</td>" +
-          "<td>" + escapeHTML(asText(base) + " / " + asText(quote)) + "</td>" +
-          "<td>" + escapeHTML(asText(inst.settleCcy)) + "</td>" +
-          "<td>" + escapeHTML(valueWithUnit(inst.ctVal, inst.ctValCcy)) + "</td>" +
-          "<td>" + escapeHTML(asText(inst.minSz)) + "</td>" +
-          "<td>" + escapeHTML(asText(inst.lotSz)) + "</td>" +
-          "<td>" + escapeHTML(asText(inst.lever)) + "</td>" +
-          "</tr>";
-      }).join("") || '<tr><td colspan="10" class="muted">' + escapeHTML(state.symbolsError || "暂无币对数据") + '</td></tr>';
+      const columns = currentTableColumnDefs("symbols");
+      $("symbol-rows").innerHTML = rows.map((row) => "<tr>" + columns.map((col) => col.cell(row)).join("") + "</tr>").join("") || '<tr><td colspan="' + tableColumnCount("symbols") + '" class="muted">' + escapeHTML(state.symbolsError || "暂无币对数据") + '</td></tr>';
     }
 
     function filteredSymbolRows() {
@@ -2842,6 +2895,7 @@ const tvbotHTML = `<!doctype html>
       const catalog = data.okx || {};
       const envFilter = $("symbol-env") ? $("symbol-env").value : "all";
       const keyword = $("symbol-search") ? $("symbol-search").value.trim().toLowerCase() : "";
+      const configuredLookup = configuredSymbolMap();
       const groups = [
         { env: "live", label: "live", set: catalog.live || {} },
         { env: "demo", label: "模拟", set: catalog.demo || {} }
@@ -2862,10 +2916,88 @@ const tvbotHTML = `<!doctype html>
             ].join(" ").toLowerCase();
             if (!haystack.includes(keyword)) return;
           }
-          rows.push({ env: group.env, label: group.label, instrument: instrument });
+          rows.push({
+            env: group.env,
+            label: group.label,
+            instrument: instrument,
+            configured: symbolConfiguredByLookup(instrument, configuredLookup),
+            index: rows.length
+          });
         });
       });
       return rows;
+    }
+
+    function sortedSymbolRows(rows) {
+      const sort = state.symbolSort || {};
+      const col = symbolTableColumnDefs.find((def) => def.id === sort.column && def.sortType);
+      if (!col) return rows;
+      const direction = sort.direction === "desc" ? "desc" : "asc";
+      return rows.slice().sort((a, b) => {
+        const result = compareSymbolRows(col, a, b, direction);
+        if (result !== 0) return result;
+        return (a.index || 0) - (b.index || 0);
+      });
+    }
+
+    function compareSymbolRows(col, a, b, direction) {
+      const leftRaw = col.sortValue ? col.sortValue(a) : "";
+      const rightRaw = col.sortValue ? col.sortValue(b) : "";
+      if (col.sortType === "number") {
+        const left = Number(leftRaw);
+        const right = Number(rightRaw);
+        const leftOK = Number.isFinite(left);
+        const rightOK = Number.isFinite(right);
+        if (leftOK && rightOK) {
+          const result = left === right ? 0 : (left < right ? -1 : 1);
+          return direction === "desc" ? -result : result;
+        }
+        if (leftOK !== rightOK) return leftOK ? -1 : 1;
+        return 0;
+      }
+      const result = String(leftRaw || "").localeCompare(String(rightRaw || ""), "zh-CN", { numeric: true, sensitivity: "base" });
+      return direction === "desc" ? -result : result;
+    }
+
+    function setSymbolSort(columnID) {
+      const col = symbolTableColumnDefs.find((def) => def.id === columnID && def.sortType);
+      if (!col) return;
+      const current = state.symbolSort || {};
+      if (current.column === columnID) {
+        state.symbolSort = { column: columnID, direction: current.direction === "desc" ? "asc" : "desc" };
+      } else {
+        state.symbolSort = { column: columnID, direction: col.defaultSort === "desc" ? "desc" : "asc" };
+      }
+      renderSymbols();
+    }
+
+    function symbolConfiguredByLookup(inst, configuredLookup) {
+      const base = symbolBase(inst);
+      return !!(configuredLookup[String((inst || {}).instId || "").toUpperCase()] || configuredLookup[String(base || "").toUpperCase()]);
+    }
+
+    function symbolConfigured(row) {
+      return !!(row && row.configured);
+    }
+
+    function symbolConfiguredCell(row) {
+      const configured = symbolConfigured(row);
+      return tableCell(pill(configured ? "已配置" : "未配置", configured ? "ok" : ""));
+    }
+
+    function symbolBase(inst) {
+      inst = inst || {};
+      return inst.baseCcy || baseFromInstID(inst.instId);
+    }
+
+    function symbolQuote(inst) {
+      inst = inst || {};
+      return inst.quoteCcy || quoteFromInstID(inst.instId);
+    }
+
+    function symbolBaseQuoteText(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return asText(symbolBase(inst)) + " / " + asText(symbolQuote(inst));
     }
 
     function configuredSymbolMap() {
@@ -4273,6 +4405,12 @@ const tvbotHTML = `<!doctype html>
     $("refresh-symbols").addEventListener("click", () => loadSymbols(true).then(() => toast("币对已刷新")).catch((err) => toast(err.message)));
     $("symbol-search").addEventListener("input", () => renderSymbols());
     $("symbol-env").addEventListener("change", () => renderSymbols());
+    $("symbol-head").addEventListener("click", (event) => {
+      if (tableColumnDropSuppressClick) return;
+      const th = event.target.closest("th[data-symbol-sort]");
+      if (!th) return;
+      setSymbolSort(th.dataset.symbolSort);
+    });
     $("save-order-settings").addEventListener("click", () => saveOrderSettings().catch((err) => toast(err.message)));
     ["order-amount", "order-leverage", "order-type", "order-risk-type", "order-tp", "order-sl", "order-trailing", "order-long-multiplier", "order-short-multiplier"].forEach((id) => {
       $(id).addEventListener("input", () => renderOrderSettingsPreview());

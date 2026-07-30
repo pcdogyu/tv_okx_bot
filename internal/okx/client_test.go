@@ -583,6 +583,35 @@ func TestClientMarketTickerParsesBidAsk(t *testing.T) {
 	}
 }
 
+func TestClientMarketTickersParsesPublicSwapTickers(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/market/tickers" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("instType") != "SWAP" {
+			t.Fatalf("bad tickers query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("OK-ACCESS-KEY") != "" {
+			t.Fatal("public tickers request should not be signed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+			{"instType":"SWAP","instId":"BTC-USDT-SWAP","last":"100","volCcy24h":"2.5","vol24h":"250","ts":"1784880000000"},
+			{"instType":"SWAP","instId":"ETH-USDT-SWAP","last":"10","volCcy24h":"3","vol24h":"30","ts":"1784880001000"}
+		]}`))
+	}))
+	defer ts.Close()
+
+	client := Client{BaseURL: ts.URL, HTTPClient: ts.Client()}
+	tickers, _, err := client.MarketTickers(context.Background(), "swap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tickers) != 2 || tickers[0].InstID != "BTC-USDT-SWAP" || tickers[0].Last != "100" || tickers[0].VolCcy24h != "2.5" || tickers[0].TS != "1784880000000" {
+		t.Fatalf("bad tickers: %#v", tickers)
+	}
+}
+
 func TestClientFillsHistorySignsPrivateDemoRequest(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
 	secret := "secret"

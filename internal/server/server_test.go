@@ -257,7 +257,15 @@ func TestRoutes(t *testing.T) {
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("币对配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单配置")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) {
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("今日累计成交金额")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbolTableColumnDefs")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-symbol-sort")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-head")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-cols")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("formatSymbolTurnover")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("setSymbolSort")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`symbols: currentTableColumnOrder("symbols")`)) {
 		t.Fatalf("tvbot ui should include symbol and order config tabs")
 	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("成交监听")) ||
@@ -528,7 +536,8 @@ func TestTVBotConfigSavesTableColumns(t *testing.T) {
 		"ui": {
 			"table_columns": {
 				"positions": ["upl", "exchange", "bad", "upl"],
-				"pending_orders": ["actions", "symbol", "unknown", "actions"]
+				"pending_orders": ["actions", "symbol", "unknown", "actions"],
+				"symbols": ["turnover", "symbol", "missing", "turnover"]
 			}
 		}
 	}`)))
@@ -554,6 +563,12 @@ func TestTVBotConfigSavesTableColumns(t *testing.T) {
 		strings.Contains(strings.Join(cfg.UI.TableColumns.PendingOrders, ","), "unknown") {
 		t.Fatalf("pending order table columns should be normalized and saved: %#v", cfg.UI.TableColumns.PendingOrders)
 	}
+	if len(cfg.UI.TableColumns.Symbols) != len(config.DefaultSymbolTableColumns) ||
+		cfg.UI.TableColumns.Symbols[0] != "turnover" ||
+		cfg.UI.TableColumns.Symbols[1] != "symbol" ||
+		strings.Contains(strings.Join(cfg.UI.TableColumns.Symbols, ","), "missing") {
+		t.Fatalf("symbol table columns should be normalized and saved: %#v", cfg.UI.TableColumns.Symbols)
+	}
 }
 
 func TestTVBotConfigRepairsInvalidDefaultTab(t *testing.T) {
@@ -575,35 +590,51 @@ func TestTVBotConfigRepairsInvalidDefaultTab(t *testing.T) {
 }
 
 func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
-	var sawLive, sawDemo bool
+	var sawLive, sawDemo, sawLiveTickers, sawDemoTickers bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v5/public/instruments" {
-			t.Fatalf("unexpected path %s", r.URL.Path)
-		}
-		if r.URL.Query().Get("instType") != "SWAP" {
-			t.Fatalf("bad instruments query: %s", r.URL.RawQuery)
-		}
-		if r.Header.Get("OK-ACCESS-KEY") != "" {
-			t.Fatal("public instruments request should not be signed")
-		}
 		w.Header().Set("Content-Type", "application/json")
-		if r.Header.Get("x-simulated-trading") == "1" {
-			sawDemo = true
+		if r.Header.Get("OK-ACCESS-KEY") != "" {
+			t.Fatal("public instruments/tickers request should not be signed")
+		}
+		switch r.URL.Path {
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instType") != "SWAP" {
+				t.Fatalf("bad instruments query: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get("x-simulated-trading") == "1" {
+				sawDemo = true
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+					{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
+					{"instType":"SWAP","instId":"DOGE-USDT-SWAP","baseCcy":"DOGE","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"1000","ctValCcy":"DOGE","lotSz":"1","minSz":"1","lever":"50","state":"live"},
+					{"instType":"SWAP","instId":"SOL-USDC-SWAP","baseCcy":"SOL","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"1","ctValCcy":"SOL","lotSz":"0.01","minSz":"0.01","lever":"50","state":"live"},
+					{"instType":"SWAP","instId":"USDC-USDT-SWAP","uly":"USDC-USDT","instFamily":"USDC-USDT","settleCcy":"USDT","ctVal":"1","ctValCcy":"USDC","lotSz":"1","minSz":"1","lever":"50","state":"live"}
+				]}`))
+				return
+			}
+			sawLive = true
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"ETH-USDT-SWAP","baseCcy":"ETH","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.1","ctValCcy":"ETH","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
 				{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
-				{"instType":"SWAP","instId":"DOGE-USDT-SWAP","baseCcy":"DOGE","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"1000","ctValCcy":"DOGE","lotSz":"1","minSz":"1","lever":"50","state":"live"},
-				{"instType":"SWAP","instId":"SOL-USDC-SWAP","baseCcy":"SOL","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"1","ctValCcy":"SOL","lotSz":"0.01","minSz":"0.01","lever":"50","state":"live"},
+				{"instType":"SWAP","instId":"BTC-USDC-SWAP","baseCcy":"BTC","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
 				{"instType":"SWAP","instId":"USDC-USDT-SWAP","uly":"USDC-USDT","instFamily":"USDC-USDT","settleCcy":"USDT","ctVal":"1","ctValCcy":"USDC","lotSz":"1","minSz":"1","lever":"50","state":"live"}
 			]}`))
-			return
+		case "/api/v5/market/tickers":
+			if r.URL.Query().Get("instType") != "SWAP" {
+				t.Fatalf("bad tickers query: %s", r.URL.RawQuery)
+			}
+			if r.Header.Get("x-simulated-trading") == "1" {
+				sawDemoTickers = true
+			} else {
+				sawLiveTickers = true
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","last":"50000","volCcy24h":"2","ts":"1784880000000"},
+				{"instType":"SWAP","instId":"DOGE-USDT-SWAP","last":"0.2","volCcy24h":"10000","ts":"1784880001000"},
+				{"instType":"SWAP","instId":"ETH-USDT-SWAP","last":"2500","volCcy24h":"3","ts":"1784880002000"}
+			]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		sawLive = true
-		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
-			{"instType":"SWAP","instId":"ETH-USDT-SWAP","baseCcy":"ETH","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.1","ctValCcy":"ETH","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
-			{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
-			{"instType":"SWAP","instId":"BTC-USDC-SWAP","baseCcy":"BTC","quoteCcy":"USDC","settleCcy":"USDC","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"},
-			{"instType":"SWAP","instId":"USDC-USDT-SWAP","uly":"USDC-USDT","instFamily":"USDC-USDT","settleCcy":"USDT","ctVal":"1","ctValCcy":"USDC","lotSz":"1","minSz":"1","lever":"50","state":"live"}
-		]}`))
 	}))
 	defer ts.Close()
 
@@ -620,8 +651,8 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("symbols status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if !sawLive || !sawDemo {
-		t.Fatalf("expected live and demo instruments requests live=%v demo=%v", sawLive, sawDemo)
+	if !sawLive || !sawDemo || !sawLiveTickers || !sawDemoTickers {
+		t.Fatalf("expected live/demo instruments and tickers requests live=%v demo=%v liveTickers=%v demoTickers=%v", sawLive, sawDemo, sawLiveTickers, sawDemoTickers)
 	}
 	var resp symbolsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
@@ -636,6 +667,12 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 	if resp.OKX.Live.Instruments[0].InstID != "BTC-USDT-SWAP" || resp.OKX.Demo.Instruments[1].InstID != "DOGE-USDT-SWAP" {
 		t.Fatalf("instruments should be sorted and parsed: %#v", resp.OKX)
 	}
+	if resp.OKX.Live.Instruments[0].TurnoverUSDT24h != "100000" || resp.OKX.Demo.Instruments[1].TurnoverUSDT24h != "2000" {
+		t.Fatalf("instruments should include 24h turnover: %#v", resp.OKX)
+	}
+	if resp.OKX.Live.Instruments[0].TickerUpdatedAt == "" {
+		t.Fatalf("instruments should include ticker updated time: %#v", resp.OKX.Live.Instruments[0])
+	}
 	for _, inst := range append(resp.OKX.Live.Instruments, resp.OKX.Demo.Instruments...) {
 		if strings.Contains(inst.InstID, "USDC") || inst.QuoteCcy == "USDC" || inst.SettleCcy == "USDC" {
 			t.Fatalf("USDC instruments should be filtered out: %#v", resp.OKX)
@@ -643,6 +680,50 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 	}
 	if resp.OKX.Live.Error != "" || resp.OKX.Demo.Error != "" {
 		t.Fatalf("unexpected OKX errors: %#v", resp.OKX)
+	}
+}
+
+func TestTVBotSymbolsKeepsCatalogWhenTickerFetchFails(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/public/instruments":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","ctValCcy":"BTC","lotSz":"0.01","minSz":"0.01","lever":"100","state":"live"}
+			]}`))
+		case "/api/v5/market/tickers":
+			http.Error(w, "ticker unavailable", http.StatusBadGateway)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	srv := newTestServer(t)
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = ts.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = ts.Client()
+
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/symbols", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("symbols status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp symbolsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.OKX.Live.Count != 1 || resp.OKX.Demo.Count != 1 {
+		t.Fatalf("ticker failure should keep instruments: %#v", resp.OKX)
+	}
+	if resp.OKX.Live.TickerError == "" || resp.OKX.Demo.TickerError == "" {
+		t.Fatalf("ticker failure should be reported: %#v", resp.OKX)
+	}
+	if resp.OKX.Live.Instruments[0].TurnoverUSDT24h != "" {
+		t.Fatalf("turnover should be empty when ticker is unavailable: %#v", resp.OKX.Live.Instruments[0])
 	}
 }
 

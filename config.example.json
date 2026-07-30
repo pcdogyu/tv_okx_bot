@@ -99,6 +99,19 @@
         "filled",
         "state",
         "actions"
+      ],
+      "symbols": [
+        "env",
+        "symbol",
+        "configured",
+        "state",
+        "base_quote",
+        "settle",
+        "ct_val",
+        "min_size",
+        "lot_size",
+        "leverage",
+        "turnover"
       ]
     }
   }

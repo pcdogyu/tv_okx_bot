@@ -36,10 +36,14 @@ func TestNormalizeTableColumns(t *testing.T) {
 	if !reflect.DeepEqual(cfg.UI.TableColumns.PendingOrders, DefaultPendingOrderTableColumns) {
 		t.Fatalf("blank pending order columns should use defaults: %#v", cfg.UI.TableColumns.PendingOrders)
 	}
+	if !reflect.DeepEqual(cfg.UI.TableColumns.Symbols, DefaultSymbolTableColumns) {
+		t.Fatalf("blank symbol columns should use defaults: %#v", cfg.UI.TableColumns.Symbols)
+	}
 
 	cfg.UI.TableColumns = TableColumnsConfig{
 		Positions:     []string{"upl", "unknown", "exchange", "upl"},
 		PendingOrders: []string{"actions", "symbol", "bad", "actions"},
+		Symbols:       []string{"turnover", "symbol", "bad", "turnover"},
 	}
 	cfg.Normalize()
 	if len(cfg.UI.TableColumns.Positions) != len(DefaultPositionTableColumns) ||
@@ -52,10 +56,15 @@ func TestNormalizeTableColumns(t *testing.T) {
 		cfg.UI.TableColumns.PendingOrders[1] != "symbol" {
 		t.Fatalf("pending order columns should keep known unique order then append defaults: %#v", cfg.UI.TableColumns.PendingOrders)
 	}
-	if containsString(cfg.UI.TableColumns.Positions, "unknown") || containsString(cfg.UI.TableColumns.PendingOrders, "bad") {
+	if len(cfg.UI.TableColumns.Symbols) != len(DefaultSymbolTableColumns) ||
+		cfg.UI.TableColumns.Symbols[0] != "turnover" ||
+		cfg.UI.TableColumns.Symbols[1] != "symbol" {
+		t.Fatalf("symbol columns should keep known unique order then append defaults: %#v", cfg.UI.TableColumns.Symbols)
+	}
+	if containsString(cfg.UI.TableColumns.Positions, "unknown") || containsString(cfg.UI.TableColumns.PendingOrders, "bad") || containsString(cfg.UI.TableColumns.Symbols, "bad") {
 		t.Fatalf("unknown columns should be removed: %#v", cfg.UI.TableColumns)
 	}
-	if countString(cfg.UI.TableColumns.Positions, "upl") != 1 || countString(cfg.UI.TableColumns.PendingOrders, "actions") != 1 {
+	if countString(cfg.UI.TableColumns.Positions, "upl") != 1 || countString(cfg.UI.TableColumns.PendingOrders, "actions") != 1 || countString(cfg.UI.TableColumns.Symbols, "turnover") != 1 {
 		t.Fatalf("duplicate columns should be removed: %#v", cfg.UI.TableColumns)
 	}
 }

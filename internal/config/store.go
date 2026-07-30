@@ -67,5 +67,6 @@ func cloneTableColumns(in TableColumnsConfig) TableColumnsConfig {
 	return TableColumnsConfig{
 		Positions:     cloneStrings(in.Positions),
 		PendingOrders: cloneStrings(in.PendingOrders),
+		Symbols:       cloneStrings(in.Symbols),
 	}
 }

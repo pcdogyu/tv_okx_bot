@@ -89,6 +89,7 @@ type UIConfig struct {
 type TableColumnsConfig struct {
 	Positions     []string `json:"positions"`
 	PendingOrders []string `json:"pending_orders"`
+	Symbols       []string `json:"symbols"`
 }
 
 type MenuItemConfig struct {
@@ -148,6 +149,20 @@ var DefaultPendingOrderTableColumns = []string{
 	"filled",
 	"state",
 	"actions",
+}
+
+var DefaultSymbolTableColumns = []string{
+	"env",
+	"symbol",
+	"configured",
+	"state",
+	"base_quote",
+	"settle",
+	"ct_val",
+	"min_size",
+	"lot_size",
+	"leverage",
+	"turnover",
 }
 
 var defaultMenuLabels = map[string]string{
@@ -549,6 +564,7 @@ func defaultTableColumns() TableColumnsConfig {
 	return TableColumnsConfig{
 		Positions:     cloneStrings(DefaultPositionTableColumns),
 		PendingOrders: cloneStrings(DefaultPendingOrderTableColumns),
+		Symbols:       cloneStrings(DefaultSymbolTableColumns),
 	}
 }
 
@@ -556,6 +572,7 @@ func normalizeTableColumns(columns TableColumnsConfig) TableColumnsConfig {
 	return TableColumnsConfig{
 		Positions:     normalizeColumnOrder(columns.Positions, DefaultPositionTableColumns),
 		PendingOrders: normalizeColumnOrder(columns.PendingOrders, DefaultPendingOrderTableColumns),
+		Symbols:       normalizeColumnOrder(columns.Symbols, DefaultSymbolTableColumns),
 	}
 }
 

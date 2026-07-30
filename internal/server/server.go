@@ -708,11 +708,18 @@ type okxSymbolsCatalog struct {
 }
 
 type okxInstrumentSet struct {
-	Env         string           `json:"env"`
-	Demo        bool             `json:"demo"`
-	Count       int              `json:"count"`
-	Instruments []okx.Instrument `json:"instruments"`
-	Error       string           `json:"error,omitempty"`
+	Env         string             `json:"env"`
+	Demo        bool               `json:"demo"`
+	Count       int                `json:"count"`
+	Instruments []symbolInstrument `json:"instruments"`
+	Error       string             `json:"error,omitempty"`
+	TickerError string             `json:"ticker_error,omitempty"`
+}
+
+type symbolInstrument struct {
+	okx.Instrument
+	TurnoverUSDT24h string `json:"turnover_usdt_24h,omitempty"`
+	TickerUpdatedAt string `json:"ticker_updated_at,omitempty"`
 }
 
 func (s *Server) fetchOKXInstrumentSet(ctx context.Context, cfg config.Config, demo bool) okxInstrumentSet {
@@ -723,7 +730,7 @@ func (s *Server) fetchOKXInstrumentSet(ctx context.Context, cfg config.Config, d
 	set := okxInstrumentSet{
 		Env:         env,
 		Demo:        demo,
-		Instruments: []okx.Instrument{},
+		Instruments: []symbolInstrument{},
 	}
 	client := okx.Client{
 		BaseURL:    cfg.OKXBaseURL(),
@@ -739,9 +746,50 @@ func (s *Server) fetchOKXInstrumentSet(ctx context.Context, cfg config.Config, d
 	sort.Slice(instruments, func(i, j int) bool {
 		return strings.Compare(instruments[i].InstID, instruments[j].InstID) < 0
 	})
-	set.Instruments = instruments
+	tickers, _, err := client.MarketTickers(ctx, "SWAP")
+	if err != nil {
+		set.TickerError = err.Error()
+	}
+	set.Instruments = symbolInstrumentsWithTickers(instruments, tickers)
 	set.Count = len(instruments)
 	return set
+}
+
+func symbolInstrumentsWithTickers(instruments []okx.Instrument, tickers []okx.Ticker) []symbolInstrument {
+	tickerByInstID := make(map[string]okx.Ticker, len(tickers))
+	for _, ticker := range tickers {
+		instID := strings.ToUpper(strings.TrimSpace(ticker.InstID))
+		if instID != "" {
+			tickerByInstID[instID] = ticker
+		}
+	}
+	out := make([]symbolInstrument, 0, len(instruments))
+	for _, inst := range instruments {
+		view := symbolInstrument{Instrument: inst}
+		if ticker, ok := tickerByInstID[strings.ToUpper(strings.TrimSpace(inst.InstID))]; ok {
+			view.TurnoverUSDT24h = tickerTurnoverUSDT24h(ticker)
+			view.TickerUpdatedAt = tickerUpdatedAt(ticker)
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+func tickerTurnoverUSDT24h(ticker okx.Ticker) string {
+	vol, volOK := parseAnyFloat(ticker.VolCcy24h)
+	last, lastOK := parseAnyFloat(ticker.Last)
+	if !volOK || !lastOK || vol < 0 || last < 0 {
+		return ""
+	}
+	return trading.NormalizeFloat(vol * last)
+}
+
+func tickerUpdatedAt(ticker okx.Ticker) string {
+	ts, err := strconv.ParseInt(strings.TrimSpace(ticker.TS), 10, 64)
+	if err != nil || ts <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ts).UTC().Format(time.RFC3339Nano)
 }
 
 func filterOKXUSDTInstruments(instruments []okx.Instrument) []okx.Instrument {
