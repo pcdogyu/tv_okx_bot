@@ -1227,14 +1227,15 @@ const tvbotHTML = `<!doctype html>
       <div class="section-head">
         <h2>币对配置</h2>
         <div class="symbol-controls">
-          <label>环境<select id="symbol-env"><option value="all">全部</option><option value="live">live</option><option value="demo">模拟</option></select></label>
-          <label>搜索<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="BTC-USDT-SWAP"></label>
+          <label>交易所<select id="symbol-exchange"><option value="all">全部</option><option value="okx">OKX</option><option value="binance">Binance</option></select></label>
+          <label>环境<select id="symbol-env"><option value="all">全部</option><option value="live">生产</option><option value="demo">测试</option></select></label>
+          <label>搜索<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="BTC-USDT-SWAP / BTCUSDT"></label>
           <button class="btn primary" type="button" id="refresh-symbols">刷新币对</button>
         </div>
       </div>
       <div class="analysis-metrics symbol-metrics">
-        <div class="analysis-card"><div class="label">live 币对</div><div class="value" id="symbol-live-count">-</div></div>
-        <div class="analysis-card"><div class="label">模拟币对</div><div class="value" id="symbol-demo-count">-</div></div>
+        <div class="analysis-card"><div class="label">生产币对</div><div class="value" id="symbol-live-count">-</div></div>
+        <div class="analysis-card"><div class="label">测试币对</div><div class="value" id="symbol-demo-count">-</div></div>
         <div class="analysis-card"><div class="label">本地已配置</div><div class="value" id="symbol-configured-count">-</div></div>
         <div class="analysis-card"><div class="label">当前显示</div><div class="value" id="symbol-visible-count">-</div></div>
       </div>
@@ -1545,17 +1546,17 @@ const tvbotHTML = `<!doctype html>
       { id: "actions", title: "操作", colClass: "pending-actions-col", cell: (row) => pendingOrderActionCell(row) }
     ];
     const symbolTableColumnDefs = [
-      { id: "env", title: "交易环境", colClass: "symbol-env-col", sortType: "text", cell: (row) => tableCell(pill(row.label, row.env === "live" ? "ok" : "warn")), sortValue: (row) => row.label },
-      { id: "symbol", title: "币对", colClass: "symbol-symbol-col", sortType: "text", cell: (row) => textTableCell(asText((row.instrument || {}).instId)), sortValue: (row) => (row.instrument || {}).instId },
+      { id: "env", title: "交易所 / 环境", colClass: "symbol-env-col", sortType: "text", cell: (row) => tableCell(pill(symbolExchangeEnvText(row), row.env === "live" ? "ok" : "warn")), sortValue: (row) => symbolExchangeEnvText(row) },
+      { id: "symbol", title: "币对", colClass: "symbol-symbol-col", sortType: "text", cell: (row) => textTableCell(asText(symbolInstID(row))), sortValue: (row) => symbolInstID(row) },
       { id: "configured", title: "本地配置", colClass: "symbol-configured-col", sortType: "text", cell: (row) => symbolConfiguredCell(row), sortValue: (row) => symbolConfigured(row) ? "1" : "0" },
-      { id: "state", title: "OKX 状态", colClass: "symbol-state-col", sortType: "text", cell: (row) => textTableCell(asText((row.instrument || {}).state)), sortValue: (row) => (row.instrument || {}).state },
+      { id: "state", title: "状态", colClass: "symbol-state-col", sortType: "text", cell: (row) => textTableCell(asText(symbolState(row))), sortValue: (row) => symbolState(row) },
       { id: "base_quote", title: "基础 / 计价", colClass: "symbol-base-quote-col", sortType: "text", cell: (row) => textTableCell(symbolBaseQuoteText(row)), sortValue: (row) => symbolBaseQuoteText(row) },
-      { id: "settle", title: "结算币", colClass: "symbol-settle-col", sortType: "text", cell: (row) => textTableCell(asText((row.instrument || {}).settleCcy)), sortValue: (row) => (row.instrument || {}).settleCcy },
-      { id: "ct_val", title: "合约面值", colClass: "symbol-ct-val-col", sortType: "number", cell: (row) => textTableCell(valueWithUnit((row.instrument || {}).ctVal, (row.instrument || {}).ctValCcy)), sortValue: (row) => (row.instrument || {}).ctVal },
-      { id: "min_size", title: "最小下单", colClass: "symbol-min-size-col", sortType: "number", cell: (row) => textTableCell(asText((row.instrument || {}).minSz)), sortValue: (row) => (row.instrument || {}).minSz },
-      { id: "lot_size", title: "数量步长", colClass: "symbol-lot-size-col", sortType: "number", cell: (row) => textTableCell(asText((row.instrument || {}).lotSz)), sortValue: (row) => (row.instrument || {}).lotSz },
-      { id: "leverage", title: "杠杆", colClass: "symbol-leverage-col", sortType: "number", cell: (row) => textTableCell(asText((row.instrument || {}).lever)), sortValue: (row) => (row.instrument || {}).lever },
-      { id: "turnover", title: "今日累计成交金额", colClass: "symbol-turnover-col", sortType: "number", defaultSort: "desc", cell: (row) => textTableCell(formatSymbolTurnover((row.instrument || {}).turnover_usdt_24h)), sortValue: (row) => (row.instrument || {}).turnover_usdt_24h }
+      { id: "settle", title: "结算币", colClass: "symbol-settle-col", sortType: "text", cell: (row) => textTableCell(asText(symbolSettle(row))), sortValue: (row) => symbolSettle(row) },
+      { id: "ct_val", title: "合约面值", colClass: "symbol-ct-val-col", sortType: "number", cell: (row) => textTableCell(valueWithUnit(symbolCtVal(row), symbolCtValUnit(row))), sortValue: (row) => symbolCtVal(row) },
+      { id: "min_size", title: "最小下单", colClass: "symbol-min-size-col", sortType: "number", cell: (row) => textTableCell(asText(symbolMinSize(row))), sortValue: (row) => symbolMinSize(row) },
+      { id: "lot_size", title: "数量步长", colClass: "symbol-lot-size-col", sortType: "number", cell: (row) => textTableCell(asText(symbolLotSize(row))), sortValue: (row) => symbolLotSize(row) },
+      { id: "leverage", title: "杠杆", colClass: "symbol-leverage-col", sortType: "number", cell: (row) => textTableCell(asText(symbolLeverage(row))), sortValue: (row) => symbolLeverage(row) },
+      { id: "turnover", title: "今日累计成交金额", colClass: "symbol-turnover-col", sortType: "number", defaultSort: "desc", cell: (row) => textTableCell(formatSymbolTurnover(symbolTurnover(row))), sortValue: (row) => symbolTurnover(row) }
     ];
 
     function tableColumnDefs(tableID) {
@@ -2761,7 +2762,7 @@ const tvbotHTML = `<!doctype html>
 
     async function loadSymbols(showLoading) {
       if (showLoading) {
-        $("symbol-rows").innerHTML = '<tr><td colspan="10" class="muted">载入中...</td></tr>';
+        $("symbol-rows").innerHTML = '<tr><td colspan="' + tableColumnCount("symbols") + '" class="muted">载入中...</td></tr>';
       }
       try {
         state.symbols = await api("/tvbot/symbols");
@@ -2869,22 +2870,25 @@ const tvbotHTML = `<!doctype html>
 
     function renderSymbols() {
       const data = state.symbols || {};
-      const catalog = data.okx || {};
-      const live = catalog.live || {};
-      const demo = catalog.demo || {};
+      const okxCatalog = data.okx || {};
+      const binanceCatalog = data.binance || {};
+      const okxLive = okxCatalog.live || {};
+      const okxDemo = okxCatalog.demo || {};
+      const binanceLive = binanceCatalog.live || {};
+      const binanceDemo = binanceCatalog.demo || {};
       const configured = data.symbols || {};
       const rows = sortedSymbolRows(filteredSymbolRows());
-      $("symbol-live-count").textContent = asText(live.count || (Array.isArray(live.instruments) ? live.instruments.length : 0));
-      $("symbol-demo-count").textContent = asText(demo.count || (Array.isArray(demo.instruments) ? demo.instruments.length : 0));
+      $("symbol-live-count").textContent = asText(symbolSetCount(okxLive) + symbolSetCount(binanceLive));
+      $("symbol-demo-count").textContent = asText(symbolSetCount(okxDemo) + symbolSetCount(binanceDemo));
       $("symbol-configured-count").textContent = asText(Object.keys(configured).length);
       $("symbol-visible-count").textContent = asText(rows.length);
       renderTableStructure("symbols");
       const errors = [];
       if (state.symbolsError) errors.push(state.symbolsError);
-      if (live.error) errors.push("live: " + live.error);
-      if (demo.error) errors.push("模拟: " + demo.error);
-      if (live.ticker_error) errors.push("live ticker: " + live.ticker_error);
-      if (demo.ticker_error) errors.push("模拟 ticker: " + demo.ticker_error);
+      collectSymbolSetErrors(errors, "OKX 生产", okxLive);
+      collectSymbolSetErrors(errors, "OKX 测试", okxDemo);
+      collectSymbolSetErrors(errors, "Binance 生产", binanceLive);
+      collectSymbolSetErrors(errors, "Binance 测试", binanceDemo);
       $("symbol-errors").textContent = errors.join(" / ");
       const columns = currentTableColumnDefs("symbols");
       $("symbol-rows").innerHTML = rows.map((row) => "<tr>" + columns.map((col) => col.cell(row)).join("") + "</tr>").join("") || '<tr><td colspan="' + tableColumnCount("symbols") + '" class="muted">' + escapeHTML(state.symbolsError || "暂无币对数据") + '</td></tr>';
@@ -2892,33 +2896,48 @@ const tvbotHTML = `<!doctype html>
 
     function filteredSymbolRows() {
       const data = state.symbols || {};
-      const catalog = data.okx || {};
+      const okxCatalog = data.okx || {};
+      const binanceCatalog = data.binance || {};
+      const exchangeFilter = $("symbol-exchange") ? $("symbol-exchange").value : "all";
       const envFilter = $("symbol-env") ? $("symbol-env").value : "all";
       const keyword = $("symbol-search") ? $("symbol-search").value.trim().toLowerCase() : "";
       const configuredLookup = configuredSymbolMap();
       const groups = [
-        { env: "live", label: "live", set: catalog.live || {} },
-        { env: "demo", label: "模拟", set: catalog.demo || {} }
+        { exchange: "okx", exchangeLabel: "OKX", env: "live", envLabel: "生产", set: okxCatalog.live || {} },
+        { exchange: "okx", exchangeLabel: "OKX", env: "demo", envLabel: "测试", set: okxCatalog.demo || {} },
+        { exchange: "binance", exchangeLabel: "Binance", env: "live", envLabel: "生产", set: binanceCatalog.live || {} },
+        { exchange: "binance", exchangeLabel: "Binance", env: "demo", envLabel: "测试", set: binanceCatalog.demo || {} }
       ];
       const rows = [];
       groups.forEach((group) => {
+        if (exchangeFilter !== "all" && exchangeFilter !== group.exchange) return;
         if (envFilter !== "all" && envFilter !== group.env) return;
         const instruments = Array.isArray(group.set.instruments) ? group.set.instruments : [];
         instruments.forEach((instrument) => {
           if (keyword) {
             const haystack = [
+              group.exchangeLabel,
+              group.envLabel,
               instrument.instId,
+              instrument.symbol,
               instrument.baseCcy,
+              instrument.baseAsset,
               instrument.quoteCcy,
+              instrument.quoteAsset,
               instrument.settleCcy,
+              instrument.marginAsset,
               instrument.instFamily,
-              instrument.uly
+              instrument.uly,
+              instrument.pair
             ].join(" ").toLowerCase();
             if (!haystack.includes(keyword)) return;
           }
           rows.push({
+            exchange: group.exchange,
+            exchangeLabel: group.exchangeLabel,
             env: group.env,
-            label: group.label,
+            envLabel: group.envLabel,
+            label: symbolExchangeEnvText(group),
             instrument: instrument,
             configured: symbolConfiguredByLookup(instrument, configuredLookup),
             index: rows.length
@@ -2971,9 +2990,74 @@ const tvbotHTML = `<!doctype html>
       renderSymbols();
     }
 
+    function symbolSetCount(set) {
+      const count = Number((set || {}).count);
+      if (Number.isFinite(count)) return count;
+      return Array.isArray((set || {}).instruments) ? set.instruments.length : 0;
+    }
+
+    function collectSymbolSetErrors(errors, label, set) {
+      set = set || {};
+      if (set.error) errors.push(label + ": " + set.error);
+      if (set.ticker_error) errors.push(label + " ticker: " + set.ticker_error);
+    }
+
+    function symbolExchangeEnvText(row) {
+      row = row || {};
+      const exchange = row.exchangeLabel || (String(row.exchange || "").toLowerCase() === "binance" ? "Binance" : "OKX");
+      const env = row.envLabel || (row.env === "demo" ? "测试" : "生产");
+      return exchange + " " + env;
+    }
+
+    function symbolInstID(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return inst.instId || inst.symbol || "";
+    }
+
+    function symbolState(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return inst.state || inst.status || "";
+    }
+
+    function symbolSettle(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return inst.settleCcy || inst.marginAsset || "";
+    }
+
+    function symbolCtVal(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return inst.ctVal || "";
+    }
+
+    function symbolCtValUnit(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return inst.ctValCcy || "";
+    }
+
+    function symbolMinSize(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return inst.minSz || inst.min_qty || "";
+    }
+
+    function symbolLotSize(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return inst.lotSz || inst.step_size || "";
+    }
+
+    function symbolLeverage(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return inst.lever || "";
+    }
+
+    function symbolTurnover(row) {
+      const inst = row && row.instrument ? row.instrument : {};
+      return inst.turnover_usdt_24h || "";
+    }
+
     function symbolConfiguredByLookup(inst, configuredLookup) {
       const base = symbolBase(inst);
-      return !!(configuredLookup[String((inst || {}).instId || "").toUpperCase()] || configuredLookup[String(base || "").toUpperCase()]);
+      const symbol = symbolInstID({ instrument: inst });
+      return !!(configuredLookup[String(symbol || "").toUpperCase()] || configuredLookup[String(base || "").toUpperCase()]);
     }
 
     function symbolConfigured(row) {
@@ -2987,12 +3071,12 @@ const tvbotHTML = `<!doctype html>
 
     function symbolBase(inst) {
       inst = inst || {};
-      return inst.baseCcy || baseFromInstID(inst.instId);
+      return inst.baseCcy || inst.baseAsset || baseFromInstID(inst.instId || inst.symbol);
     }
 
     function symbolQuote(inst) {
       inst = inst || {};
-      return inst.quoteCcy || quoteFromInstID(inst.instId);
+      return inst.quoteCcy || inst.quoteAsset || quoteFromInstID(inst.instId || inst.symbol);
     }
 
     function symbolBaseQuoteText(row) {
@@ -3013,12 +3097,22 @@ const tvbotHTML = `<!doctype html>
     }
 
     function baseFromInstID(instID) {
-      const parts = String(instID || "").split("-");
+      const raw = String(instID || "");
+      if (!raw.includes("-")) {
+        if (raw.endsWith("USDT")) return raw.slice(0, -4);
+        if (raw.endsWith("USDC")) return raw.slice(0, -4);
+      }
+      const parts = raw.split("-");
       return parts[0] || "";
     }
 
     function quoteFromInstID(instID) {
-      const parts = String(instID || "").split("-");
+      const raw = String(instID || "");
+      if (!raw.includes("-")) {
+        if (raw.endsWith("USDT")) return "USDT";
+        if (raw.endsWith("USDC")) return "USDC";
+      }
+      const parts = raw.split("-");
       return parts[1] || "";
     }
 
@@ -4404,6 +4498,7 @@ const tvbotHTML = `<!doctype html>
     $("save-config").addEventListener("click", () => saveConfig().catch((err) => toast(err.message)));
     $("refresh-symbols").addEventListener("click", () => loadSymbols(true).then(() => toast("币对已刷新")).catch((err) => toast(err.message)));
     $("symbol-search").addEventListener("input", () => renderSymbols());
+    $("symbol-exchange").addEventListener("change", () => renderSymbols());
     $("symbol-env").addEventListener("change", () => renderSymbols());
     $("symbol-head").addEventListener("click", (event) => {
       if (tableColumnDropSuppressClick) return;

@@ -258,11 +258,15 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("币对配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-exchange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("Binance")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("交易所 / 环境")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("今日累计成交金额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbolTableColumnDefs")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-symbol-sort")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-head")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-cols")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data.binance")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("formatSymbolTurnover")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("setSymbolSort")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`symbols: currentTableColumnOrder("symbols")`)) {
@@ -591,7 +595,7 @@ func TestTVBotConfigRepairsInvalidDefaultTab(t *testing.T) {
 
 func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 	var sawLive, sawDemo, sawLiveTickers, sawDemoTickers bool
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	okxTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("OK-ACCESS-KEY") != "" {
 			t.Fatal("public instruments/tickers request should not be signed")
@@ -636,13 +640,67 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 	}))
-	defer ts.Close()
+	defer okxTS.Close()
+
+	var sawBinanceLiveInfo, sawBinanceDemoInfo, sawBinanceLiveTickers, sawBinanceDemoTickers bool
+	binanceLiveTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("X-MBX-APIKEY") != "" {
+			t.Fatal("public Binance catalog request should not be signed")
+		}
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			sawBinanceLiveInfo = true
+			_, _ = w.Write([]byte(`{"symbols":[
+				{"symbol":"BTCUSDT","pair":"BTCUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.10"},{"filterType":"LOT_SIZE","minQty":"0.001","maxQty":"100","stepSize":"0.001"},{"filterType":"MIN_NOTIONAL","notional":"5"}]},
+				{"symbol":"ETHUSDT","pair":"ETHUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"ETH","quoteAsset":"USDT","marginAsset":"USDT","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.01"},{"filterType":"LOT_SIZE","minQty":"0.001","maxQty":"200","stepSize":"0.001"}]},
+				{"symbol":"BTCUSDC","pair":"BTCUSDC","contractType":"PERPETUAL","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDC","marginAsset":"USDC","filters":[]},
+				{"symbol":"USDCUSDT","pair":"USDCUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"USDC","quoteAsset":"USDT","marginAsset":"USDT","filters":[]},
+				{"symbol":"BNBUSDT_260925","pair":"BNBUSDT","contractType":"CURRENT_QUARTER","status":"TRADING","baseAsset":"BNB","quoteAsset":"USDT","marginAsset":"USDT","filters":[]}
+			]}`))
+		case "/fapi/v1/ticker/24hr":
+			sawBinanceLiveTickers = true
+			_, _ = w.Write([]byte(`[
+				{"symbol":"BTCUSDT","lastPrice":"64000","volume":"1","quoteVolume":"64000","closeTime":1784880000000},
+				{"symbol":"ETHUSDT","lastPrice":"2500","volume":"3","quoteVolume":"7500","closeTime":1784880001000}
+			]`))
+		default:
+			t.Fatalf("unexpected Binance live path %s", r.URL.Path)
+		}
+	}))
+	defer binanceLiveTS.Close()
+
+	binanceDemoTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("X-MBX-APIKEY") != "" {
+			t.Fatal("public Binance demo catalog request should not be signed")
+		}
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			sawBinanceDemoInfo = true
+			_, _ = w.Write([]byte(`{"symbols":[
+				{"symbol":"DOGEUSDT","pair":"DOGEUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"DOGE","quoteAsset":"USDT","marginAsset":"USDT","pricePrecision":5,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.00001"},{"filterType":"LOT_SIZE","minQty":"1","maxQty":"1000000","stepSize":"1"}]},
+				{"symbol":"SOLUSDC","pair":"SOLUSDC","contractType":"PERPETUAL","status":"TRADING","baseAsset":"SOL","quoteAsset":"USDC","marginAsset":"USDC","filters":[]}
+			]}`))
+		case "/fapi/v1/ticker/24hr":
+			sawBinanceDemoTickers = true
+			_, _ = w.Write([]byte(`[
+				{"symbol":"DOGEUSDT","lastPrice":"0.2","volume":"10000","quoteVolume":"2000","closeTime":1784880002000}
+			]`))
+		default:
+			t.Fatalf("unexpected Binance demo path %s", r.URL.Path)
+		}
+	}))
+	defer binanceDemoTS.Close()
 
 	srv := newTestServer(t)
 	cfg := srv.ConfigStore.Get()
-	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.BaseURL = okxTS.URL
+	cfg.Trading.BinanceBaseURL = binanceLiveTS.URL
+	cfg.Trading.BinanceDemoBaseURL = binanceDemoTS.URL
 	srv.ConfigStore = config.NewStore("", cfg)
-	srv.OKXHTTPClient = ts.Client()
+	srv.OKXHTTPClient = okxTS.Client()
+	srv.BinanceHTTPClient = binanceLiveTS.Client()
 
 	req := httptest.NewRequest(http.MethodGet, "/tvbot/symbols", nil)
 	req.SetBasicAuth("admin", "Admin123")
@@ -654,6 +712,9 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 	if !sawLive || !sawDemo || !sawLiveTickers || !sawDemoTickers {
 		t.Fatalf("expected live/demo instruments and tickers requests live=%v demo=%v liveTickers=%v demoTickers=%v", sawLive, sawDemo, sawLiveTickers, sawDemoTickers)
 	}
+	if !sawBinanceLiveInfo || !sawBinanceDemoInfo || !sawBinanceLiveTickers || !sawBinanceDemoTickers {
+		t.Fatalf("expected Binance live/demo exchangeInfo and tickers liveInfo=%v demoInfo=%v liveTickers=%v demoTickers=%v", sawBinanceLiveInfo, sawBinanceDemoInfo, sawBinanceLiveTickers, sawBinanceDemoTickers)
+	}
 	var resp symbolsResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -664,22 +725,47 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 	if resp.OKX.Live.Count != 2 || resp.OKX.Demo.Count != 2 {
 		t.Fatalf("bad OKX counts: %#v", resp.OKX)
 	}
+	if resp.Binance.Live.Count != 2 || resp.Binance.Demo.Count != 1 {
+		t.Fatalf("bad Binance counts: %#v", resp.Binance)
+	}
 	if resp.OKX.Live.Instruments[0].InstID != "BTC-USDT-SWAP" || resp.OKX.Demo.Instruments[1].InstID != "DOGE-USDT-SWAP" {
 		t.Fatalf("instruments should be sorted and parsed: %#v", resp.OKX)
+	}
+	if resp.Binance.Live.Instruments[0].Symbol != "BTCUSDT" || resp.Binance.Demo.Instruments[0].Symbol != "DOGEUSDT" {
+		t.Fatalf("Binance instruments should be sorted and parsed: %#v", resp.Binance)
 	}
 	if resp.OKX.Live.Instruments[0].TurnoverUSDT24h != "100000" || resp.OKX.Demo.Instruments[1].TurnoverUSDT24h != "2000" {
 		t.Fatalf("instruments should include 24h turnover: %#v", resp.OKX)
 	}
+	if resp.Binance.Live.Instruments[0].TurnoverUSDT24h != "64000" || resp.Binance.Demo.Instruments[0].TurnoverUSDT24h != "2000" {
+		t.Fatalf("Binance instruments should include 24h turnover: %#v", resp.Binance)
+	}
 	if resp.OKX.Live.Instruments[0].TickerUpdatedAt == "" {
 		t.Fatalf("instruments should include ticker updated time: %#v", resp.OKX.Live.Instruments[0])
+	}
+	if resp.Binance.Live.Instruments[0].TickerUpdatedAt == "" ||
+		resp.Binance.Live.Instruments[0].TickSize != "0.10" ||
+		resp.Binance.Live.Instruments[0].StepSize != "0.001" ||
+		resp.Binance.Live.Instruments[0].MinQty != "0.001" ||
+		resp.Binance.Live.Instruments[0].MaxQty != "100" ||
+		resp.Binance.Live.Instruments[0].MinNotional != "5" {
+		t.Fatalf("Binance instruments should include ticker time and filters: %#v", resp.Binance.Live.Instruments[0])
 	}
 	for _, inst := range append(resp.OKX.Live.Instruments, resp.OKX.Demo.Instruments...) {
 		if strings.Contains(inst.InstID, "USDC") || inst.QuoteCcy == "USDC" || inst.SettleCcy == "USDC" {
 			t.Fatalf("USDC instruments should be filtered out: %#v", resp.OKX)
 		}
 	}
+	for _, inst := range append(resp.Binance.Live.Instruments, resp.Binance.Demo.Instruments...) {
+		if strings.Contains(inst.Symbol, "USDC") || inst.BaseAsset == "USDC" || inst.QuoteAsset == "USDC" || inst.MarginAsset == "USDC" {
+			t.Fatalf("Binance USDC instruments should be filtered out: %#v", resp.Binance)
+		}
+	}
 	if resp.OKX.Live.Error != "" || resp.OKX.Demo.Error != "" {
 		t.Fatalf("unexpected OKX errors: %#v", resp.OKX)
+	}
+	if resp.Binance.Live.Error != "" || resp.Binance.Demo.Error != "" {
+		t.Fatalf("unexpected Binance errors: %#v", resp.Binance)
 	}
 }
 
@@ -693,6 +779,18 @@ func TestTVBotSymbolsKeepsCatalogWhenTickerFetchFails(t *testing.T) {
 			]}`))
 		case "/api/v5/market/tickers":
 			http.Error(w, "ticker unavailable", http.StatusBadGateway)
+		case "/fapi/v1/exchangeInfo":
+			if r.Header.Get("X-MBX-APIKEY") != "" {
+				t.Fatal("public Binance catalog request should not be signed")
+			}
+			_, _ = w.Write([]byte(`{"symbols":[
+				{"symbol":"BTCUSDT","pair":"BTCUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","filters":[{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}
+			]}`))
+		case "/fapi/v1/ticker/24hr":
+			if r.Header.Get("X-MBX-APIKEY") != "" {
+				t.Fatal("public Binance ticker request should not be signed")
+			}
+			http.Error(w, "binance ticker unavailable", http.StatusBadGateway)
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -702,8 +800,11 @@ func TestTVBotSymbolsKeepsCatalogWhenTickerFetchFails(t *testing.T) {
 	srv := newTestServer(t)
 	cfg := srv.ConfigStore.Get()
 	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.BinanceBaseURL = ts.URL
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
 	srv.ConfigStore = config.NewStore("", cfg)
 	srv.OKXHTTPClient = ts.Client()
+	srv.BinanceHTTPClient = ts.Client()
 
 	req := httptest.NewRequest(http.MethodGet, "/tvbot/symbols", nil)
 	req.SetBasicAuth("admin", "Admin123")
@@ -719,11 +820,20 @@ func TestTVBotSymbolsKeepsCatalogWhenTickerFetchFails(t *testing.T) {
 	if resp.OKX.Live.Count != 1 || resp.OKX.Demo.Count != 1 {
 		t.Fatalf("ticker failure should keep instruments: %#v", resp.OKX)
 	}
+	if resp.Binance.Live.Count != 1 || resp.Binance.Demo.Count != 1 {
+		t.Fatalf("Binance ticker failure should keep instruments: %#v", resp.Binance)
+	}
 	if resp.OKX.Live.TickerError == "" || resp.OKX.Demo.TickerError == "" {
 		t.Fatalf("ticker failure should be reported: %#v", resp.OKX)
 	}
+	if resp.Binance.Live.TickerError == "" || resp.Binance.Demo.TickerError == "" {
+		t.Fatalf("Binance ticker failure should be reported: %#v", resp.Binance)
+	}
 	if resp.OKX.Live.Instruments[0].TurnoverUSDT24h != "" {
 		t.Fatalf("turnover should be empty when ticker is unavailable: %#v", resp.OKX.Live.Instruments[0])
+	}
+	if resp.Binance.Live.Instruments[0].TurnoverUSDT24h != "" {
+		t.Fatalf("Binance turnover should be empty when ticker is unavailable: %#v", resp.Binance.Live.Instruments[0])
 	}
 }
 

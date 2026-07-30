@@ -355,6 +355,32 @@ func TestClientTradingEndpoints(t *testing.T) {
 	}
 }
 
+func TestClientTicker24hrParsesPublicRequest(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/ticker/24hr" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-MBX-APIKEY") != "" {
+			t.Fatal("24hr ticker request should not be signed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"symbol":"BTCUSDT","lastPrice":"64000.1","volume":"12.3","quoteVolume":"787201.23","closeTime":1784880000000},
+			{"symbol":"ETHUSDT","lastPrice":"3000","volume":"20","quoteVolume":"60000","closeTime":1784880001000}
+		]`))
+	}))
+	defer ts.Close()
+
+	client := Client{BaseURL: ts.URL, HTTPClient: ts.Client()}
+	tickers, err := client.Ticker24hr(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tickers) != 2 || tickers[0].Symbol != "BTCUSDT" || tickers[0].QuoteVolume != "787201.23" || tickers[0].CloseTime != 1784880000000 {
+		t.Fatalf("bad 24hr tickers: %#v", tickers)
+	}
+}
+
 func splitSignatureTail(t *testing.T, raw string) (string, string) {
 	t.Helper()
 	const marker = "&signature="

@@ -654,28 +654,46 @@ func (s *Server) handleSymbols(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
 		type instrumentResult struct {
-			env string
-			set okxInstrumentSet
+			exchange   string
+			env        string
+			okxSet     okxInstrumentSet
+			binanceSet binanceInstrumentSet
 		}
-		results := make(chan instrumentResult, 2)
+		results := make(chan instrumentResult, 4)
 		go func() {
-			results <- instrumentResult{env: config.EnvLive, set: s.fetchOKXInstrumentSet(ctx, cfg, false)}
+			results <- instrumentResult{exchange: trading.ExchangeOKX, env: config.EnvLive, okxSet: s.fetchOKXInstrumentSet(ctx, cfg, false)}
 		}()
 		go func() {
-			results <- instrumentResult{env: config.EnvDemo, set: s.fetchOKXInstrumentSet(ctx, cfg, true)}
+			results <- instrumentResult{exchange: trading.ExchangeOKX, env: config.EnvDemo, okxSet: s.fetchOKXInstrumentSet(ctx, cfg, true)}
 		}()
-		catalog := okxSymbolsCatalog{}
-		for i := 0; i < 2; i++ {
+		go func() {
+			results <- instrumentResult{exchange: trading.ExchangeBinance, env: config.EnvLive, binanceSet: s.fetchBinanceInstrumentSet(ctx, cfg, false)}
+		}()
+		go func() {
+			results <- instrumentResult{exchange: trading.ExchangeBinance, env: config.EnvDemo, binanceSet: s.fetchBinanceInstrumentSet(ctx, cfg, true)}
+		}()
+		okxCatalog := okxSymbolsCatalog{}
+		binanceCatalog := binanceSymbolsCatalog{}
+		for i := 0; i < 4; i++ {
 			result := <-results
-			if result.env == config.EnvDemo {
-				catalog.Demo = result.set
+			if result.exchange == trading.ExchangeBinance {
+				if result.env == config.EnvDemo {
+					binanceCatalog.Demo = result.binanceSet
+					continue
+				}
+				binanceCatalog.Live = result.binanceSet
 				continue
 			}
-			catalog.Live = result.set
+			if result.env == config.EnvDemo {
+				okxCatalog.Demo = result.okxSet
+				continue
+			}
+			okxCatalog.Live = result.okxSet
 		}
 		writeJSON(w, http.StatusOK, symbolsResponse{
 			Symbols: cfg.Symbols,
-			OKX:     catalog,
+			OKX:     okxCatalog,
+			Binance: binanceCatalog,
 		})
 	case http.MethodPut:
 		symbols, err := decodeSymbols(r)
@@ -700,11 +718,17 @@ func (s *Server) handleSymbols(w http.ResponseWriter, r *http.Request) {
 type symbolsResponse struct {
 	Symbols map[string]config.SymbolConfig `json:"symbols"`
 	OKX     okxSymbolsCatalog              `json:"okx"`
+	Binance binanceSymbolsCatalog          `json:"binance"`
 }
 
 type okxSymbolsCatalog struct {
 	Live okxInstrumentSet `json:"live"`
 	Demo okxInstrumentSet `json:"demo"`
+}
+
+type binanceSymbolsCatalog struct {
+	Live binanceInstrumentSet `json:"live"`
+	Demo binanceInstrumentSet `json:"demo"`
 }
 
 type okxInstrumentSet struct {
@@ -718,6 +742,26 @@ type okxInstrumentSet struct {
 
 type symbolInstrument struct {
 	okx.Instrument
+	TurnoverUSDT24h string `json:"turnover_usdt_24h,omitempty"`
+	TickerUpdatedAt string `json:"ticker_updated_at,omitempty"`
+}
+
+type binanceInstrumentSet struct {
+	Env         string                    `json:"env"`
+	Demo        bool                      `json:"demo"`
+	Count       int                       `json:"count"`
+	Instruments []binanceSymbolInstrument `json:"instruments"`
+	Error       string                    `json:"error,omitempty"`
+	TickerError string                    `json:"ticker_error,omitempty"`
+}
+
+type binanceSymbolInstrument struct {
+	binance.SymbolInfo
+	TickSize        string `json:"tick_size,omitempty"`
+	StepSize        string `json:"step_size,omitempty"`
+	MinQty          string `json:"min_qty,omitempty"`
+	MaxQty          string `json:"max_qty,omitempty"`
+	MinNotional     string `json:"min_notional,omitempty"`
 	TurnoverUSDT24h string `json:"turnover_usdt_24h,omitempty"`
 	TickerUpdatedAt string `json:"ticker_updated_at,omitempty"`
 }
@@ -792,6 +836,106 @@ func tickerUpdatedAt(ticker okx.Ticker) string {
 	return time.UnixMilli(ts).UTC().Format(time.RFC3339Nano)
 }
 
+func (s *Server) fetchBinanceInstrumentSet(ctx context.Context, cfg config.Config, demo bool) binanceInstrumentSet {
+	env := config.EnvLive
+	if demo {
+		env = config.EnvDemo
+	}
+	set := binanceInstrumentSet{
+		Env:         env,
+		Demo:        demo,
+		Instruments: []binanceSymbolInstrument{},
+	}
+	client := binance.Client{
+		BaseURL:    binanceCatalogBaseURL(cfg, demo),
+		HTTPClient: s.binanceHTTPClient(),
+	}
+	info, err := client.ExchangeInfo(ctx)
+	if err != nil {
+		set.Error = err.Error()
+		return set
+	}
+	symbols := filterBinanceUSDTPerpetualSymbols(info.Symbols)
+	sort.Slice(symbols, func(i, j int) bool {
+		return strings.Compare(symbols[i].Symbol, symbols[j].Symbol) < 0
+	})
+	tickers, err := client.Ticker24hr(ctx)
+	if err != nil {
+		set.TickerError = err.Error()
+	}
+	set.Instruments = binanceSymbolInstrumentsWithTickers(symbols, tickers)
+	set.Count = len(symbols)
+	return set
+}
+
+func binanceCatalogBaseURL(cfg config.Config, demo bool) string {
+	if demo {
+		return cfg.Trading.BinanceDemoBaseURL
+	}
+	return cfg.Trading.BinanceBaseURL
+}
+
+func binanceSymbolInstrumentsWithTickers(symbols []binance.SymbolInfo, tickers []binance.Ticker24hr) []binanceSymbolInstrument {
+	tickerBySymbol := make(map[string]binance.Ticker24hr, len(tickers))
+	for _, ticker := range tickers {
+		symbol := strings.ToUpper(strings.TrimSpace(ticker.Symbol))
+		if symbol != "" {
+			tickerBySymbol[symbol] = ticker
+		}
+	}
+	out := make([]binanceSymbolInstrument, 0, len(symbols))
+	for _, symbol := range symbols {
+		view := binanceSymbolInstrument{SymbolInfo: symbol}
+		applyBinanceSymbolFilters(&view)
+		if ticker, ok := tickerBySymbol[strings.ToUpper(strings.TrimSpace(symbol.Symbol))]; ok {
+			view.TurnoverUSDT24h = binanceTickerTurnoverUSDT24h(ticker)
+			view.TickerUpdatedAt = binanceTickerUpdatedAt(ticker)
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+func applyBinanceSymbolFilters(view *binanceSymbolInstrument) {
+	for _, filter := range view.Filters {
+		switch strings.ToUpper(strings.TrimSpace(filter.FilterType)) {
+		case "PRICE_FILTER":
+			view.TickSize = strings.TrimSpace(filter.TickSize)
+		case "LOT_SIZE":
+			view.StepSize = strings.TrimSpace(filter.StepSize)
+			view.MinQty = strings.TrimSpace(filter.MinQty)
+			view.MaxQty = strings.TrimSpace(filter.MaxQty)
+		case "MARKET_LOT_SIZE":
+			if view.StepSize == "" {
+				view.StepSize = strings.TrimSpace(filter.StepSize)
+			}
+			if view.MinQty == "" {
+				view.MinQty = strings.TrimSpace(filter.MinQty)
+			}
+			if view.MaxQty == "" {
+				view.MaxQty = strings.TrimSpace(filter.MaxQty)
+			}
+		case "MIN_NOTIONAL", "NOTIONAL":
+			view.MinNotional = strings.TrimSpace(filter.Notional)
+		}
+	}
+}
+
+func binanceTickerTurnoverUSDT24h(ticker binance.Ticker24hr) string {
+	quoteVolume, ok := parseAnyFloat(ticker.QuoteVolume)
+	if !ok || quoteVolume < 0 {
+		return ""
+	}
+	return trading.NormalizeFloat(quoteVolume)
+}
+
+func binanceTickerUpdatedAt(ticker binance.Ticker24hr) string {
+	if ticker.CloseTime <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ticker.CloseTime).UTC().Format(time.RFC3339Nano)
+}
+
 func filterOKXUSDTInstruments(instruments []okx.Instrument) []okx.Instrument {
 	filtered := make([]okx.Instrument, 0, len(instruments))
 	for _, inst := range instruments {
@@ -823,6 +967,40 @@ func okxUSDCInstrument(inst okx.Instrument) bool {
 		inst.BaseCcy,
 		inst.QuoteCcy,
 		inst.SettleCcy,
+	} {
+		if strings.Contains(strings.ToUpper(strings.TrimSpace(value)), "USDC") {
+			return true
+		}
+	}
+	return false
+}
+
+func filterBinanceUSDTPerpetualSymbols(symbols []binance.SymbolInfo) []binance.SymbolInfo {
+	filtered := make([]binance.SymbolInfo, 0, len(symbols))
+	for _, symbol := range symbols {
+		if binanceUSDTPerpetualSymbol(symbol) {
+			filtered = append(filtered, symbol)
+		}
+	}
+	return filtered
+}
+
+func binanceUSDTPerpetualSymbol(symbol binance.SymbolInfo) bool {
+	if binanceUSDCSymbol(symbol) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(symbol.ContractType), "PERPETUAL") &&
+		strings.EqualFold(strings.TrimSpace(symbol.QuoteAsset), "USDT") &&
+		strings.EqualFold(strings.TrimSpace(symbol.MarginAsset), "USDT")
+}
+
+func binanceUSDCSymbol(symbol binance.SymbolInfo) bool {
+	for _, value := range []string{
+		symbol.Symbol,
+		symbol.Pair,
+		symbol.BaseAsset,
+		symbol.QuoteAsset,
+		symbol.MarginAsset,
 	} {
 		if strings.Contains(strings.ToUpper(strings.TrimSpace(value)), "USDC") {
 			return true
