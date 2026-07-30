@@ -24,6 +24,7 @@ type alertTemplatePayload struct {
 	Interval       string `json:"interval"`
 	Condition      string `json:"condition"`
 	Text           string `json:"text"`
+	OrderIntent    string `json:"order_intent"`
 	Source         string `json:"source"`
 	TokenNonce     string `json:"token_nonce"`
 	Token          string `json:"token"`
@@ -71,6 +72,7 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		Interval:       "{{interval}}",
 		Condition:      "{{strategy.order.comment}}",
 		Text:           "{{strategy.order.alert_message}}",
+		OrderIntent:    "{{strategy.order.alert_message}}",
 		Source:         "tradingview",
 		TokenNonce:     tokenNonce,
 		Token:          token,

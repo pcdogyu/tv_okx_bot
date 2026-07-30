@@ -190,7 +190,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("font-size: 7px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .position-actions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("gap: 6px")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .pos-actions-col { width: 27.5%; }")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .pos-actions-col { width: 25.9%; }")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("missingPositionEntrySyncIntervalMs = 180000")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionEntryTimesMissing")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("syncMissingPositionEntryTimes")) ||
@@ -234,6 +234,11 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("signedCell")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionSideKind")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionSideCell")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("positionDirectionLabel")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("orderHistoryDirectionText")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pendingOrderDirectionText")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("开仓")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("平仓")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("多单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("空单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("市价平仓")) ||
@@ -1011,6 +1016,7 @@ func TestTVOrderRecordsRejectedSignals(t *testing.T) {
 		"interval": "15",
 		"condition": "{{strategy.order.comment}}",
 		"text": "{{strategy.order.alert_message}}",
+		"order_intent": "{{strategy.order.alert_message}}",
 		"token_nonce": "raw-nonce-value",
 		"source": "tradingview"
 	}`)
@@ -1049,6 +1055,9 @@ func TestTVOrderRecordsRejectedSignals(t *testing.T) {
 	}
 	if got.Action != trading.Side("{{strategy.order.action}}") || got.Coinpair != "ETHUSDT.P" || got.Price != "1893.55" || got.Amount != "100" {
 		t.Fatalf("rejected record lost signal fields: %#v", got)
+	}
+	if got.OrderIntent != "{{strategy.order.alert_message}}" {
+		t.Fatalf("rejected record lost order intent: %#v", got)
 	}
 	if got.RawJSON == "" ||
 		!strings.Contains(got.RawJSON, `"token": "[redacted]"`) ||
@@ -1145,7 +1154,10 @@ func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Token) != 88 || !bytes.Contains([]byte(resp.JSON), []byte(`"price": "{{high}}"`)) || !bytes.Contains([]byte(resp.JSON), []byte(`"api_id": "backup"`)) {
+	if len(resp.Token) != 88 ||
+		!bytes.Contains([]byte(resp.JSON), []byte(`"price": "{{high}}"`)) ||
+		!bytes.Contains([]byte(resp.JSON), []byte(`"api_id": "backup"`)) ||
+		!bytes.Contains([]byte(resp.JSON), []byte(`"order_intent": "{{strategy.order.alert_message}}"`)) {
 		t.Fatalf("bad template response: %#v", resp)
 	}
 	if bytes.Contains([]byte(resp.JSON), []byte(`"risk"`)) {

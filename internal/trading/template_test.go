@@ -35,6 +35,9 @@ func TestBuildTemplateProducesValidJSONAndToken(t *testing.T) {
 	if payload["condition"] != "{{strategy.order.comment}}" || payload["text"] != "{{strategy.order.alert_message}}" || payload["source"] != "tradingview" {
 		t.Fatalf("unexpected TradingView order fields: %#v", payload)
 	}
+	if payload["order_intent"] != "{{strategy.order.alert_message}}" {
+		t.Fatalf("order_intent should use strategy alert_message: %#v", payload)
+	}
 	if _, ok := payload["risk"]; ok {
 		t.Fatalf("risk field should not be present: %#v", payload)
 	}

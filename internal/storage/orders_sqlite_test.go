@@ -85,8 +85,11 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 			TPPct: &tp,
 			SLPct: &sl,
 		},
-		Token:   "token",
-		RawJSON: `{"action":"sell","token":"[redacted]"}`,
+		OrderIntent:    "exit_long",
+		PositionEffect: trading.PositionEffectClose,
+		PositionSide:   trading.PositionSideLong,
+		Token:          "token",
+		RawJSON:        `{"action":"sell","token":"[redacted]"}`,
 	}
 	signal.Normalize()
 	dedupe := DedupeKey(signal)
@@ -97,7 +100,7 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	if duplicate || rec.Status != StatusAccepted {
 		t.Fatalf("first record duplicate=%v rec=%#v", duplicate, rec)
 	}
-	if err := store.MarkSubmitted(rec.SignalID, trading.OrderResult{InstID: "ETH-USDT-SWAP", OrdID: "okx-1"}, now.Add(time.Second)); err != nil {
+	if err := store.MarkSubmitted(rec.SignalID, trading.OrderResult{InstID: "ETH-USDT-SWAP", OrdID: "okx-1", PositionEffect: trading.PositionEffectClose, PositionSide: trading.PositionSideLong}, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	dup, duplicate, err := store.RecordAccepted(signal, dedupe, now.Add(2*time.Second))
@@ -119,6 +122,11 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	}
 	if records[1].Risk.Type != trading.RiskTPSL || records[1].Risk.TPPct == nil || records[1].Risk.TPPct.Value != 3 || records[1].Risk.SLPct == nil || records[1].Risk.SLPct.Value != 1.5 {
 		t.Fatalf("risk settings should be preserved: %#v", records[1].Risk)
+	}
+	for _, rec := range records {
+		if rec.OrderIntent != "exit_long" || rec.PositionEffect != trading.PositionEffectClose || rec.PositionSide != trading.PositionSideLong {
+			t.Fatalf("position semantics should be preserved: %#v", rec)
+		}
 	}
 }
 
@@ -272,12 +280,12 @@ func TestSQLiteOrderStoreReadsLegacyRowsWithNullExchangeColumns(t *testing.T) {
 	if len(records) != 1 || records[0].SignalID != "sig-old" || records[0].TargetExchange != trading.ExchangeOKX {
 		t.Fatalf("legacy order should remain readable after exchange migration: %#v", records)
 	}
-	var sourceExchange, targetExchange, rawJSON, riskJSON string
-	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange, raw_json, risk_json FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange, &rawJSON, &riskJSON); err != nil {
+	var sourceExchange, targetExchange, rawJSON, riskJSON, orderIntent, positionEffect, positionSide string
+	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange, raw_json, risk_json, order_intent, position_effect, position_side FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange, &rawJSON, &riskJSON, &orderIntent, &positionEffect, &positionSide); err != nil {
 		t.Fatal(err)
 	}
-	if sourceExchange != "" || targetExchange != trading.ExchangeOKX || rawJSON != "" || riskJSON != "" {
-		t.Fatalf("legacy order columns not backfilled source=%q target=%q raw_json=%q risk_json=%q", sourceExchange, targetExchange, rawJSON, riskJSON)
+	if sourceExchange != "" || targetExchange != trading.ExchangeOKX || rawJSON != "" || riskJSON != "" || orderIntent != "" || positionEffect != "" || positionSide != "" {
+		t.Fatalf("legacy order columns not backfilled source=%q target=%q raw_json=%q risk_json=%q order_intent=%q position_effect=%q position_side=%q", sourceExchange, targetExchange, rawJSON, riskJSON, orderIntent, positionEffect, positionSide)
 	}
 }
 

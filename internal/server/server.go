@@ -104,6 +104,7 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_token", "token validation failed")
 		return
 	}
+	classErr := applyTVOrderPositionSemantics(&signal)
 	dedupeKey := storage.DedupeKey(signal)
 	record, duplicate, err := s.Orders.RecordAccepted(signal, dedupeKey, now)
 	if err != nil {
@@ -117,7 +118,19 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	go s.execute(record.SignalID, signal, cfg)
+	if classErr != nil {
+		_ = s.Orders.MarkFailedCode(record.SignalID, "invalid_position_intent", classErr, now)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"status":    "accepted",
+			"signal_id": record.SignalID,
+		})
+		return
+	}
+	if signal.PositionEffect == trading.PositionEffectClose {
+		go s.executePositionCloseSignal(record.SignalID, signal, cfg)
+	} else {
+		go s.execute(record.SignalID, signal, cfg)
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"status":    "accepted",
 		"signal_id": record.SignalID,
@@ -267,6 +280,10 @@ func signalPreviewFromJSON(body []byte) trading.Signal {
 	signal.Interval = readString("interval")
 	signal.Condition = readString("condition")
 	signal.Text = readString("text")
+	signal.OrderIntent = readString("order_intent")
+	signal.Intent = readString("intent")
+	signal.PositionEffect = readString("position_effect")
+	signal.PositionSide = readString("position_side")
 	signal.Leverage = readInt("leverage")
 	signal.Amount = readFloat("amount")
 	signal.TokenNonce = readString("token_nonce")

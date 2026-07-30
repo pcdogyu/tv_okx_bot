@@ -828,7 +828,7 @@ const tvbotHTML = `<!doctype html>
     }
     .positions-table .pos-exchange-col { width: 4.8%; }
     .positions-table .pos-symbol-col { width: 7.4%; }
-    .positions-table .pos-side-col { width: 5.2%; }
+    .positions-table .pos-side-col { width: 6.8%; }
     .positions-table .pos-size-col { width: 6.1%; }
     .positions-table .pos-price-col { width: 5.6%; }
     .positions-table .pos-margin-col { width: 5.9%; }
@@ -838,15 +838,15 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-rate-col { width: 5.2%; }
     .positions-table .pos-entry-time-col { width: 6.9%; }
     .positions-table .pos-holding-time-col { width: 5.6%; }
-    .positions-table .pos-actions-col { width: 27.5%; }
+    .positions-table .pos-actions-col { width: 25.9%; }
     .pending-order-table {
       min-width: 1280px;
     }
     .pending-order-table .pending-exchange-col { width: 6%; }
     .pending-order-table .pending-time-col { width: 10%; }
     .pending-order-table .pending-symbol-col { width: 10.5%; }
-    .pending-order-table .pending-side-col { width: 5.5%; }
-    .pending-order-table .pending-pos-side-col { width: 6.5%; }
+    .pending-order-table .pending-side-col { width: 7.4%; }
+    .pending-order-table .pending-pos-side-col { width: 5.8%; }
     .pending-order-table .pending-type-col { width: 6.5%; }
     .pending-order-table .pending-price-col { width: 8.5%; }
     .pending-order-table .pending-mid-col { width: 8.5%; }
@@ -854,7 +854,7 @@ const tvbotHTML = `<!doctype html>
     .pending-order-table .pending-margin-col { width: 8%; }
     .pending-order-table .pending-filled-col { width: 7%; }
     .pending-order-table .pending-state-col { width: 6.5%; }
-    .pending-order-table .pending-actions-col { width: 8.5%; }
+    .pending-order-table .pending-actions-col { width: 7.3%; }
     pre {
       margin: 0;
       white-space: pre-wrap;
@@ -1521,7 +1521,7 @@ const tvbotHTML = `<!doctype html>
       { id: "exchange", title: "交易所", colClass: "pending-exchange-col", cell: (row) => textTableCell(exchangeLabel(normalizeExchange(row._exchange || "okx"))) },
       { id: "time", title: "时间", colClass: "pending-time-col", cell: (row) => timeTableCell(shanghaiTimeFromOKX(row.cTime || row.uTime)) },
       { id: "symbol", title: "币对", colClass: "pending-symbol-col", cell: (row) => textTableCell(asText(row.instId)) },
-      { id: "side", title: "方向", colClass: "pending-side-col", cell: (row) => textTableCell(tradeSideText(row.side)) },
+      { id: "side", title: "方向", colClass: "pending-side-col", cell: (row) => textTableCell(pendingOrderDirectionText(row)) },
       { id: "position_side", title: "持仓方向", colClass: "pending-pos-side-col", cell: (row) => textTableCell(positionSideText(row.posSide, "")) },
       { id: "type", title: "类型", colClass: "pending-type-col", cell: (row) => textTableCell(orderTypeText(row.ordType)) },
       { id: "price", title: "委托价格", colClass: "pending-price-col", cell: (row) => textTableCell(formatPriceAmount(row, row.px)) },
@@ -3063,6 +3063,69 @@ const tvbotHTML = `<!doctype html>
       return asText(posSide);
     }
 
+    function positionEffectText(effect) {
+      const value = String(effect || "").toLowerCase();
+      if (value === "close" || value === "reduce") return "平仓";
+      return "开仓";
+    }
+
+    function positionDirectionText(side) {
+      const value = String(side || "").toLowerCase();
+      if (value === "long") return "多单";
+      if (value === "short") return "空单";
+      if (value === "net") return "持仓";
+      return asText(side);
+    }
+
+    function positionSideFromAction(action, effect) {
+      const side = String(action || "").toLowerCase();
+      const closing = String(effect || "").toLowerCase() === "close";
+      if (side === "buy" || side === "long") return closing ? "short" : "long";
+      if (side === "sell" || side === "short") return closing ? "long" : "short";
+      return "";
+    }
+
+    function positionDirectionLabel(effect, side, fallbackAction) {
+      const normalizedEffect = String(effect || "").toLowerCase() === "close" ? "close" : "open";
+      let normalizedSide = String(side || "").toLowerCase();
+      if (!normalizedSide) normalizedSide = positionSideFromAction(fallbackAction, normalizedEffect);
+      const direction = positionDirectionText(normalizedSide);
+      const effectText = positionEffectText(normalizedEffect);
+      return direction === "-" ? effectText : (effectText + " " + direction);
+    }
+
+    function orderHistoryDirectionText(order) {
+      const result = order && order.result ? order.result : {};
+      const effect = order && order.position_effect ? order.position_effect : result.position_effect;
+      const side = order && order.position_side ? order.position_side : result.position_side;
+      return positionDirectionLabel(effect || "open", side, order ? order.action : "");
+    }
+
+    function isTrueValue(value) {
+      if (value === true) return true;
+      if (value === 1) return true;
+      const text = String(value || "").toLowerCase();
+      return text === "true" || text === "1" || text === "yes";
+    }
+
+    function pendingOrderPositionEffect(row) {
+      if (!row) return "open";
+      if (isTrueValue(row.reduceOnly) || isTrueValue(row.closePosition) || isTrueValue(row.close_position)) return "close";
+      return "open";
+    }
+
+    function pendingOrderPositionSide(row) {
+      if (!row) return "";
+      const effect = pendingOrderPositionEffect(row);
+      const fromPosSide = positionSideKind(row.posSide, "");
+      if (fromPosSide && fromPosSide !== "net") return fromPosSide;
+      return positionSideFromAction(row.side, effect);
+    }
+
+    function pendingOrderDirectionText(row) {
+      return positionDirectionLabel(pendingOrderPositionEffect(row), pendingOrderPositionSide(row), row ? row.side : "");
+    }
+
     function positionSideKind(posSide, pos) {
       const side = String(posSide || "").toLowerCase();
       if (side === "long") return "long";
@@ -3195,7 +3258,8 @@ const tvbotHTML = `<!doctype html>
     function positionSideCell(row) {
       const kind = positionSideKind(row ? row.posSide : "", row ? row.pos : "");
       const tone = kind === "long" ? "signed-profit" : (kind === "short" ? "signed-loss" : "");
-      return '<td' + (tone ? ' class="' + tone + '"' : "") + ">" + escapeHTML(positionSideText(row ? row.posSide : "", row ? row.pos : "")) + "</td>";
+      const label = positionDirectionLabel("open", kind || positionSideKind(row ? row.posSide : "", row ? row.pos : ""), "");
+      return '<td' + (tone ? ' class="' + tone + '"' : "") + ">" + escapeHTML(label) + "</td>";
     }
 
     function positionCloseRowKey(row) {
@@ -3667,7 +3731,7 @@ const tvbotHTML = `<!doctype html>
           "<td>" + statusCell + "</td>" +
           "<td>" + escapeHTML(sourceExchange) + "</td>" +
           "<td>" + escapeHTML(targetText) + "</td>" +
-          "<td>" + escapeHTML(asText(order.action)) + "</td>" +
+          "<td>" + escapeHTML(orderHistoryDirectionText(order)) + "</td>" +
           "<td>" + escapeHTML(asText(order.coinpair)) + "</td>" +
           "<td>" + escapeHTML(formatCachedSymbolPrice(targetExchange, precisionInstID, order.price)) + "</td>" +
           "<td>" + escapeHTML(asText(order.amount)) + "</td>" +

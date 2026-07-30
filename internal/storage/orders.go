@@ -42,6 +42,9 @@ type OrderRecord struct {
 	Leverage       int                 `json:"leverage"`
 	Amount         string              `json:"amount"`
 	Risk           trading.Risk        `json:"risk,omitempty"`
+	OrderIntent    string              `json:"order_intent,omitempty"`
+	PositionEffect string              `json:"position_effect,omitempty"`
+	PositionSide   string              `json:"position_side,omitempty"`
 	TokenHash      string              `json:"token_hash"`
 	AcceptedAt     time.Time           `json:"accepted_at"`
 	UpdatedAt      time.Time           `json:"updated_at"`
@@ -181,15 +184,20 @@ func (s *OrderStore) MarkSubmitted(signalID string, result trading.OrderResult, 
 }
 
 func (s *OrderStore) MarkFailed(signalID string, err error, now time.Time) error {
+	return s.MarkFailedCode(signalID, "", err, now)
+}
+
+func (s *OrderStore) MarkFailedCode(signalID, code string, err error, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.db != nil {
-		return s.markFailedSQLiteLocked(signalID, err, now)
+		return s.markFailedSQLiteLocked(signalID, code, err, now)
 	}
 	for i := range s.state.Orders {
 		if s.state.Orders[i].SignalID == signalID {
 			s.state.Orders[i].Status = StatusFailed
 			s.state.Orders[i].UpdatedAt = now.UTC()
+			s.state.Orders[i].ErrorCode = strings.TrimSpace(code)
 			if err != nil {
 				s.state.Orders[i].Error = err.Error()
 			}
@@ -371,6 +379,9 @@ func (s *OrderStore) migrateSQLite() error {
 			leverage INTEGER,
 			amount TEXT,
 			risk_json TEXT,
+			order_intent TEXT,
+			position_effect TEXT,
+			position_side TEXT,
 			token_hash TEXT,
 			accepted_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
@@ -555,6 +566,21 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 			return err
 		}
 	}
+	if !columns["order_intent"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN order_intent TEXT`); err != nil {
+			return err
+		}
+	}
+	if !columns["position_effect"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN position_effect TEXT`); err != nil {
+			return err
+		}
+	}
+	if !columns["position_side"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN position_side TEXT`); err != nil {
+			return err
+		}
+	}
 	if _, err := s.db.Exec(`UPDATE orders SET source_exchange = '' WHERE source_exchange IS NULL`); err != nil {
 		return err
 	}
@@ -565,6 +591,15 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 		return err
 	}
 	if _, err := s.db.Exec(`UPDATE orders SET risk_json = '' WHERE risk_json IS NULL`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`UPDATE orders SET order_intent = '' WHERE order_intent IS NULL`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`UPDATE orders SET position_effect = '' WHERE position_effect IS NULL`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`UPDATE orders SET position_side = '' WHERE position_side IS NULL`); err != nil {
 		return err
 	}
 	return nil
@@ -773,14 +808,15 @@ func (s *OrderStore) markSubmittedSQLiteLocked(signalID string, result trading.O
 	return nil
 }
 
-func (s *OrderStore) markFailedSQLiteLocked(signalID string, failErr error, now time.Time) error {
+func (s *OrderStore) markFailedSQLiteLocked(signalID, code string, failErr error, now time.Time) error {
 	message := ""
 	if failErr != nil {
 		message = failErr.Error()
 	}
-	res, err := s.db.Exec(`UPDATE orders SET status = ?, updated_at = ?, error = ? WHERE signal_id = ?`,
+	res, err := s.db.Exec(`UPDATE orders SET status = ?, updated_at = ?, error_code = ?, error = ? WHERE signal_id = ?`,
 		string(StatusFailed),
 		now.UTC().Format(time.RFC3339Nano),
+		strings.TrimSpace(code),
 		message,
 		signalID,
 	)
@@ -810,6 +846,8 @@ func orderResultPresent(result trading.OrderResult) bool {
 		strings.TrimSpace(result.OKXMsg) != "" ||
 		result.BinanceCode != 0 ||
 		strings.TrimSpace(result.BinanceMsg) != "" ||
+		strings.TrimSpace(result.PositionEffect) != "" ||
+		strings.TrimSpace(result.PositionSide) != "" ||
 		result.Leverage != 0 ||
 		len(result.RiskOrders) > 0
 }
@@ -840,8 +878,8 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 	}
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO orders (
 		signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
-		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.SignalID,
 		rec.DedupeKey,
 		string(rec.Status),
@@ -855,6 +893,9 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 		rec.Leverage,
 		rec.Amount,
 		riskJSON,
+		rec.OrderIntent,
+		rec.PositionEffect,
+		rec.PositionSide,
 		rec.TokenHash,
 		rec.AcceptedAt.UTC().Format(time.RFC3339Nano),
 		rec.UpdatedAt.UTC().Format(time.RFC3339Nano),
@@ -881,7 +922,7 @@ func (s *OrderStore) listSQLitePageLocked(limit, offset int) ([]OrderRecord, err
 		offset = 0
 	}
 	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
-		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders ORDER BY accepted_at DESC, signal_id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
@@ -913,7 +954,7 @@ func (s *OrderStore) listSQLiteByTargetExchangePageLocked(exchange string, limit
 		offset = 0
 	}
 	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
-		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders WHERE target_exchange = ? ORDER BY accepted_at DESC, signal_id DESC LIMIT ? OFFSET ?`, trading.NormalizeExchange(exchange), limit, offset)
 	if err != nil {
 		return nil, err
@@ -965,7 +1006,7 @@ func (s *OrderStore) listPageMemoryLocked(limit, offset int, exchange string) []
 
 func (s *OrderStore) findSQLiteLocked(signalID string) (OrderRecord, error) {
 	row := s.db.QueryRow(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
-		leverage, amount, risk_json, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders WHERE signal_id = ?`, signalID)
 	return scanOrder(row)
 }
@@ -989,7 +1030,7 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	var rec OrderRecord
 	var status, acceptedAt, updatedAt string
 	var action sql.NullString
-	var apiID, sourceExchange, targetExchange, coinpair, ticker, price, amount, riskJSON, tokenHash, resultJSON, errorCode, errorText, rawJSON sql.NullString
+	var apiID, sourceExchange, targetExchange, coinpair, ticker, price, amount, riskJSON, orderIntent, positionEffect, positionSide, tokenHash, resultJSON, errorCode, errorText, rawJSON sql.NullString
 	if err := scanner.Scan(
 		&rec.SignalID,
 		&rec.DedupeKey,
@@ -1004,6 +1045,9 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 		&rec.Leverage,
 		&amount,
 		&riskJSON,
+		&orderIntent,
+		&positionEffect,
+		&positionSide,
 		&tokenHash,
 		&acceptedAt,
 		&updatedAt,
@@ -1023,6 +1067,9 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	rec.Ticker = nullableString(ticker)
 	rec.Price = nullableString(price)
 	rec.Amount = nullableString(amount)
+	rec.OrderIntent = nullableString(orderIntent)
+	rec.PositionEffect = nullableString(positionEffect)
+	rec.PositionSide = nullableString(positionSide)
 	if nullableString(riskJSON) != "" {
 		if err := json.Unmarshal([]byte(nullableString(riskJSON)), &rec.Risk); err != nil {
 			return OrderRecord{}, err
@@ -1051,6 +1098,12 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	if nullableString(resultJSON) != "" {
 		if err := json.Unmarshal([]byte(nullableString(resultJSON)), &rec.Result); err != nil {
 			return OrderRecord{}, err
+		}
+		if rec.PositionEffect == "" {
+			rec.PositionEffect = rec.Result.PositionEffect
+		}
+		if rec.PositionSide == "" {
+			rec.PositionSide = rec.Result.PositionSide
 		}
 	}
 	return rec, nil
@@ -1113,6 +1166,9 @@ func DedupeKey(signal trading.Signal) string {
 		signal.SentAt + "|" +
 		signal.Ticker + "|" +
 		trading.NormalizeFloat(signal.Amount.Value) + "|" +
+		strings.TrimSpace(signal.OrderIntent) + "|" +
+		strings.TrimSpace(signal.PositionEffect) + "|" +
+		strings.TrimSpace(signal.PositionSide) + "|" +
 		signal.CanonicalTokenPayload() + "|" +
 		signal.Token
 	sum := sha256.Sum256([]byte(payload))
@@ -1130,6 +1186,9 @@ func RejectedKey(signal trading.Signal, code, message string, now time.Time) str
 		signal.SentAt + "|" +
 		signal.Ticker + "|" +
 		trading.NormalizeFloat(signal.Amount.Value) + "|" +
+		strings.TrimSpace(signal.OrderIntent) + "|" +
+		strings.TrimSpace(signal.PositionEffect) + "|" +
+		strings.TrimSpace(signal.PositionSide) + "|" +
 		signal.CanonicalTokenPayload() + "|" +
 		signal.Token + "|" +
 		now.UTC().Format(time.RFC3339Nano)
@@ -1149,6 +1208,9 @@ func RetryKey(sourceSignalID string, signal trading.Signal, now time.Time) strin
 		signal.Ticker + "|" +
 		strconv.Itoa(signal.Leverage) + "|" +
 		trading.NormalizeFloat(signal.Amount.Value) + "|" +
+		strings.TrimSpace(signal.OrderIntent) + "|" +
+		strings.TrimSpace(signal.PositionEffect) + "|" +
+		strings.TrimSpace(signal.PositionSide) + "|" +
 		now.UTC().Format(time.RFC3339Nano)
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])
@@ -1185,6 +1247,9 @@ func newOrderRecord(signal trading.Signal, dedupeKey string, status OrderStatus,
 		Ticker:         signal.Ticker,
 		Leverage:       signal.Leverage,
 		Risk:           signal.Risk,
+		OrderIntent:    strings.TrimSpace(signal.OrderIntent),
+		PositionEffect: strings.TrimSpace(signal.PositionEffect),
+		PositionSide:   strings.TrimSpace(signal.PositionSide),
 		RawJSON:        strings.TrimSpace(signal.RawJSON),
 		AcceptedAt:     now.UTC(),
 		UpdatedAt:      now.UTC(),

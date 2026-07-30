@@ -1737,22 +1737,27 @@ func binanceOpenOrderToOKX(order binance.OpenOrder) okx.PendingOrder {
 	if order.ReduceOnly {
 		reduceOnly = json.RawMessage("true")
 	}
+	closePosition := json.RawMessage("false")
+	if order.ClosePosition {
+		closePosition = json.RawMessage("true")
+	}
 	return okx.PendingOrder{
-		InstType:   "USDT-M",
-		InstID:     strings.ToUpper(strings.TrimSpace(order.Symbol)),
-		OrdID:      strconv.FormatInt(order.OrderID, 10),
-		ClOrdID:    strings.TrimSpace(order.ClientOrderID),
-		Side:       strings.ToLower(strings.TrimSpace(order.Side)),
-		PosSide:    strings.ToLower(strings.TrimSpace(order.PositionSide)),
-		OrdType:    strings.ToLower(strings.TrimSpace(order.Type)),
-		Px:         strings.TrimSpace(order.Price),
-		Sz:         strings.TrimSpace(order.OrigQty),
-		AccFillSz:  strings.TrimSpace(order.ExecutedQty),
-		AvgPx:      strings.TrimSpace(order.AvgPrice),
-		State:      strings.ToLower(strings.TrimSpace(order.Status)),
-		ReduceOnly: reduceOnly,
-		CTime:      strconv.FormatInt(order.Time, 10),
-		UTime:      strconv.FormatInt(order.UpdateTime, 10),
+		InstType:      "USDT-M",
+		InstID:        strings.ToUpper(strings.TrimSpace(order.Symbol)),
+		OrdID:         strconv.FormatInt(order.OrderID, 10),
+		ClOrdID:       strings.TrimSpace(order.ClientOrderID),
+		Side:          strings.ToLower(strings.TrimSpace(order.Side)),
+		PosSide:       strings.ToLower(strings.TrimSpace(order.PositionSide)),
+		OrdType:       strings.ToLower(strings.TrimSpace(order.Type)),
+		Px:            strings.TrimSpace(order.Price),
+		Sz:            strings.TrimSpace(order.OrigQty),
+		AccFillSz:     strings.TrimSpace(order.ExecutedQty),
+		AvgPx:         strings.TrimSpace(order.AvgPrice),
+		State:         strings.ToLower(strings.TrimSpace(order.Status)),
+		ReduceOnly:    reduceOnly,
+		ClosePosition: closePosition,
+		CTime:         strconv.FormatInt(order.Time, 10),
+		UTime:         strconv.FormatInt(order.UpdateTime, 10),
 	}
 }
 

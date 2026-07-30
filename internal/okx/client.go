@@ -414,6 +414,7 @@ type PendingOrder struct {
 	State          string              `json:"state"`
 	Lever          string              `json:"lever"`
 	ReduceOnly     json.RawMessage     `json:"reduceOnly,omitempty"`
+	ClosePosition  json.RawMessage     `json:"closePosition,omitempty"`
 	AttachAlgoOrds []map[string]string `json:"attachAlgoOrds,omitempty"`
 	CTime          string              `json:"cTime"`
 	UTime          string              `json:"uTime"`

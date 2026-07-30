@@ -307,10 +307,10 @@ enableTvbotAlert = input.bool(
      tooltip = "开启后，策略入场订单成交时发送TradingView订单执行报警。报警消息框请粘贴tvbot后台生成的完整JSON模板。",
      group = "09A. tvbot Webhook订单执行")
 
-const string TVBOT_ENTER_LONG_COMMENT = "SMC_ENTER_LONG"
-const string TVBOT_ENTER_SHORT_COMMENT = "SMC_ENTER_SHORT"
-const string TVBOT_EXIT_LONG_COMMENT = "SMC_EXIT_LONG"
-const string TVBOT_EXIT_SHORT_COMMENT = "SMC_EXIT_SHORT"
+const string TVBOT_ENTER_LONG_COMMENT = "entry_long"
+const string TVBOT_ENTER_SHORT_COMMENT = "entry_short"
+const string TVBOT_EXIT_LONG_COMMENT = "exit_long"
+const string TVBOT_EXIT_SHORT_COMMENT = "exit_short"
 
 // =============================================================================
 // 10. VRVP核心参数

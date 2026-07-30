@@ -39,6 +39,13 @@ const (
 	OrderTypeLimit  OrderType = "limit"
 )
 
+const (
+	PositionEffectOpen  = "open"
+	PositionEffectClose = "close"
+	PositionSideLong    = "long"
+	PositionSideShort   = "short"
+)
+
 type FlexibleFloat struct {
 	Value float64
 	Set   bool
@@ -102,6 +109,10 @@ type Signal struct {
 	Interval       string        `json:"interval,omitempty"`
 	Condition      string        `json:"condition,omitempty"`
 	Text           string        `json:"text,omitempty"`
+	OrderIntent    string        `json:"order_intent,omitempty"`
+	Intent         string        `json:"intent,omitempty"`
+	PositionEffect string        `json:"position_effect,omitempty"`
+	PositionSide   string        `json:"position_side,omitempty"`
 	Leverage       int           `json:"leverage"`
 	Amount         FlexibleFloat `json:"amount"`
 	Risk           Risk          `json:"risk,omitempty"`
@@ -147,6 +158,8 @@ type OrderResult struct {
 	OKXMsg         string            `json:"okx_msg,omitempty"`
 	BinanceCode    int               `json:"binance_code,omitempty"`
 	BinanceMsg     string            `json:"binance_msg,omitempty"`
+	PositionEffect string            `json:"position_effect,omitempty"`
+	PositionSide   string            `json:"position_side,omitempty"`
 	RiskOrders     []RiskOrderResult `json:"risk_orders,omitempty"`
 }
 
@@ -213,6 +226,13 @@ func (s *Signal) Normalize() {
 	s.Interval = strings.TrimSpace(s.Interval)
 	s.Condition = strings.TrimSpace(s.Condition)
 	s.Text = strings.TrimSpace(s.Text)
+	s.OrderIntent = strings.TrimSpace(s.OrderIntent)
+	s.Intent = strings.TrimSpace(s.Intent)
+	if s.OrderIntent == "" {
+		s.OrderIntent = s.Intent
+	}
+	s.PositionEffect = normalizePositionEffect(s.PositionEffect)
+	s.PositionSide = normalizePositionSide(s.PositionSide)
 	s.Time = strings.TrimSpace(s.Time)
 	if s.SentAt == "" && s.Time != "" {
 		s.SentAt = s.Time
@@ -223,6 +243,28 @@ func (s *Signal) Normalize() {
 	s.TokenNonce = strings.TrimSpace(s.TokenNonce)
 	s.Token = strings.TrimSpace(s.Token)
 	s.Risk.Normalize()
+}
+
+func normalizePositionEffect(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case PositionEffectOpen, "entry", "enter", "开仓", "開倉":
+		return PositionEffectOpen
+	case PositionEffectClose, "exit", "reduce", "tp", "sl", "take_profit", "take-profit", "take profit", "stop_loss", "stop-loss", "stop loss", "平仓", "平倉", "止盈", "止损", "止損":
+		return PositionEffectClose
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
+func normalizePositionSide(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case PositionSideLong, "buy", "多", "多单":
+		return PositionSideLong
+	case PositionSideShort, "sell", "空", "空单":
+		return PositionSideShort
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
 }
 
 func NormalizeExchange(exchange string) string {

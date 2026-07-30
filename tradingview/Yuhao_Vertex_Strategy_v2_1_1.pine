@@ -538,12 +538,12 @@ if alertsOn and alertsOnStrongSignals and strongSellAlert
 if enableLongTrade and strongBuyOrder
     if closeOpposite
         strategy.close("Short", comment="Close Short on Strong Buy", disable_alert=true)
-    strategy.entry("Long", strategy.long, comment="Strong Buy", alert_message="buy")
+    strategy.entry("Long", strategy.long, comment="Strong Buy", alert_message="entry_long")
 
 if enableShortTrade and strongSellOrder
     if closeOpposite
         strategy.close("Long", comment="Close Long on Strong Sell", disable_alert=true)
-    strategy.entry("Short", strategy.short, comment="Strong Sell", alert_message="sell")
+    strategy.entry("Short", strategy.short, comment="Strong Sell", alert_message="entry_short")
 
 //========================
 // 画箭头
