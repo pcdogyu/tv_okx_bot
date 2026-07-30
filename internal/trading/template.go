@@ -30,10 +30,16 @@ type alertTemplatePayload struct {
 	Token          string `json:"token"`
 }
 
+const (
+	templateDynamicAction = "{{strategy.order.action}}"
+	templateDynamicTicker = "{{ticker}}"
+)
+
 func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateResponse, error) {
 	req.PriceSource = strings.ToLower(strings.TrimSpace(req.PriceSource))
 	req.APIID = strings.TrimSpace(req.APIID)
 	req.TargetExchange = NormalizeExchange(req.TargetExchange)
+	req.Coinpair = templateCoinpair(req.Coinpair)
 	if req.PriceSource == "" {
 		req.PriceSource = "close"
 	}
@@ -43,14 +49,18 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 	if req.PriceSource != "close" && req.PriceSource != "high" && req.PriceSource != "low" {
 		return TemplateResponse{}, fmt.Errorf("price_source must be close, high or low")
 	}
+	action, err := templateAction(req.Direction)
+	if err != nil {
+		return TemplateResponse{}, err
+	}
 	signal := Signal{
-		Action:         "{{strategy.order.action}}",
+		Action:         Side(action),
 		APIID:          req.APIID,
 		TargetExchange: req.TargetExchange,
-		Coinpair:       "{{ticker}}",
+		Coinpair:       req.Coinpair,
 		Price:          NewFlexibleFloat(0),
 		SentAt:         "{{timenow}}",
-		Ticker:         "{{ticker}}",
+		Ticker:         req.Coinpair,
 		Leverage:       req.Leverage,
 		Amount:         req.Amount,
 	}
@@ -64,7 +74,7 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		SentAt:         signal.SentAt,
 		APIID:          req.APIID,
 		TargetExchange: req.TargetExchange,
-		Action:         string(signal.Action),
+		Action:         action,
 		Ticker:         signal.Ticker,
 		Coinpair:       signal.Coinpair,
 		Price:          "{{" + req.PriceSource + "}}",
@@ -82,6 +92,29 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		return TemplateResponse{}, err
 	}
 	return TemplateResponse{JSON: string(b), Token: token, TokenNonce: tokenNonce}, nil
+}
+
+func templateCoinpair(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return templateDynamicTicker
+	}
+	return strings.ToUpper(raw)
+}
+
+func templateAction(rawDirection string) (string, error) {
+	direction := strings.ToLower(strings.TrimSpace(rawDirection))
+	direction = strings.ReplaceAll(direction, "-", "_")
+	switch direction {
+	case "", "both", "all", "long_short", "both_sides", "多空都做":
+		return templateDynamicAction, nil
+	case "long", "long_only", "only_long", "buy", "只做多":
+		return "buy", nil
+	case "short", "short_only", "only_short", "sell", "只做空":
+		return "sell", nil
+	default:
+		return "", fmt.Errorf("direction must be both, long or short")
+	}
 }
 
 func newTemplateTokenNonce() (string, error) {

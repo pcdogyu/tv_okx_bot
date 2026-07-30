@@ -134,6 +134,8 @@ type TemplateRequest struct {
 	PriceSource    string        `json:"price_source"`
 	APIID          string        `json:"api_id,omitempty"`
 	TargetExchange string        `json:"target_exchange,omitempty"`
+	Coinpair       string        `json:"coinpair,omitempty"`
+	Direction      string        `json:"direction,omitempty"`
 	Leverage       int           `json:"leverage"`
 	Amount         FlexibleFloat `json:"amount"`
 }

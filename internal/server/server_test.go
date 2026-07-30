@@ -396,6 +396,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(`new URL("/tvorder"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("target_exchange")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-target-exchange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-coinpair")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-direction")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("多空都做")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("只做多")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("只做空")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("templateCoinpairOptions")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("position-exchange\"><option")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("position-api-id")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("order-okx")) ||
@@ -1147,7 +1153,7 @@ func TestTVOrderAppliesConfiguredOrderSettings(t *testing.T) {
 
 func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	srv := newTestServer(t)
-	reqBody := []byte(`{"price_source":"high","api_id":"backup","leverage":3,"amount":50}`)
+	reqBody := []byte(`{"price_source":"high","api_id":"backup","coinpair":"ethusdt.p","direction":"long","leverage":3,"amount":50}`)
 	req := httptest.NewRequest(http.MethodPost, "/tvbot/templates", bytes.NewReader(reqBody))
 	req.Header.Set("X-Admin-Token", "admin")
 	rr := httptest.NewRecorder()
@@ -1165,6 +1171,9 @@ func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {
 	if len(resp.Token) != 88 ||
 		!bytes.Contains([]byte(resp.JSON), []byte(`"price": "{{high}}"`)) ||
 		!bytes.Contains([]byte(resp.JSON), []byte(`"api_id": "backup"`)) ||
+		!bytes.Contains([]byte(resp.JSON), []byte(`"action": "buy"`)) ||
+		!bytes.Contains([]byte(resp.JSON), []byte(`"ticker": "ETHUSDT.P"`)) ||
+		!bytes.Contains([]byte(resp.JSON), []byte(`"coinpair": "ETHUSDT.P"`)) ||
 		!bytes.Contains([]byte(resp.JSON), []byte(`"order_intent": "{{strategy.order.alert_message}}"`)) {
 		t.Fatalf("bad template response: %#v", resp)
 	}

@@ -116,6 +116,57 @@ func TestBuildTemplateCanBindTargetExchange(t *testing.T) {
 	}
 }
 
+func TestBuildTemplateCanBindCoinpairAndDirection(t *testing.T) {
+	tests := []struct {
+		name       string
+		direction  string
+		wantAction string
+	}{
+		{name: "both", direction: "both", wantAction: "{{strategy.order.action}}"},
+		{name: "long only", direction: "long", wantAction: "buy"},
+		{name: "short only", direction: "short", wantAction: "sell"},
+	}
+	tokenSvc := security.NewTokenService("unit-test-secret")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := TemplateRequest{
+				TargetExchange: ExchangeBinance,
+				PriceSource:    "close",
+				Coinpair:       "syrupusdt.p",
+				Direction:      tt.direction,
+			}
+			resp, err := BuildTemplate(req, tokenSvc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(resp.JSON), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["action"] != tt.wantAction {
+				t.Fatalf("unexpected action: %#v", payload)
+			}
+			if payload["ticker"] != "SYRUPUSDT.P" || payload["coinpair"] != "SYRUPUSDT.P" {
+				t.Fatalf("unexpected fixed coinpair: %#v", payload)
+			}
+			if !tokenSvc.Validate(CanonicalTargetWebhookTokenPayloadWithNonce(req.TargetExchange, req.APIID, resp.TokenNonce), resp.Token) {
+				t.Fatal("generated token did not validate against selected target payload")
+			}
+		})
+	}
+}
+
+func TestBuildTemplateRejectsInvalidDirection(t *testing.T) {
+	req := TemplateRequest{
+		PriceSource: "close",
+		Direction:   "sideways",
+	}
+	tokenSvc := security.NewTokenService("unit-test-secret")
+	if _, err := BuildTemplate(req, tokenSvc); err == nil || !strings.Contains(err.Error(), "direction must be") {
+		t.Fatalf("expected invalid direction error, got %v", err)
+	}
+}
+
 func TestBuildTemplateGeneratesDifferentTokenEachTime(t *testing.T) {
 	req := TemplateRequest{
 		TargetExchange: ExchangeBinance,

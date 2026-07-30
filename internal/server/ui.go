@@ -1291,6 +1291,8 @@ const tvbotHTML = `<!doctype html>
           <label>Webhook URL<input id="template-webhook-url" readonly></label>
           <label>下单去向<select id="tpl-target-exchange"><option value="okx">OKX</option><option value="binance">Binance USDⓈ-M</option></select></label>
           <label>交易 API<select id="tpl-api-id"></select></label>
+          <label>币对<select id="tpl-coinpair"><option value="">跟随 TradingView ({{ticker}})</option></select></label>
+          <label>方向<select id="tpl-direction"><option value="both">多空都做</option><option value="long">只做多</option><option value="short">只做空</option></select></label>
           <label>价格源<select id="tpl-price-source"><option value="close">close</option><option value="high">high</option><option value="low">low</option></select></label>
           <div class="actions" style="margin-top:0"><button class="btn" type="button" id="copy-webhook-url">复制 URL</button></div>
         </div>
@@ -2441,6 +2443,7 @@ const tvbotHTML = `<!doctype html>
       renderConfig();
       renderOrderSettings();
       renderMenuSettings();
+      renderTemplateCoinpairs();
       renderPositions();
       renderPendingOrders();
       updateMetrics();
@@ -2700,9 +2703,11 @@ const tvbotHTML = `<!doctype html>
         state.symbols = null;
         state.symbolsError = err.message;
         renderSymbols();
+        renderTemplateCoinpairs();
         throw err;
       }
       renderSymbols();
+      renderTemplateCoinpairs();
     }
 
     function updateMetrics() {
@@ -3030,6 +3035,38 @@ const tvbotHTML = `<!doctype html>
       if (status && status.active_id) {
         $("tpl-api-id").value = status.active_id;
       }
+    }
+
+    function renderTemplateCoinpairs() {
+      const select = $("tpl-coinpair");
+      if (!select) return;
+      const previous = select.value;
+      const pairs = templateCoinpairOptions();
+      select.innerHTML = '<option value="">跟随 TradingView ({{ticker}})</option>' + pairs.map((pair) => '<option value="' + escapeHTML(pair) + '">' + escapeHTML(pair) + '</option>').join("");
+      if (previous && pairs.includes(previous)) {
+        select.value = previous;
+      }
+    }
+
+    function templateCoinpairOptions() {
+      const seen = {};
+      const out = [];
+      const add = (value) => {
+        const normalized = String(value || "").trim().toUpperCase();
+        if (!normalized || seen[normalized]) return;
+        seen[normalized] = true;
+        out.push(normalized);
+      };
+      const collect = (symbols) => {
+        Object.keys(symbols || {}).forEach((key) => {
+          const item = symbols[key] || {};
+          add(item.coinpair);
+          add(key);
+        });
+      };
+      collect(state.config && state.config.symbols ? state.config.symbols : {});
+      collect(state.symbols && state.symbols.symbols ? state.symbols.symbols : {});
+      return out.sort((a, b) => a.localeCompare(b));
     }
 
     function templateWebhookURL() {
@@ -3990,6 +4027,8 @@ const tvbotHTML = `<!doctype html>
       const req = {
         target_exchange: normalizeExchange($("tpl-target-exchange").value),
         api_id: $("tpl-api-id").value,
+        coinpair: $("tpl-coinpair").value,
+        direction: $("tpl-direction").value,
         price_source: $("tpl-price-source").value
       };
       const resp = await api("/tvbot/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
