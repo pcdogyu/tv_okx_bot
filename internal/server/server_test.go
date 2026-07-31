@@ -264,6 +264,13 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-exchange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("搜索币对")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("clear-symbol-search")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("BTC / BTCUSDT / BTC-USDT-SWAP")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("没有匹配的币对")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbolSearchCompact")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbolSearchMatches")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbolSearchFields")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("Binance")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("交易所 / 环境")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("今日累计成交金额")) ||

@@ -630,6 +630,16 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: wrap;
     }
     .symbol-controls label { min-width: 220px; }
+    .symbol-search-label {
+      flex: 1 1 280px;
+      min-width: 260px;
+    }
+    .symbol-search-actions {
+      display: flex;
+      gap: 8px;
+      align-items: end;
+      flex-wrap: wrap;
+    }
     .menu-hidden-check {
       display: flex;
       align-items: center;
@@ -1242,8 +1252,11 @@ const tvbotHTML = `<!doctype html>
         <div class="symbol-controls">
           <label>交易所<select id="symbol-exchange"><option value="all">全部</option><option value="okx">OKX</option><option value="binance">Binance</option></select></label>
           <label>环境<select id="symbol-env"><option value="all">全部</option><option value="live">生产</option><option value="demo">测试</option></select></label>
-          <label>搜索<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="BTC-USDT-SWAP / BTCUSDT"></label>
-          <button class="btn primary" type="button" id="refresh-symbols">刷新币对</button>
+          <label class="symbol-search-label">搜索币对<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="BTC / BTCUSDT / BTC-USDT-SWAP"></label>
+          <div class="symbol-search-actions">
+            <button class="btn" type="button" id="clear-symbol-search" disabled>清除搜索</button>
+            <button class="btn primary" type="button" id="refresh-symbols">刷新币对</button>
+          </div>
         </div>
       </div>
       <div class="analysis-metrics symbol-metrics">
@@ -2890,11 +2903,13 @@ const tvbotHTML = `<!doctype html>
       const binanceLive = binanceCatalog.live || {};
       const binanceDemo = binanceCatalog.demo || {};
       const configured = data.symbols || {};
+      const keyword = currentSymbolSearchKeyword();
       const rows = sortedSymbolRows(filteredSymbolRows());
       $("symbol-live-count").textContent = asText(symbolSetCount(okxLive) + symbolSetCount(binanceLive));
       $("symbol-demo-count").textContent = asText(symbolSetCount(okxDemo) + symbolSetCount(binanceDemo));
       $("symbol-configured-count").textContent = asText(Object.keys(configured).length);
       $("symbol-visible-count").textContent = asText(rows.length);
+      updateSymbolSearchControls(keyword);
       renderTableStructure("symbols");
       const errors = [];
       if (state.symbolsError) errors.push(state.symbolsError);
@@ -2904,7 +2919,7 @@ const tvbotHTML = `<!doctype html>
       collectSymbolSetErrors(errors, "Binance 测试", binanceDemo);
       $("symbol-errors").textContent = errors.join(" / ");
       const columns = currentTableColumnDefs("symbols");
-      $("symbol-rows").innerHTML = rows.map((row) => "<tr>" + columns.map((col) => col.cell(row)).join("") + "</tr>").join("") || '<tr><td colspan="' + tableColumnCount("symbols") + '" class="muted">' + escapeHTML(state.symbolsError || "暂无币对数据") + '</td></tr>';
+      $("symbol-rows").innerHTML = rows.map((row) => "<tr>" + columns.map((col) => col.cell(row)).join("") + "</tr>").join("") || '<tr><td colspan="' + tableColumnCount("symbols") + '" class="muted">' + escapeHTML(symbolEmptyMessage(keyword)) + '</td></tr>';
     }
 
     function filteredSymbolRows() {
@@ -2913,7 +2928,7 @@ const tvbotHTML = `<!doctype html>
       const binanceCatalog = data.binance || {};
       const exchangeFilter = $("symbol-exchange") ? $("symbol-exchange").value : "all";
       const envFilter = $("symbol-env") ? $("symbol-env").value : "all";
-      const keyword = $("symbol-search") ? $("symbol-search").value.trim().toLowerCase() : "";
+      const terms = symbolSearchTerms(currentSymbolSearchKeyword());
       const configuredLookup = configuredSymbolMap();
       const groups = [
         { exchange: "okx", exchangeLabel: "OKX", env: "live", envLabel: "生产", set: okxCatalog.live || {} },
@@ -2927,24 +2942,8 @@ const tvbotHTML = `<!doctype html>
         if (envFilter !== "all" && envFilter !== group.env) return;
         const instruments = Array.isArray(group.set.instruments) ? group.set.instruments : [];
         instruments.forEach((instrument) => {
-          if (keyword) {
-            const haystack = [
-              group.exchangeLabel,
-              group.envLabel,
-              instrument.instId,
-              instrument.symbol,
-              instrument.baseCcy,
-              instrument.baseAsset,
-              instrument.quoteCcy,
-              instrument.quoteAsset,
-              instrument.settleCcy,
-              instrument.marginAsset,
-              instrument.instFamily,
-              instrument.uly,
-              instrument.pair
-            ].join(" ").toLowerCase();
-            if (!haystack.includes(keyword)) return;
-          }
+          const configured = symbolConfiguredByLookup(instrument, configuredLookup);
+          if (!symbolSearchMatches(symbolSearchFields(group, instrument, configured), terms)) return;
           rows.push({
             exchange: group.exchange,
             exchangeLabel: group.exchangeLabel,
@@ -2952,12 +2951,73 @@ const tvbotHTML = `<!doctype html>
             envLabel: group.envLabel,
             label: symbolExchangeEnvText(group),
             instrument: instrument,
-            configured: symbolConfiguredByLookup(instrument, configuredLookup),
+            configured: configured,
             index: rows.length
           });
         });
       });
       return rows;
+    }
+
+    function currentSymbolSearchKeyword() {
+      return $("symbol-search") ? $("symbol-search").value.trim() : "";
+    }
+
+    function updateSymbolSearchControls(keyword) {
+      const clearButton = $("clear-symbol-search");
+      if (clearButton) clearButton.disabled = !keyword;
+    }
+
+    function clearSymbolSearch() {
+      const input = $("symbol-search");
+      if (!input) return;
+      input.value = "";
+      renderSymbols();
+      input.focus();
+    }
+
+    function symbolEmptyMessage(keyword) {
+      if (keyword) return "没有匹配的币对";
+      return state.symbolsError || "暂无币对数据";
+    }
+
+    function symbolSearchTerms(keyword) {
+      return String(keyword || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+    }
+
+    function symbolSearchCompact(value) {
+      return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    }
+
+    function symbolSearchMatches(fields, terms) {
+      if (!terms.length) return true;
+      const raw = fields.map((value) => asText(value)).join(" ").toLowerCase();
+      const compact = symbolSearchCompact(raw);
+      return terms.every((term) => {
+        const compactTerm = symbolSearchCompact(term);
+        return raw.includes(term) || (compactTerm && compact.includes(compactTerm));
+      });
+    }
+
+    function symbolSearchFields(group, instrument, configured) {
+      return [
+        group.exchange,
+        group.exchangeLabel,
+        group.env,
+        group.envLabel,
+        instrument.instId,
+        instrument.symbol,
+        instrument.baseCcy,
+        instrument.baseAsset,
+        instrument.quoteCcy,
+        instrument.quoteAsset,
+        instrument.settleCcy,
+        instrument.marginAsset,
+        instrument.instFamily,
+        instrument.uly,
+        instrument.pair,
+        configured ? "本地已配置 configured" : "本地未配置 unconfigured"
+      ];
     }
 
     function sortedSymbolRows(rows) {
@@ -4555,6 +4615,7 @@ const tvbotHTML = `<!doctype html>
     $("save-config").addEventListener("click", () => saveConfig().catch((err) => toast(err.message)));
     $("refresh-symbols").addEventListener("click", () => loadSymbols(true).then(() => toast("币对已刷新")).catch((err) => toast(err.message)));
     $("symbol-search").addEventListener("input", () => renderSymbols());
+    $("clear-symbol-search").addEventListener("click", () => clearSymbolSearch());
     $("symbol-exchange").addEventListener("change", () => renderSymbols());
     $("symbol-env").addEventListener("change", () => renderSymbols());
     $("symbol-head").addEventListener("click", (event) => {
