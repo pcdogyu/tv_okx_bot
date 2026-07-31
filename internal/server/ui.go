@@ -1468,6 +1468,7 @@ const tvbotHTML = `<!doctype html>
       positions: null,
       positionsError: "",
       pendingOrders: null,
+      localPendingLimitCloses: [],
       pendingOrdersError: "",
       symbols: null,
       symbolsError: "",
@@ -1486,6 +1487,7 @@ const tvbotHTML = `<!doctype html>
     let tableColumnDrag = null;
     let tableColumnDropSuppressClick = false;
     const positionViewPollIntervalMs = 5000;
+    const pendingLimitCloseOrderCacheMs = 90000;
     const missingPositionEntrySyncIntervalMs = 180000;
     const analysisBalanceRefreshIntervalMs = 60000;
     const defaultMenuItems = [
@@ -2666,15 +2668,18 @@ const tvbotHTML = `<!doctype html>
         normalCount += pendingOrderNormalCount(result);
         algoCount += pendingOrderAlgoCount(result);
       });
+      const mergedRows = mergeLocalPendingLimitCloseOrders(rows);
+      const localCount = Math.max(0, mergedRows.length - rows.length);
       state.pendingOrders = {
         ok: results.some((result) => result.ok),
-        count: normalCount,
-        normal_count: normalCount,
+        count: normalCount + localCount,
+        normal_count: normalCount + localCount,
         algo_count: algoCount,
-        total_count: normalCount + algoCount,
+        total_count: normalCount + algoCount + localCount,
+        local_pending_count: localCount,
         refreshed_at: combinedRefreshedAt(results),
         exchanges: results,
-        orders: rows
+        orders: mergedRows
       };
       state.pendingOrdersError = combinedErrors(results);
       renderPendingOrders();
@@ -2773,12 +2778,13 @@ const tvbotHTML = `<!doctype html>
       if (exchanges.length === 0) return "-";
       return [activeExchange()].map((exchange) => {
         const result = exchanges.find((item) => normalizeExchange(item && item.exchange) === exchange);
+        const localCount = exchange === activeExchange() ? pendingOrderCountValue(response, "local_pending_count", 0) : 0;
         const label = exchangeLabel(exchange);
         if (!result) return label + " -";
         if (!result.ok || result.error) return label + " 失败";
-        if (exchange === "okx") return "OKX 普通单 " + pendingOrderNormalCount(result) + " / 算法订单 " + pendingOrderAlgoCount(result);
-        if (exchange === "binance") return "Binance 普通单 " + pendingOrderNormalCount(result) + " / 算法单 " + pendingOrderAlgoCount(result);
-        return label + " 普通单 " + pendingOrderNormalCount(result) + " / 算法单 " + pendingOrderAlgoCount(result);
+        if (exchange === "okx") return "OKX 普通单 " + (pendingOrderNormalCount(result) + localCount) + " / 算法订单 " + pendingOrderAlgoCount(result);
+        if (exchange === "binance") return "Binance 普通单 " + (pendingOrderNormalCount(result) + localCount) + " / 算法单 " + pendingOrderAlgoCount(result);
+        return label + " 普通单 " + (pendingOrderNormalCount(result) + localCount) + " / 算法单 " + pendingOrderAlgoCount(result);
       }).join(" . ");
     }
 
@@ -3451,6 +3457,132 @@ const tvbotHTML = `<!doctype html>
       return text === "true" || text === "1" || text === "yes";
     }
 
+    function pendingOrderIdentity(row) {
+      const keys = pendingOrderIdentityKeys(row);
+      return keys.length ? keys[0] : "";
+    }
+
+    function pendingOrderIdentityKeys(row) {
+      if (!row) return [];
+      const exchange = normalizeExchange(row._exchange || "okx");
+      const apiID = row._api_id || "";
+      const instID = String(row.instId || "").toUpperCase();
+      const ordID = String(row.ordId || "").trim();
+      const clOrdID = String(row.clOrdId || "").trim();
+      const keys = [];
+      if (!instID) return keys;
+      if (ordID) keys.push([exchange, apiID, instID, "ord:" + ordID].join("|"));
+      if (clOrdID) keys.push([exchange, apiID, instID, "cl:" + clOrdID].join("|"));
+      return keys;
+    }
+
+    function markPendingOrderIdentity(row, seen) {
+      pendingOrderIdentityKeys(row).forEach((key) => { seen[key] = true; });
+    }
+
+    function hasPendingOrderIdentity(row, seen) {
+      return pendingOrderIdentityKeys(row).some((key) => !!seen[key]);
+    }
+
+    function mergeLocalPendingLimitCloseOrders(rows) {
+      const now = Date.now();
+      const baseRows = (Array.isArray(rows) ? rows : []).filter((row) => !(row && row._local_pending_limit_close));
+      const seen = {};
+      baseRows.forEach((row) => markPendingOrderIdentity(row, seen));
+      const active = activeExchange();
+      const kept = [];
+      const merged = baseRows.slice();
+      (Array.isArray(state.localPendingLimitCloses) ? state.localPendingLimitCloses : []).forEach((row) => {
+        if (!row || Number(row._expires_at || 0) <= now) return;
+        if (hasPendingOrderIdentity(row, seen)) return;
+        kept.push(row);
+        if (normalizeExchange(row._exchange || "okx") !== active) return;
+        merged.unshift(row);
+        markPendingOrderIdentity(row, seen);
+      });
+      state.localPendingLimitCloses = kept;
+      return merged;
+    }
+
+    function positionCloseSideForPendingRow(posSide, pos) {
+      const kind = positionSideKind(posSide, pos);
+      if (kind === "short") return "buy";
+      return "sell";
+    }
+
+    function localPendingLimitCloseRow(result, request) {
+      const exchange = normalizeExchange(request && request.exchange);
+      const precision = symbolPrecision(exchange, result && result.inst_id ? result.inst_id : request.inst_id);
+      const now = Date.now();
+      const status = result && result.status === "unknown" ? "unknown" : "live";
+      return {
+        _exchange: exchange,
+        _api_id: (result && result.api_id) || (request && request.api_id) || "",
+        _expires_at: now + pendingLimitCloseOrderCacheMs,
+        _local_pending_limit_close: true,
+        instType: exchange === "binance" ? "USDT-M" : "SWAP",
+        instId: (result && result.inst_id) || (request && request.inst_id) || "",
+        ordId: result && result.ord_id ? result.ord_id : "",
+        clOrdId: result && result.cl_ord_id ? result.cl_ord_id : "",
+        tdMode: "",
+        side: positionCloseSideForPendingRow(request && request.pos_side, request && request.pos),
+        posSide: request && request.pos_side ? request.pos_side : "",
+        ordType: "limit",
+        px: result && result.px ? result.px : "",
+        sz: result && result.sz ? result.sz : "",
+        accFillSz: "0",
+        avgPx: "",
+        state: status,
+        reduceOnly: true,
+        closePosition: false,
+        cTime: String(now),
+        uTime: String(now),
+        price_precision: precision ? precision.price_precision : null,
+        quantity_precision: precision ? precision.quantity_precision : null,
+        chasing: false
+      };
+    }
+
+    function rememberLimitClosePendingOrder(result, request) {
+      if (!result || !request || request.mode !== "limit") return;
+      const row = localPendingLimitCloseRow(result, request);
+      const key = pendingOrderIdentity(row);
+      if (!key) return;
+      const rows = Array.isArray(state.localPendingLimitCloses) ? state.localPendingLimitCloses : [];
+      const nextSeen = {};
+      markPendingOrderIdentity(row, nextSeen);
+      state.localPendingLimitCloses = rows.filter((item) => !hasPendingOrderIdentity(item, nextSeen));
+      state.localPendingLimitCloses.unshift(row);
+      if (!state.pendingOrders) {
+        state.pendingOrders = {
+          ok: true,
+          count: 0,
+          normal_count: 0,
+          algo_count: 0,
+          total_count: 0,
+          refreshed_at: new Date().toISOString(),
+          exchanges: [{
+            ok: true,
+            exchange: row._exchange,
+            api_id: row._api_id,
+            count: 0,
+            normal_count: 0,
+            algo_count: 0,
+            total_count: 0
+          }],
+          orders: []
+        };
+      }
+      state.pendingOrders.orders = mergeLocalPendingLimitCloseOrders(state.pendingOrders.orders);
+      const localCount = state.pendingOrders.orders.filter((item) => item && item._local_pending_limit_close).length;
+      const actualCount = state.pendingOrders.orders.filter((item) => !(item && item._local_pending_limit_close)).length;
+      state.pendingOrders.local_pending_count = localCount;
+      state.pendingOrders.count = actualCount + localCount;
+      state.pendingOrders.normal_count = actualCount + localCount;
+      state.pendingOrders.total_count = Number(state.pendingOrders.normal_count || 0) + Number(state.pendingOrders.algo_count || 0);
+      renderPendingOrders();
+    }
+
     function pendingOrderPositionEffect(row) {
       if (!row) return "open";
       if (isTrueValue(row.reduceOnly) || isTrueValue(row.closePosition) || isTrueValue(row.close_position)) return "close";
@@ -3504,6 +3636,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     function pendingOrderActionCell(row) {
+      if (row && row._local_pending_limit_close) return tableCell('<span class="muted">同步中</span>');
       const exchange = normalizeExchange(row._exchange || "okx");
       const key = pendingOrderRowKey(row);
       const busy = !!state.pendingOrderActions[key];
@@ -3615,8 +3748,9 @@ const tvbotHTML = `<!doctype html>
       const closing = !!state.positionClosing[key];
       const instID = escapeHTML(asText(row.instId));
       const posSide = escapeHTML(String(row.posSide || ""));
+      const pos = escapeHTML(String(row.pos || ""));
       const apiID = escapeHTML(row._api_id || "");
-      const baseAttrs = ' data-exchange="' + exchange + '" data-api-id="' + apiID + '" data-inst-id="' + instID + '" data-pos-side="' + posSide + '"';
+      const baseAttrs = ' data-exchange="' + exchange + '" data-api-id="' + apiID + '" data-inst-id="' + instID + '" data-pos-side="' + posSide + '" data-pos="' + pos + '"';
       const protectionButtons = [
         { label: "止盈", kind: "tp" },
         { label: "止损", kind: "sl" },
@@ -4440,6 +4574,7 @@ const tvbotHTML = `<!doctype html>
       const mode = button.dataset.positionClose;
       const instID = button.dataset.instId || "";
       const posSide = button.dataset.posSide || "";
+      const pos = button.dataset.pos || "";
       const apiID = button.dataset.apiId || "";
       const ratio = Number(button.dataset.positionRatio || "0");
       const key = [exchange, apiID, instID.toUpperCase(), (posSide || "net").toLowerCase()].join("|");
@@ -4468,6 +4603,7 @@ const tvbotHTML = `<!doctype html>
         } else {
           toast(mode === "market" ? "市价平仓已提交" + ratioText : limitCloseText + asText(result.px) + ratioText);
         }
+        rememberLimitClosePendingOrder(result, Object.assign({}, body, { pos: pos }));
         await loadPositionView();
         window.setTimeout(() => loadPositionView().catch((err) => toast(err.message)), mode === "market" ? 1600 : 5200);
       } finally {
