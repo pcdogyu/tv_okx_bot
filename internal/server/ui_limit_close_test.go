@@ -26,7 +26,10 @@ func TestTVBotUILimitCloseAddsLocalPendingOrder(t *testing.T) {
 		[]byte("local_pending_count"),
 		[]byte(`data-pos="`),
 		[]byte(`Object.assign({}, body, { pos: pos })`),
+		[]byte(`stateText === "new"`),
+		[]byte("等待同步"),
 		[]byte("同步中"),
+		[]byte("Binance 平仓状态同步中"),
 	} {
 		if !bytes.Contains(body, want) {
 			t.Fatalf("tvbot ui should include limit close pending order marker %q", want)

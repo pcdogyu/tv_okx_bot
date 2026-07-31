@@ -3514,7 +3514,7 @@ const tvbotHTML = `<!doctype html>
       const exchange = normalizeExchange(request && request.exchange);
       const precision = symbolPrecision(exchange, result && result.inst_id ? result.inst_id : request.inst_id);
       const now = Date.now();
-      const status = result && result.status === "unknown" ? "unknown" : "live";
+      const status = result && result.status === "unknown" ? "syncing" : "live";
       return {
         _exchange: exchange,
         _api_id: (result && result.api_id) || (request && request.api_id) || "",
@@ -3623,6 +3623,8 @@ const tvbotHTML = `<!doctype html>
 
     function pendingOrderStateText(value) {
       const stateText = String(value || "").toLowerCase();
+      if (stateText === "syncing" || stateText === "unknown") return "等待同步";
+      if (stateText === "new") return "等待成交";
       if (stateText === "live") return "等待成交";
       if (stateText === "partially_filled") return "部分成交";
       return asText(value);
@@ -4599,7 +4601,7 @@ const tvbotHTML = `<!doctype html>
         const ratioText = body.ratio ? " " + Math.round(body.ratio * 100) + "%" : "";
         if (result && result.status === "unknown") {
           const clientID = result.cl_ord_id ? " " + asText(result.cl_ord_id) : "";
-          toast("Binance 平仓状态未知" + clientID + "，请刷新确认后再重试");
+          toast("Binance 平仓状态同步中" + clientID + "，请刷新确认后再重试");
         } else {
           toast(mode === "market" ? "市价平仓已提交" + ratioText : limitCloseText + asText(result.px) + ratioText);
         }
