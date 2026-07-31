@@ -237,7 +237,7 @@ func TestClientTradingEndpoints(t *testing.T) {
 		case "/fapi/v1/allOpenOrders":
 			_, _ = w.Write([]byte(`{"code":200,"msg":"The operation of cancel all open order is done."}`))
 		case "/fapi/v1/openAlgoOrders":
-			_, _ = w.Write([]byte(`[{"algoId":790,"clientAlgoId":"tp-open","algoType":"CONDITIONAL","orderType":"TAKE_PROFIT_MARKET","symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","quantity":"0.1","algoStatus":"NEW","reduceOnly":true}]`))
+			_, _ = w.Write([]byte(`[{"algoId":790,"clientAlgoId":"tp-open","algoType":"CONDITIONAL","orderType":"TAKE_PROFIT_MARKET","symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","quantity":"0.1","algoStatus":"NEW","reduceOnly":true,"triggerPrice":"51000","activatePrice":"0","callbackRate":"1.5","workingType":"MARK_PRICE"}]`))
 		case "/fapi/v1/algoOrder":
 			switch r.Method {
 			case http.MethodPost:
@@ -329,12 +329,13 @@ func TestClientTradingEndpoints(t *testing.T) {
 		WorkingType:      "MARK_PRICE",
 		NewClientOrderID: "tp",
 		ReduceOnly:       true,
+		ClosePosition:    true,
 	})
 	if err != nil || algo.AlgoID != 789 {
 		t.Fatalf("bad algo ack err=%v ack=%#v", err, algo)
 	}
 	openAlgos, err := client.OpenAlgoOrders(context.Background(), "BTCUSDT")
-	if err != nil || len(openAlgos) != 1 || openAlgos[0].AlgoID != 790 {
+	if err != nil || len(openAlgos) != 1 || openAlgos[0].AlgoID != 790 || openAlgos[0].TriggerPrice != "51000" || openAlgos[0].CallbackRate != "1.5" || openAlgos[0].WorkingType != "MARK_PRICE" {
 		t.Fatalf("bad open algo orders err=%v orders=%#v", err, openAlgos)
 	}
 	canceledAlgo, err := client.CancelAlgoOrder(context.Background(), 790, "")
@@ -359,7 +360,7 @@ func TestClientTradingEndpoints(t *testing.T) {
 	if seen[http.MethodDelete+" /fapi/v1/order"].Get("origClientOrderId") != "entry" {
 		t.Fatalf("bad cancel order form: %#v", seen[http.MethodDelete+" /fapi/v1/order"])
 	}
-	if seen[http.MethodPost+" /fapi/v1/algoOrder"].Get("algoType") != "CONDITIONAL" || seen[http.MethodPost+" /fapi/v1/algoOrder"].Get("reduceOnly") != "true" {
+	if seen[http.MethodPost+" /fapi/v1/algoOrder"].Get("algoType") != "CONDITIONAL" || seen[http.MethodPost+" /fapi/v1/algoOrder"].Get("reduceOnly") != "true" || seen[http.MethodPost+" /fapi/v1/algoOrder"].Get("closePosition") != "true" {
 		t.Fatalf("bad algo form: %#v", seen[http.MethodPost+" /fapi/v1/algoOrder"])
 	}
 	if seen[http.MethodGet+" /fapi/v1/openAlgoOrders"].Get("algoType") != "CONDITIONAL" || seen[http.MethodGet+" /fapi/v1/openAlgoOrders"].Get("symbol") != "BTCUSDT" {

@@ -723,6 +723,17 @@ const tvbotHTML = `<!doctype html>
       border-color: var(--blue);
       color: #fff;
     }
+    .pending-order-switch {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .pending-order-group-btn[aria-selected="true"] {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #fff;
+    }
     .dashboard-balance-grid {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
@@ -1082,7 +1093,13 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="section-head" style="margin:18px 0 10px">
         <h3>当前挂单</h3>
-        <span class="muted" id="pending-orders-updated">-</span>
+        <div class="actions" style="margin-top:0">
+          <div class="pending-order-switch" role="group" aria-label="挂单类型">
+            <button class="btn small pending-order-group-btn" type="button" data-pending-order-group="normal" aria-selected="true">基础订单 (0)</button>
+            <button class="btn small pending-order-group-btn" type="button" data-pending-order-group="algo">算法订单 (0)</button>
+          </div>
+          <span class="muted" id="pending-orders-updated">-</span>
+        </div>
       </div>
       <div class="symbol-table-wrap">
         <table class="symbol-table pending-order-table">
@@ -1468,6 +1485,7 @@ const tvbotHTML = `<!doctype html>
       positions: null,
       positionsError: "",
       pendingOrders: null,
+      pendingOrderGroup: "normal",
       localPendingLimitCloses: [],
       pendingOrdersError: "",
       symbols: null,
@@ -1564,8 +1582,8 @@ const tvbotHTML = `<!doctype html>
       { id: "symbol", title: "币对", colClass: "pending-symbol-col", cell: (row) => textTableCell(asText(row.instId)) },
       { id: "side", title: "方向", colClass: "pending-side-col", cell: (row) => textTableCell(pendingOrderDirectionText(row)) },
       { id: "position_side", title: "持仓方向", colClass: "pending-pos-side-col", cell: (row) => textTableCell(positionSideText(row.posSide, "")) },
-      { id: "type", title: "类型", colClass: "pending-type-col", cell: (row) => textTableCell(orderTypeText(row.ordType)) },
-      { id: "price", title: "委托价格", colClass: "pending-price-col", cell: (row) => textTableCell(formatPriceAmount(row, row.px)) },
+      { id: "type", title: "类型", colClass: "pending-type-col", cell: (row) => textTableCell(pendingOrderTypeText(row)) },
+      { id: "price", title: "委托价格", colClass: "pending-price-col", cell: (row) => textTableCell(pendingOrderPriceText(row)) },
       { id: "mid_price", title: "中间价", colClass: "pending-mid-col", cell: (row) => textTableCell(row.price_error ? row.price_error : formatPriceAmount(row, row.mid_px)) },
       { id: "size", title: "委托量", colClass: "pending-size-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.sz)) },
       { id: "margin", title: "保证金", colClass: "pending-margin-col", cell: (row) => textTableCell(formatNumber(row.margin)) },
@@ -1856,6 +1874,7 @@ const tvbotHTML = `<!doctype html>
       state.ordersPage = 1;
       state.positions = null;
       state.pendingOrders = null;
+      state.pendingOrderGroup = "normal";
       try {
         window.localStorage.setItem(globalExchangeStorageKey, selected);
       } catch (_) {}
@@ -2655,6 +2674,7 @@ const tvbotHTML = `<!doctype html>
     async function loadPendingOrders() {
       const results = await Promise.all([loadPendingOrdersExchange(activeExchange())]);
       const rows = [];
+      const algoRows = [];
       let normalCount = 0;
       let algoCount = 0;
       results.forEach((result) => {
@@ -2664,6 +2684,11 @@ const tvbotHTML = `<!doctype html>
           const view = Object.assign({}, row, { _exchange: exchange, _api_id: apiID });
           rememberSymbolPrecision(exchange, view);
           rows.push(view);
+        });
+        (Array.isArray(result.algo_orders) ? result.algo_orders : []).forEach((row) => {
+          const view = Object.assign({}, row, { _exchange: exchange, _api_id: apiID });
+          rememberSymbolPrecision(exchange, view);
+          algoRows.push(view);
         });
         normalCount += pendingOrderNormalCount(result);
         algoCount += pendingOrderAlgoCount(result);
@@ -2679,7 +2704,8 @@ const tvbotHTML = `<!doctype html>
         local_pending_count: localCount,
         refreshed_at: combinedRefreshedAt(results),
         exchanges: results,
-        orders: mergedRows
+        orders: mergedRows,
+        algo_orders: algoRows
       };
       state.pendingOrdersError = combinedErrors(results);
       renderPendingOrders();
@@ -2710,6 +2736,7 @@ const tvbotHTML = `<!doctype html>
       } catch (err) {
         const result = positionExchangeError(exchange, err);
         result.orders = [];
+        result.algo_orders = [];
         result.normal_count = 0;
         result.algo_count = 0;
         result.total_count = 0;
@@ -2770,7 +2797,8 @@ const tvbotHTML = `<!doctype html>
     }
 
     function pendingOrderAlgoCount(result) {
-      return pendingOrderCountValue(result, "algo_count", 0);
+      const orderCount = Array.isArray(result && result.algo_orders) ? result.algo_orders.length : 0;
+      return pendingOrderCountValue(result, "algo_count", orderCount);
     }
 
     function pendingOrdersSummaryText(response) {
@@ -2786,6 +2814,28 @@ const tvbotHTML = `<!doctype html>
         if (exchange === "binance") return "Binance 普通单 " + (pendingOrderNormalCount(result) + localCount) + " / 算法单 " + pendingOrderAlgoCount(result);
         return label + " 普通单 " + (pendingOrderNormalCount(result) + localCount) + " / 算法单 " + pendingOrderAlgoCount(result);
       }).join(" . ");
+    }
+
+    function pendingOrderGroupCount(group) {
+      const response = state.pendingOrders || {};
+      if (group === "algo") return pendingOrderCountValue(response, "algo_count", Array.isArray(response.algo_orders) ? response.algo_orders.length : 0);
+      return pendingOrderCountValue(response, "normal_count", Array.isArray(response.orders) ? response.orders.length : 0);
+    }
+
+    function updatePendingOrderGroupButtons() {
+      document.querySelectorAll("[data-pending-order-group]").forEach((button) => {
+        const group = button.dataset.pendingOrderGroup === "algo" ? "algo" : "normal";
+        button.setAttribute("aria-selected", state.pendingOrderGroup === group ? "true" : "false");
+        button.textContent = (group === "algo" ? "算法订单" : "基础订单") + " (" + pendingOrderGroupCount(group) + ")";
+      });
+    }
+
+    function pendingOrderDisplayRows() {
+      if (!state.pendingOrders) return [];
+      if (state.pendingOrderGroup === "algo") {
+        return Array.isArray(state.pendingOrders.algo_orders) ? state.pendingOrders.algo_orders : [];
+      }
+      return Array.isArray(state.pendingOrders.orders) ? state.pendingOrders.orders : [];
     }
 
     async function loadPositionView(forceRefresh) {
@@ -3467,12 +3517,20 @@ const tvbotHTML = `<!doctype html>
       const exchange = normalizeExchange(row._exchange || "okx");
       const apiID = row._api_id || "";
       const instID = String(row.instId || "").toUpperCase();
+      const group = pendingOrderGroup(row);
       const ordID = String(row.ordId || "").trim();
       const clOrdID = String(row.clOrdId || "").trim();
+      const algoID = String(row.algo_id || "").trim();
+      const algoClOrdID = String(row.algo_cl_ord_id || "").trim();
       const keys = [];
       if (!instID) return keys;
-      if (ordID) keys.push([exchange, apiID, instID, "ord:" + ordID].join("|"));
-      if (clOrdID) keys.push([exchange, apiID, instID, "cl:" + clOrdID].join("|"));
+      if (group === "algo") {
+        if (algoID) keys.push([exchange, apiID, instID, group, "algo:" + algoID].join("|"));
+        if (algoClOrdID) keys.push([exchange, apiID, instID, group, "algo-cl:" + algoClOrdID].join("|"));
+        return keys;
+      }
+      if (ordID) keys.push([exchange, apiID, instID, group, "ord:" + ordID].join("|"));
+      if (clOrdID) keys.push([exchange, apiID, instID, group, "cl:" + clOrdID].join("|"));
       return keys;
     }
 
@@ -3520,6 +3578,7 @@ const tvbotHTML = `<!doctype html>
         _api_id: (result && result.api_id) || (request && request.api_id) || "",
         _expires_at: now + pendingLimitCloseOrderCacheMs,
         _local_pending_limit_close: true,
+        order_group: "normal",
         instType: exchange === "binance" ? "USDT-M" : "SWAP",
         instId: (result && result.inst_id) || (request && request.inst_id) || "",
         ordId: result && result.ord_id ? result.ord_id : "",
@@ -3539,6 +3598,7 @@ const tvbotHTML = `<!doctype html>
         uTime: String(now),
         price_precision: precision ? precision.price_precision : null,
         quantity_precision: precision ? precision.quantity_precision : null,
+        chaseable: true,
         chasing: false
       };
     }
@@ -3570,7 +3630,8 @@ const tvbotHTML = `<!doctype html>
             algo_count: 0,
             total_count: 0
           }],
-          orders: []
+          orders: [],
+          algo_orders: []
         };
       }
       state.pendingOrders.orders = mergeLocalPendingLimitCloseOrders(state.pendingOrders.orders);
@@ -3599,6 +3660,56 @@ const tvbotHTML = `<!doctype html>
 
     function pendingOrderDirectionText(row) {
       return positionDirectionLabel(pendingOrderPositionEffect(row), pendingOrderPositionSide(row), row ? row.side : "");
+    }
+
+    function pendingOrderGroup(row) {
+      return String(row && row.order_group ? row.order_group : "").toLowerCase() === "algo" ? "algo" : "normal";
+    }
+
+    function algoOrderTypeText(v) {
+      const raw = String(v || "").trim();
+      const value = raw.toLowerCase();
+      if (value === "conditional") return "止盈止损";
+      if (value === "trigger") return "触发单";
+      if (value === "move_order_stop") return "移动止损";
+      if (value === "iceberg") return "冰山委托";
+      if (value === "twap") return "TWAP";
+      if (value === "oco") return "OCO";
+      if (value === "stop_market") return "止损市价";
+      if (value === "take_profit_market") return "止盈市价";
+      if (value === "stop") return "止损限价";
+      if (value === "take_profit") return "止盈限价";
+      if (value === "trailing_stop_market") return "移动止损";
+      return asText(raw);
+    }
+
+    function pendingOrderTypeText(row) {
+      if (pendingOrderGroup(row) !== "algo") return orderTypeText(row ? row.ordType : "");
+      return "算法 " + algoOrderTypeText(row ? row.ordType : "");
+    }
+
+    function formatCallbackRatio(value) {
+      if (value === null || value === undefined || String(value).trim() === "") return "-";
+      const text = String(value).trim();
+      return text.includes("%") ? text : text + "%";
+    }
+
+    function pendingOrderPriceText(row) {
+      if (pendingOrderGroup(row) !== "algo") return formatPriceAmount(row, row ? row.px : null);
+      const parts = [];
+      if (row && row.trigger_px) parts.push("触发 " + formatPriceAmount(row, row.trigger_px));
+      if (row && row.activation_px) parts.push("激活 " + formatPriceAmount(row, row.activation_px));
+      if (row && row.callback_ratio) parts.push("回调 " + formatCallbackRatio(row.callback_ratio));
+      if (row && row.px && !row.trigger_px && !row.activation_px) parts.push("委托 " + formatPriceAmount(row, row.px));
+      return parts.length ? parts.join(" / ") : "-";
+    }
+
+    function pendingOrderChaseUnavailable(row) {
+      if (!row) return "";
+      if (pendingOrderGroup(row) === "algo" && !isTrueValue(row.chaseable)) {
+        return row.chase_unavailable_reason || "该算法订单不支持追单";
+      }
+      return row.price_error || "";
     }
 
     function positionSideKind(posSide, pos) {
@@ -3633,38 +3744,50 @@ const tvbotHTML = `<!doctype html>
     function pendingOrderRowKey(row) {
       const apiID = row._api_id || "";
       const exchange = row._exchange || "okx";
-      const orderID = row.ordId || ("cl:" + (row.clOrdId || ""));
-      return [normalizeExchange(exchange), apiID, String(row.instId || "").toUpperCase(), orderID].join("|");
+      const group = pendingOrderGroup(row);
+      const orderID = group === "algo"
+        ? (row.algo_id || ("algo-cl:" + (row.algo_cl_ord_id || "")))
+        : (row.ordId || ("cl:" + (row.clOrdId || "")));
+      return [normalizeExchange(exchange), apiID, String(row.instId || "").toUpperCase(), group, orderID].join("|");
     }
 
     function pendingOrderActionCell(row) {
       if (row && row._local_pending_limit_close) return tableCell('<span class="muted">同步中</span>');
       const exchange = normalizeExchange(row._exchange || "okx");
+      const group = pendingOrderGroup(row);
       const key = pendingOrderRowKey(row);
       const busy = !!state.pendingOrderActions[key];
       const chasing = !!row.chasing;
-      const unavailable = !chasing && !!row.price_error;
+      const unavailableReason = !chasing ? pendingOrderChaseUnavailable(row) : "";
+      const unavailable = !!unavailableReason;
       const disabled = busy;
       const label = busy ? "处理中" : (chasing ? "停止追单" : "追单");
       const mode = chasing ? "stop" : "start";
       const chaseButton = '<button class="btn small' + (unavailable ? " is-disabled" : "") + '" type="button" data-pending-chase="' + mode + '"' +
         ' data-exchange="' + exchange + '"' +
+        ' data-order-group="' + group + '"' +
         ' data-api-id="' + escapeHTML(row._api_id || "") + '"' +
         ' data-inst-id="' + escapeHTML(asText(row.instId)) + '"' +
         ' data-ord-id="' + escapeHTML(row.ordId || "") + '"' +
         ' data-cl-ord-id="' + escapeHTML(row.clOrdId || "") + '"' +
-        ' data-price-error="' + escapeHTML(row.price_error || "") + '"' +
+        ' data-algo-id="' + escapeHTML(row.algo_id || "") + '"' +
+        ' data-algo-cl-ord-id="' + escapeHTML(row.algo_cl_ord_id || "") + '"' +
+        ' data-price-error="' + escapeHTML(unavailableReason) + '"' +
         (unavailable ? ' aria-disabled="true"' : "") +
-        ' title="' + escapeHTML(row.price_error || label) + '"' +
-        (disabled ? " disabled" : "") + ">" + label + "</button>";
-      const cancelButton = exchange === "binance" ? '<button class="btn small danger" type="button" data-pending-cancel="true"' +
+        ' title="' + escapeHTML(unavailableReason || label) + '"' +
+        (disabled || unavailable ? " disabled" : "") + ">" + label + "</button>";
+      const cancelTitle = group === "algo" ? "取消算法订单" : "取消挂单";
+      const cancelButton = '<button class="btn small danger" type="button" data-pending-cancel="true"' +
         ' data-exchange="' + exchange + '"' +
+        ' data-order-group="' + group + '"' +
         ' data-api-id="' + escapeHTML(row._api_id || "") + '"' +
         ' data-inst-id="' + escapeHTML(asText(row.instId)) + '"' +
         ' data-ord-id="' + escapeHTML(row.ordId || "") + '"' +
         ' data-cl-ord-id="' + escapeHTML(row.clOrdId || "") + '"' +
-        ' title="取消 Binance 挂单"' +
-        (disabled ? " disabled" : "") + ">取消</button>" : "";
+        ' data-algo-id="' + escapeHTML(row.algo_id || "") + '"' +
+        ' data-algo-cl-ord-id="' + escapeHTML(row.algo_cl_ord_id || "") + '"' +
+        ' title="' + escapeHTML(cancelTitle) + '"' +
+        (disabled ? " disabled" : "") + ">取消</button>";
       return '<td><div class="position-actions">' + chaseButton + cancelButton + "</div></td>";
     }
 
@@ -3821,9 +3944,10 @@ const tvbotHTML = `<!doctype html>
 
     function renderPendingOrders() {
       renderTableStructure("pending_orders");
+      updatePendingOrderGroupButtons();
       const columnDefs = currentTableColumnDefs("pending_orders");
       const colspan = tableColumnCount("pending_orders");
-      const rows = state.pendingOrders && Array.isArray(state.pendingOrders.orders) ? state.pendingOrders.orders : [];
+      const rows = pendingOrderDisplayRows();
       if (!state.pendingOrders) {
         $("pending-orders-updated").textContent = state.pendingOrdersError || "-";
         $("pending-order-rows").innerHTML = '<tr><td colspan="' + colspan + '" class="muted">' + escapeHTML(state.pendingOrdersError || "-") + '</td></tr>';
@@ -3835,7 +3959,8 @@ const tvbotHTML = `<!doctype html>
         return "<tr>" + columnDefs.map((col) => col.cell(row)).join("") + "</tr>";
       }).join("");
       const warningRow = state.pendingOrdersError ? '<tr><td colspan="' + colspan + '" class="muted">' + escapeHTML(state.pendingOrdersError) + '</td></tr>' : "";
-      $("pending-order-rows").innerHTML = orderRows + warningRow || '<tr><td colspan="' + colspan + '" class="muted">暂无当前挂单</td></tr>';
+      const emptyText = state.pendingOrderGroup === "algo" ? "暂无当前算法订单" : "暂无当前挂单";
+      $("pending-order-rows").innerHTML = orderRows + warningRow || '<tr><td colspan="' + colspan + '" class="muted">' + emptyText + '</td></tr>';
     }
 
     function renderAnalysis() {
@@ -4647,6 +4772,20 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
+    function pendingOrderActionKeyFromBody(body) {
+      const group = body && body.order_group === "algo" ? "algo" : "normal";
+      const orderID = group === "algo"
+        ? (body.algo_id || ("algo-cl:" + (body.algo_cl_ord_id || "")))
+        : (body.ord_id || ("cl:" + (body.cl_ord_id || "")));
+      return [normalizeExchange(body && body.exchange), body && body.api_id || "", String(body && body.inst_id || "").toUpperCase(), group, orderID].join("|");
+    }
+
+    function pendingOrderBodyHasID(body) {
+      if (!body || !body.inst_id) return false;
+      if (body.order_group === "algo") return !!(body.algo_id || body.algo_cl_ord_id);
+      return !!(body.ord_id || body.cl_ord_id);
+    }
+
     async function chasePendingOrder(button) {
       const exchange = normalizeExchange(button.dataset.exchange || "okx");
       const mode = button.dataset.pendingChase;
@@ -4656,21 +4795,30 @@ const tvbotHTML = `<!doctype html>
         return;
       }
       const apiID = button.dataset.apiId || "";
+      const orderGroup = button.dataset.orderGroup === "algo" ? "algo" : "normal";
       const body = {
         exchange: exchange,
         api_id: apiID,
+        order_group: orderGroup,
         inst_id: button.dataset.instId || "",
         ord_id: button.dataset.ordId || "",
-        cl_ord_id: button.dataset.clOrdId || ""
+        cl_ord_id: button.dataset.clOrdId || "",
+        algo_id: button.dataset.algoId || "",
+        algo_cl_ord_id: button.dataset.algoClOrdId || ""
       };
-      const key = [exchange, body.api_id, String(body.inst_id || "").toUpperCase(), body.ord_id || ("cl:" + body.cl_ord_id)].join("|");
-      if (!body.inst_id || (!body.ord_id && !body.cl_ord_id) || state.pendingOrderActions[key]) return;
+      const key = pendingOrderActionKeyFromBody(body);
+      if (!pendingOrderBodyHasID(body) || state.pendingOrderActions[key]) return;
       state.pendingOrderActions[key] = true;
       renderPendingOrders();
       try {
         const path = mode === "stop" ? "/tvbot/pending-orders/chase/stop" : "/tvbot/pending-orders/chase";
         const result = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        toast(mode === "stop" ? "追单已停止" : ("追单已启动，60秒未成交将转市价 " + asText(result.px)));
+        const detail = result && result.px ? " " + asText(result.px) : "";
+        if (orderGroup === "algo") {
+          toast(mode === "stop" ? "算法订单追单已停止" : ("算法订单追单已启动" + detail));
+        } else {
+          toast(mode === "stop" ? "追单已停止" : ("追单已启动，60秒未成交将转市价 " + asText(result.px)));
+        }
         await loadPendingOrders();
       } finally {
         delete state.pendingOrderActions[key];
@@ -4680,24 +4828,25 @@ const tvbotHTML = `<!doctype html>
 
     async function cancelPendingOrder(button) {
       const exchange = normalizeExchange(button.dataset.exchange || "okx");
-      if (exchange !== "binance") {
-        toast("仅支持取消 Binance 挂单");
-        return;
-      }
+      const orderGroup = button.dataset.orderGroup === "algo" ? "algo" : "normal";
       const body = {
         exchange: exchange,
+        order_group: orderGroup,
         api_id: button.dataset.apiId || "",
         inst_id: button.dataset.instId || "",
         ord_id: button.dataset.ordId || "",
-        cl_ord_id: button.dataset.clOrdId || ""
+        cl_ord_id: button.dataset.clOrdId || "",
+        algo_id: button.dataset.algoId || "",
+        algo_cl_ord_id: button.dataset.algoClOrdId || ""
       };
-      const key = [exchange, body.api_id, String(body.inst_id || "").toUpperCase(), body.ord_id || ("cl:" + body.cl_ord_id)].join("|");
-      if (!body.inst_id || (!body.ord_id && !body.cl_ord_id) || state.pendingOrderActions[key]) return;
+      const key = pendingOrderActionKeyFromBody(body);
+      if (!pendingOrderBodyHasID(body) || state.pendingOrderActions[key]) return;
       state.pendingOrderActions[key] = true;
       renderPendingOrders();
       try {
         const result = await api("/tvbot/pending-orders/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        toast(result.status === "finished" ? "挂单已不存在" : "Binance 挂单已取消");
+        const groupLabel = orderGroup === "algo" ? "算法订单" : "挂单";
+        toast(result.status === "finished" ? groupLabel + "已不存在" : exchangeLabel(exchange) + " " + groupLabel + "已取消");
         await loadPendingOrders();
       } finally {
         delete state.pendingOrderActions[key];
@@ -4903,6 +5052,12 @@ const tvbotHTML = `<!doctype html>
     $("analysis-trade-prev").addEventListener("click", () => changeAnalysisTradePage(-1));
     $("analysis-trade-next").addEventListener("click", () => changeAnalysisTradePage(1));
     $("refresh-positions").addEventListener("click", () => loadPositionView(true).then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
+    document.querySelectorAll("[data-pending-order-group]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.pendingOrderGroup = button.dataset.pendingOrderGroup === "algo" ? "algo" : "normal";
+        renderPendingOrders();
+      });
+    });
     $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
     $("copy-webhook-url").addEventListener("click", async () => {

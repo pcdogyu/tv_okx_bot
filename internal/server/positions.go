@@ -104,17 +104,26 @@ type pendingOrdersResponse struct {
 	TotalCount  int                `json:"total_count"`
 	RefreshedAt time.Time          `json:"refreshed_at"`
 	Orders      []pendingOrderView `json:"orders"`
+	AlgoOrders  []pendingOrderView `json:"algo_orders,omitempty"`
 }
 
 type pendingOrderView struct {
 	okx.PendingOrder
-	PricePrecision    *int   `json:"price_precision,omitempty"`
-	QuantityPrecision *int   `json:"quantity_precision,omitempty"`
-	MidPx             string `json:"mid_px,omitempty"`
-	ChasePx           string `json:"chase_px,omitempty"`
-	Margin            string `json:"margin,omitempty"`
-	PriceError        string `json:"price_error,omitempty"`
-	Chasing           bool   `json:"chasing"`
+	OrderGroup             string `json:"order_group,omitempty"`
+	AlgoID                 string `json:"algo_id,omitempty"`
+	AlgoClOrdID            string `json:"algo_cl_ord_id,omitempty"`
+	TriggerPx              string `json:"trigger_px,omitempty"`
+	ActivationPx           string `json:"activation_px,omitempty"`
+	CallbackRatio          string `json:"callback_ratio,omitempty"`
+	PricePrecision         *int   `json:"price_precision,omitempty"`
+	QuantityPrecision      *int   `json:"quantity_precision,omitempty"`
+	MidPx                  string `json:"mid_px,omitempty"`
+	ChasePx                string `json:"chase_px,omitempty"`
+	Margin                 string `json:"margin,omitempty"`
+	PriceError             string `json:"price_error,omitempty"`
+	Chasing                bool   `json:"chasing"`
+	Chaseable              bool   `json:"chaseable"`
+	ChaseUnavailableReason string `json:"chase_unavailable_reason,omitempty"`
 }
 
 type symbolDisplayPrecision struct {
@@ -140,23 +149,29 @@ type positionProtectionRequest struct {
 }
 
 type pendingOrderChaseRequest struct {
-	Exchange string `json:"exchange"`
-	APIID    string `json:"api_id"`
-	InstID   string `json:"inst_id"`
-	OrdID    string `json:"ord_id"`
-	ClOrdID  string `json:"cl_ord_id"`
+	Exchange    string `json:"exchange"`
+	APIID       string `json:"api_id"`
+	OrderGroup  string `json:"order_group"`
+	InstID      string `json:"inst_id"`
+	OrdID       string `json:"ord_id"`
+	ClOrdID     string `json:"cl_ord_id"`
+	AlgoID      string `json:"algo_id"`
+	AlgoClOrdID string `json:"algo_cl_ord_id"`
 }
 
 type pendingOrderChaseResponse struct {
-	OK      bool   `json:"ok"`
-	Status  string `json:"status"`
-	APIID   string `json:"api_id"`
-	InstID  string `json:"inst_id"`
-	OrdID   string `json:"ord_id,omitempty"`
-	ClOrdID string `json:"cl_ord_id,omitempty"`
-	MidPx   string `json:"mid_px,omitempty"`
-	Px      string `json:"px,omitempty"`
-	Message string `json:"message,omitempty"`
+	OK          bool   `json:"ok"`
+	Status      string `json:"status"`
+	APIID       string `json:"api_id"`
+	OrderGroup  string `json:"order_group,omitempty"`
+	InstID      string `json:"inst_id"`
+	OrdID       string `json:"ord_id,omitempty"`
+	ClOrdID     string `json:"cl_ord_id,omitempty"`
+	AlgoID      string `json:"algo_id,omitempty"`
+	AlgoClOrdID string `json:"algo_cl_ord_id,omitempty"`
+	MidPx       string `json:"mid_px,omitempty"`
+	Px          string `json:"px,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
 type positionCloseResponse struct {
@@ -260,6 +275,20 @@ func (r *pendingOrderChaseRegistry) done(key string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.active, key)
+}
+
+func (r *pendingOrderChaseRegistry) move(oldKey, newKey string) {
+	if oldKey == newKey {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cancel, ok := r.active[oldKey]
+	if !ok {
+		return
+	}
+	delete(r.active, oldKey)
+	r.active[newKey] = cancel
 }
 
 func (r *pendingOrderChaseRegistry) activeKey(key string) bool {
@@ -370,15 +399,79 @@ func (s *Server) handlePendingOrderCancel(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_pending_order_cancel", err.Error())
 		return
 	}
-	if req.Exchange != trading.ExchangeBinance {
-		writeError(w, http.StatusBadRequest, "unsupported_exchange", "only Binance pending order cancel is supported")
+	cfg := s.ConfigStore.Get()
+	if req.OrderGroup == "algo" {
+		if req.Exchange == trading.ExchangeBinance {
+			s.handleBinancePendingAlgoOrderCancel(w, r, cfg, req)
+			return
+		}
+		s.handleOKXPendingAlgoOrderCancel(w, r, cfg, req)
 		return
 	}
+	if req.Exchange == trading.ExchangeBinance {
+		s.handleBinancePendingOrderCancel(w, r, cfg, req)
+		return
+	}
+	s.handleOKXPendingOrderCancel(w, r, cfg, req)
+}
+
+func (s *Server) handleOKXPendingOrderCancel(w http.ResponseWriter, r *http.Request, cfg config.Config, req pendingOrderChaseRequest) {
+	if s.OKXCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+		return
+	}
+	client, apiID, err := s.okxClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	req.APIID = apiID
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	order, found, err := currentPendingOrder(ctx, client, req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_cancel_failed", err.Error())
+		return
+	}
+	resp := pendingOrderChaseResponse{
+		OK:         true,
+		APIID:      apiID,
+		OrderGroup: req.OrderGroup,
+		InstID:     req.InstID,
+		OrdID:      req.OrdID,
+		ClOrdID:    req.ClOrdID,
+	}
+	if !found {
+		pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+		resp.Status = "finished"
+		resp.Message = "pending order is no longer open"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.OrdID = order.OrdID
+	resp.ClOrdID = order.ClOrdID
+	if err := cancelPendingOrder(ctx, client, order); err != nil {
+		if _, stillOpen, checkErr := currentPendingOrder(ctx, client, req); checkErr == nil && !stillOpen {
+			pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+			resp.Status = "finished"
+			resp.Message = "pending order is no longer open"
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+		writeError(w, http.StatusBadGateway, "pending_order_cancel_failed", err.Error())
+		return
+	}
+	pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+	resp.Status = "canceled"
+	resp.Message = "pending order canceled"
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleBinancePendingOrderCancel(w http.ResponseWriter, r *http.Request, cfg config.Config, req pendingOrderChaseRequest) {
 	if s.BinanceCredentials == nil {
 		writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
 		return
 	}
-	cfg := s.ConfigStore.Get()
 	if !cfg.BinanceLiveTradingAllowedByEnvironment() {
 		writeError(w, http.StatusForbidden, "live_trading_disabled", "Binance live trading is not allowed by environment")
 		return
@@ -397,11 +490,12 @@ func (s *Server) handlePendingOrderCancel(w http.ResponseWriter, r *http.Request
 		return
 	}
 	resp := pendingOrderChaseResponse{
-		OK:      true,
-		APIID:   apiID,
-		InstID:  req.InstID,
-		OrdID:   req.OrdID,
-		ClOrdID: req.ClOrdID,
+		OK:         true,
+		APIID:      apiID,
+		OrderGroup: req.OrderGroup,
+		InstID:     req.InstID,
+		OrdID:      req.OrdID,
+		ClOrdID:    req.ClOrdID,
 	}
 	if !found {
 		pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
@@ -429,6 +523,91 @@ func (s *Server) handlePendingOrderCancel(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *Server) handleOKXPendingAlgoOrderCancel(w http.ResponseWriter, r *http.Request, cfg config.Config, req pendingOrderChaseRequest) {
+	if s.OKXCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+		return
+	}
+	client, apiID, err := s.okxClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	req.APIID = apiID
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	order, found, err := currentOKXPendingAlgoOrder(ctx, client, req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_cancel_failed", err.Error())
+		return
+	}
+	resp := pendingAlgoOrderResponse(req, apiID)
+	if !found {
+		pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+		resp.Status = "finished"
+		resp.Message = "pending algo order is no longer open"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.AlgoID = strings.TrimSpace(order.AlgoID)
+	resp.AlgoClOrdID = strings.TrimSpace(order.AlgoClOrdID)
+	_, _, err = client.CancelAlgoOrders(ctx, []okx.CancelAlgoOrderRequest{{
+		InstID:      strings.ToUpper(strings.TrimSpace(order.InstID)),
+		AlgoID:      strings.TrimSpace(order.AlgoID),
+		AlgoClOrdID: strings.TrimSpace(order.AlgoClOrdID),
+	}})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_cancel_failed", err.Error())
+		return
+	}
+	pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+	resp.Status = "canceled"
+	resp.Message = "pending algo order canceled"
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleBinancePendingAlgoOrderCancel(w http.ResponseWriter, r *http.Request, cfg config.Config, req pendingOrderChaseRequest) {
+	if s.BinanceCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+		return
+	}
+	if !cfg.BinanceLiveTradingAllowedByEnvironment() {
+		writeError(w, http.StatusForbidden, "live_trading_disabled", "Binance live trading is not allowed by environment")
+		return
+	}
+	client, apiID, err := s.binanceClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	req.APIID = apiID
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	order, found, err := currentBinancePendingAlgoOrder(ctx, client, req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_cancel_failed", err.Error())
+		return
+	}
+	resp := pendingAlgoOrderResponse(req, apiID)
+	if !found {
+		pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+		resp.Status = "finished"
+		resp.Message = "pending algo order is no longer open"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	resp.AlgoID = strconv.FormatInt(order.AlgoID, 10)
+	resp.AlgoClOrdID = strings.TrimSpace(order.ClientAlgoID)
+	if _, err := client.CancelAlgoOrder(ctx, order.AlgoID, strings.TrimSpace(order.ClientAlgoID)); err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_cancel_failed", err.Error())
+		return
+	}
+	pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+	resp.Status = "canceled"
+	resp.Message = "pending algo order canceled"
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Request, start bool) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
@@ -446,6 +625,14 @@ func (s *Server) handlePendingOrderChaseAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 	cfg := s.ConfigStore.Get()
+	if req.OrderGroup == "algo" {
+		if req.Exchange == trading.ExchangeBinance {
+			s.handleBinancePendingAlgoOrderChaseAction(w, r, start, cfg, req)
+			return
+		}
+		s.handleOKXPendingAlgoOrderChaseAction(w, r, start, cfg, req)
+		return
+	}
 	if req.Exchange == trading.ExchangeBinance {
 		s.handleBinancePendingOrderChaseAction(w, r, start, cfg, req)
 		return
@@ -603,6 +790,106 @@ func (s *Server) handleBinancePendingOrderChaseAction(w http.ResponseWriter, r *
 	go s.watchBinancePendingOrderChase(chaseCtx, client, req)
 	result.Status = "running"
 	result.Message = "pending order chase started; market fallback after timeout"
+	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (s *Server) handleOKXPendingAlgoOrderChaseAction(w http.ResponseWriter, r *http.Request, start bool, cfg config.Config, req pendingOrderChaseRequest) {
+	if s.OKXCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+		return
+	}
+	client, apiID, err := s.okxClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	req.APIID = apiID
+	key := pendingOrderChaseKey(req)
+	if !start {
+		writeJSON(w, http.StatusOK, pendingOrderStopResponse(req, apiID, pendingOrderChaseJobs.stop(key)))
+		return
+	}
+	if pendingOrderChaseJobs.activeKey(key) {
+		resp := pendingAlgoOrderResponse(req, apiID)
+		resp.Status = "running"
+		resp.Message = "pending algo order chase is already running"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	result, closed, err := chaseOKXPendingAlgoOrderOnce(ctx, cfg, client, req)
+	cancel()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_chase_failed", err.Error())
+		return
+	}
+	if closed {
+		writeJSON(w, http.StatusConflict, result)
+		return
+	}
+	chaseCtx, chaseCancel := context.WithCancel(context.Background())
+	if !pendingOrderChaseJobs.start(key, chaseCancel) {
+		chaseCancel()
+		result.Status = "running"
+		result.Message = "pending algo order chase is already running"
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	go s.watchOKXPendingAlgoOrderChase(chaseCtx, cfg, client, req)
+	result.Status = "running"
+	result.Message = "pending algo order chase started"
+	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (s *Server) handleBinancePendingAlgoOrderChaseAction(w http.ResponseWriter, r *http.Request, start bool, cfg config.Config, req pendingOrderChaseRequest) {
+	if s.BinanceCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+		return
+	}
+	if !cfg.BinanceLiveTradingAllowedByEnvironment() {
+		writeError(w, http.StatusForbidden, "live_trading_disabled", "Binance live trading is not allowed by environment")
+		return
+	}
+	client, apiID, err := s.binanceClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	req.APIID = apiID
+	key := pendingOrderChaseKey(req)
+	if !start {
+		writeJSON(w, http.StatusOK, pendingOrderStopResponse(req, apiID, pendingOrderChaseJobs.stop(key)))
+		return
+	}
+	if pendingOrderChaseJobs.activeKey(key) {
+		resp := pendingAlgoOrderResponse(req, apiID)
+		resp.Status = "running"
+		resp.Message = "pending algo order chase is already running"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	result, closed, nextReq, err := chaseBinancePendingAlgoOrderOnce(ctx, client, req)
+	cancel()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_chase_failed", err.Error())
+		return
+	}
+	if closed {
+		writeJSON(w, http.StatusConflict, result)
+		return
+	}
+	chaseCtx, chaseCancel := context.WithCancel(context.Background())
+	if !pendingOrderChaseJobs.start(pendingOrderChaseKey(nextReq), chaseCancel) {
+		chaseCancel()
+		result.Status = "running"
+		result.Message = "pending algo order chase is already running"
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	go s.watchBinancePendingAlgoOrderChase(chaseCtx, client, nextReq)
+	result.Status = "running"
+	result.Message = "pending algo order chase started"
 	writeJSON(w, http.StatusAccepted, result)
 }
 
@@ -1061,8 +1348,9 @@ func (s *Server) fetchPendingOrders(ctx context.Context, cfg config.Config, requ
 		return orders[i].InstID < orders[j].InstID
 	})
 	views := s.pendingOrderViews(ctx, cfg, client, apiID, orders)
+	algoViews := s.pendingAlgoOrderViews(ctx, cfg, client, apiID, algoOrders)
 	normalCount := len(orders)
-	algoCount := len(algoOrders)
+	algoCount := len(algoViews)
 	return pendingOrdersResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeOKX,
@@ -1074,6 +1362,7 @@ func (s *Server) fetchPendingOrders(ctx context.Context, cfg config.Config, requ
 		TotalCount:  normalCount + algoCount,
 		RefreshedAt: s.now(),
 		Orders:      views,
+		AlgoOrders:  algoViews,
 	}, nil
 }
 
@@ -1153,8 +1442,9 @@ func (s *Server) fetchBinancePendingOrders(ctx context.Context, cfg config.Confi
 		return orders[i].Symbol < orders[j].Symbol
 	})
 	views := s.binancePendingOrderViews(ctx, cfg, client, apiID, orders)
+	algoViews := s.binancePendingAlgoOrderViews(ctx, cfg, client, apiID, algoOrders)
 	normalCount := len(views)
-	algoCount := len(algoOrders)
+	algoCount := len(algoViews)
 	return pendingOrdersResponse{
 		OK:          true,
 		Exchange:    trading.ExchangeBinance,
@@ -1166,6 +1456,7 @@ func (s *Server) fetchBinancePendingOrders(ctx context.Context, cfg config.Confi
 		TotalCount:  normalCount + algoCount,
 		RefreshedAt: s.now(),
 		Orders:      views,
+		AlgoOrders:  algoViews,
 	}, nil
 }
 
@@ -1776,6 +2067,114 @@ func binanceOpenOrderToOKX(order binance.OpenOrder) okx.PendingOrder {
 	}
 }
 
+func okxAlgoOrderToPendingView(order okx.AlgoOrder) pendingOrderView {
+	triggerPx := okxAlgoOrderTriggerPx(order)
+	activationPx := strings.TrimSpace(order.ActivePx)
+	callbackRatio := firstNonEmpty(order.CallbackRatio, order.CallbackSpread)
+	reason := okxAlgoOrderChaseUnavailableReason(order)
+	reduceOnly := order.ReduceOnly
+	if len(reduceOnly) == 0 {
+		reduceOnly = json.RawMessage("false")
+	}
+	return pendingOrderView{
+		PendingOrder: okx.PendingOrder{
+			InstType:   strings.ToUpper(strings.TrimSpace(order.InstType)),
+			InstID:     strings.ToUpper(strings.TrimSpace(order.InstID)),
+			TDMode:     strings.ToLower(strings.TrimSpace(order.TDMode)),
+			Side:       strings.ToLower(strings.TrimSpace(order.Side)),
+			PosSide:    strings.ToLower(strings.TrimSpace(order.PosSide)),
+			OrdType:    strings.ToLower(strings.TrimSpace(order.OrdType)),
+			Px:         firstNonEmpty(triggerPx, activationPx),
+			Sz:         strings.TrimSpace(order.Sz),
+			AccFillSz:  strings.TrimSpace(order.ActualSz),
+			State:      strings.ToLower(strings.TrimSpace(order.State)),
+			ReduceOnly: reduceOnly,
+			CTime:      strings.TrimSpace(order.CTime),
+			UTime:      strings.TrimSpace(order.UTime),
+		},
+		OrderGroup:             "algo",
+		AlgoID:                 strings.TrimSpace(order.AlgoID),
+		AlgoClOrdID:            strings.TrimSpace(order.AlgoClOrdID),
+		TriggerPx:              triggerPx,
+		ActivationPx:           activationPx,
+		CallbackRatio:          callbackRatio,
+		Chaseable:              reason == "",
+		ChaseUnavailableReason: reason,
+	}
+}
+
+func binanceAlgoOrderToPendingView(order binance.AlgoOpenOrder) pendingOrderView {
+	triggerPx := strings.TrimSpace(order.TriggerPrice)
+	activationPx := strings.TrimSpace(order.ActivatePrice)
+	callbackRatio := firstNonEmpty(order.CallbackRate, order.PriceRate)
+	reason := binanceAlgoOrderChaseUnavailableReason(order)
+	reduceOnly := json.RawMessage("false")
+	if order.ReduceOnly {
+		reduceOnly = json.RawMessage("true")
+	}
+	closePosition := json.RawMessage("false")
+	if order.ClosePosition {
+		closePosition = json.RawMessage("true")
+	}
+	return pendingOrderView{
+		PendingOrder: okx.PendingOrder{
+			InstType:      "USDT-M",
+			InstID:        strings.ToUpper(strings.TrimSpace(order.Symbol)),
+			Side:          strings.ToLower(strings.TrimSpace(order.Side)),
+			PosSide:       strings.ToLower(strings.TrimSpace(order.PositionSide)),
+			OrdType:       strings.ToLower(strings.TrimSpace(order.OrderType)),
+			Px:            firstNonEmpty(triggerPx, activationPx),
+			Sz:            strings.TrimSpace(order.Quantity),
+			State:         strings.ToLower(strings.TrimSpace(order.AlgoStatus)),
+			ReduceOnly:    reduceOnly,
+			ClosePosition: closePosition,
+			CTime:         strconv.FormatInt(order.CreateTime, 10),
+			UTime:         strconv.FormatInt(order.UpdateTime, 10),
+		},
+		OrderGroup:             "algo",
+		AlgoID:                 strconv.FormatInt(order.AlgoID, 10),
+		AlgoClOrdID:            strings.TrimSpace(order.ClientAlgoID),
+		TriggerPx:              triggerPx,
+		ActivationPx:           activationPx,
+		CallbackRatio:          callbackRatio,
+		Chaseable:              reason == "",
+		ChaseUnavailableReason: reason,
+	}
+}
+
+func okxAlgoOrderTriggerPx(order okx.AlgoOrder) string {
+	return firstNonEmpty(order.TPTriggerPx, order.SLTriggerPx, order.TriggerPx, order.MoveTriggerPx)
+}
+
+func okxAlgoOrderChaseUnavailableReason(order okx.AlgoOrder) string {
+	switch strings.ToLower(strings.TrimSpace(order.OrdType)) {
+	case "conditional", "trigger", "move_order_stop":
+		return ""
+	case "iceberg", "twap", "oco":
+		return "该算法订单类型只支持取消"
+	default:
+		return "该算法订单类型不支持追单"
+	}
+}
+
+func binanceAlgoOrderChaseUnavailableReason(order binance.AlgoOpenOrder) string {
+	switch strings.ToUpper(strings.TrimSpace(order.OrderType)) {
+	case "STOP_MARKET", "TAKE_PROFIT_MARKET", "STOP", "TAKE_PROFIT", "TRAILING_STOP_MARKET":
+		return ""
+	default:
+		return "该算法订单类型不支持追单"
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func binanceUPLRatio(position binance.Position) string {
 	upl, err1 := strconv.ParseFloat(strings.TrimSpace(position.UnRealizedProfit), 64)
 	notional, err2 := strconv.ParseFloat(strings.TrimLeft(strings.TrimSpace(position.Notional), "-"), 64)
@@ -1792,6 +2191,8 @@ func (s *Server) pendingOrderViews(ctx context.Context, cfg config.Config, clien
 	for _, order := range orders {
 		view := pendingOrderView{
 			PendingOrder: order,
+			OrderGroup:   "normal",
+			Chaseable:    true,
 			Chasing: pendingOrderChaseJobs.activeKey(pendingOrderChaseKey(pendingOrderChaseRequest{
 				APIID:   apiID,
 				InstID:  order.InstID,
@@ -1815,6 +2216,43 @@ func (s *Server) pendingOrderViews(ctx context.Context, cfg config.Config, clien
 	return views
 }
 
+func (s *Server) pendingAlgoOrderViews(ctx context.Context, cfg config.Config, client okx.Client, apiID string, orders []okx.AlgoOrder) []pendingOrderView {
+	views := make([]pendingOrderView, 0, len(orders))
+	tickers := map[string]okx.Ticker{}
+	instruments := map[string]okx.Instrument{}
+	for _, order := range orders {
+		view := okxAlgoOrderToPendingView(order)
+		view.Chasing = pendingOrderChaseJobs.activeKey(pendingOrderChaseKey(pendingOrderChaseRequest{
+			APIID:       apiID,
+			OrderGroup:  "algo",
+			InstID:      view.InstID,
+			AlgoID:      view.AlgoID,
+			AlgoClOrdID: view.AlgoClOrdID,
+		}))
+		if view.Chaseable {
+			midPx, chasePx, err := pendingAlgoOrderMidAndChasePrice(ctx, client, view.PendingOrder, tickers, instruments)
+			if err != nil {
+				view.PriceError = err.Error()
+			} else {
+				view.MidPx = midPx
+				view.ChasePx = chasePx
+			}
+		}
+		if inst, ok := instruments[strings.ToUpper(strings.TrimSpace(view.InstID))]; ok {
+			applyPendingOrderViewPrecision(&view, precisionFromOKXInstrument(inst))
+			view.Margin = pendingOrderMargin(view.PendingOrder, firstNonEmpty(view.TriggerPx, view.ActivationPx, view.MidPx), inst.CtVal, cfg.Trading.Leverage)
+		}
+		views = append(views, view)
+	}
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].InstID == views[j].InstID {
+			return views[i].UTime > views[j].UTime
+		}
+		return views[i].InstID < views[j].InstID
+	})
+	return views
+}
+
 func (s *Server) binancePendingOrderViews(ctx context.Context, cfg config.Config, client binance.Client, apiID string, orders []binance.OpenOrder) []pendingOrderView {
 	views := make([]pendingOrderView, 0, len(orders))
 	tickers := map[string]binance.BookTicker{}
@@ -1823,6 +2261,8 @@ func (s *Server) binancePendingOrderViews(ctx context.Context, cfg config.Config
 		order := binanceOpenOrderToOKX(rawOrder)
 		view := pendingOrderView{
 			PendingOrder: order,
+			OrderGroup:   "normal",
+			Chaseable:    true,
 			Chasing: pendingOrderChaseJobs.activeKey(pendingOrderChaseKey(pendingOrderChaseRequest{
 				Exchange: trading.ExchangeBinance,
 				APIID:    apiID,
@@ -1844,6 +2284,44 @@ func (s *Server) binancePendingOrderViews(ctx context.Context, cfg config.Config
 		view.Margin = pendingOrderMargin(order, view.MidPx, "1", cfg.Trading.Leverage)
 		views = append(views, view)
 	}
+	return views
+}
+
+func (s *Server) binancePendingAlgoOrderViews(ctx context.Context, cfg config.Config, client binance.Client, apiID string, orders []binance.AlgoOpenOrder) []pendingOrderView {
+	views := make([]pendingOrderView, 0, len(orders))
+	tickers := map[string]binance.BookTicker{}
+	instruments := map[string]binance.SymbolInfo{}
+	for _, order := range orders {
+		view := binanceAlgoOrderToPendingView(order)
+		view.Chasing = pendingOrderChaseJobs.activeKey(pendingOrderChaseKey(pendingOrderChaseRequest{
+			Exchange:    trading.ExchangeBinance,
+			APIID:       apiID,
+			OrderGroup:  "algo",
+			InstID:      view.InstID,
+			AlgoID:      view.AlgoID,
+			AlgoClOrdID: view.AlgoClOrdID,
+		}))
+		if view.Chaseable {
+			midPx, chasePx, err := binancePendingAlgoOrderMidAndChasePrice(ctx, client, view.PendingOrder, tickers, instruments)
+			if err != nil {
+				view.PriceError = err.Error()
+			} else {
+				view.MidPx = midPx
+				view.ChasePx = chasePx
+			}
+		}
+		if inst, ok := instruments[strings.ToUpper(strings.TrimSpace(view.InstID))]; ok {
+			applyPendingOrderViewPrecision(&view, precisionFromBinanceSymbol(inst))
+		}
+		view.Margin = pendingOrderMargin(view.PendingOrder, firstNonEmpty(view.TriggerPx, view.ActivationPx, view.MidPx), "1", cfg.Trading.Leverage)
+		views = append(views, view)
+	}
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].InstID == views[j].InstID {
+			return views[i].UTime > views[j].UTime
+		}
+		return views[i].InstID < views[j].InstID
+	})
 	return views
 }
 
@@ -2244,6 +2722,308 @@ func fallbackBinancePendingOrderMarket(ctx context.Context, client binance.Clien
 	return resp, false, nil
 }
 
+func (s *Server) watchOKXPendingAlgoOrderChase(ctx context.Context, cfg config.Config, client okx.Client, req pendingOrderChaseRequest) {
+	key := pendingOrderChaseKey(req)
+	defer pendingOrderChaseJobs.done(key)
+	interval := pendingOrderChaseInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	timeout := pendingOrderChaseTimeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			_, closed, err := chaseOKXPendingAlgoOrderOnce(stepCtx, cfg, client, req)
+			cancel()
+			if err != nil {
+				if s.Logger != nil {
+					s.Logger.Warn("OKX pending algo order chase failed", "api_id", req.APIID, "inst_id", req.InstID, "algo_id", req.AlgoID, "algo_cl_ord_id", req.AlgoClOrdID, "error", err)
+				}
+				continue
+			}
+			if closed {
+				return
+			}
+		case <-timeoutTimer.C:
+			return
+		}
+	}
+}
+
+func (s *Server) watchBinancePendingAlgoOrderChase(ctx context.Context, client binance.Client, req pendingOrderChaseRequest) {
+	activeKey := pendingOrderChaseKey(req)
+	defer func() { pendingOrderChaseJobs.done(activeKey) }()
+	interval := pendingOrderChaseInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	timeout := pendingOrderChaseTimeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+	activeReq := req
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stepCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			_, closed, nextReq, err := chaseBinancePendingAlgoOrderOnce(stepCtx, client, activeReq)
+			cancel()
+			if err != nil {
+				if s.Logger != nil {
+					s.Logger.Warn("Binance pending algo order chase failed", "api_id", activeReq.APIID, "symbol", activeReq.InstID, "algo_id", activeReq.AlgoID, "algo_cl_ord_id", activeReq.AlgoClOrdID, "error", err)
+				}
+				continue
+			}
+			if closed {
+				return
+			}
+			nextKey := pendingOrderChaseKey(nextReq)
+			pendingOrderChaseJobs.move(activeKey, nextKey)
+			activeKey = nextKey
+			activeReq = nextReq
+		case <-timeoutTimer.C:
+			return
+		}
+	}
+}
+
+func chaseOKXPendingAlgoOrderOnce(ctx context.Context, cfg config.Config, client okx.Client, req pendingOrderChaseRequest) (pendingOrderChaseResponse, bool, error) {
+	order, found, err := currentOKXPendingAlgoOrder(ctx, client, req)
+	if err != nil {
+		return pendingOrderChaseResponse{}, false, err
+	}
+	resp := pendingAlgoOrderResponse(req, req.APIID)
+	if !found {
+		resp.OK = false
+		resp.Status = "finished"
+		resp.Message = "pending algo order is no longer open"
+		return resp, true, nil
+	}
+	resp.AlgoID = strings.TrimSpace(order.AlgoID)
+	resp.AlgoClOrdID = strings.TrimSpace(order.AlgoClOrdID)
+	reason := okxAlgoOrderChaseUnavailableReason(order)
+	if reason != "" {
+		return resp, false, errors.New(reason)
+	}
+	viewOrder := okxAlgoOrderToPendingView(order).PendingOrder
+	midPx, chasePx, err := pendingAlgoOrderMidAndChasePrice(ctx, client, viewOrder, nil, nil)
+	if err != nil {
+		return resp, false, err
+	}
+	resp.MidPx = midPx
+	resp.Px = chasePx
+	currentPx := firstNonEmpty(okxAlgoOrderTriggerPx(order), order.ActivePx)
+	if strings.TrimSpace(currentPx) == chasePx {
+		resp.Status = "unchanged"
+		resp.Message = "pending algo order trigger price is already at chase price"
+		return resp, false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(order.OrdType)) {
+	case "conditional", "trigger":
+		amendReq := okxPendingAlgoAmendRequest(order, chasePx)
+		if _, _, err := client.AmendAlgoOrder(ctx, amendReq); err != nil {
+			return resp, false, err
+		}
+	case "move_order_stop":
+		if err := recreateOKXMoveOrderStopAlgo(ctx, cfg, client, order, chasePx); err != nil {
+			return resp, false, err
+		}
+	default:
+		return resp, false, fmt.Errorf("unsupported OKX algo order type %q", order.OrdType)
+	}
+	resp.Status = "amended"
+	resp.Message = "pending algo order trigger price amended"
+	return resp, false, nil
+}
+
+func chaseBinancePendingAlgoOrderOnce(ctx context.Context, client binance.Client, req pendingOrderChaseRequest) (pendingOrderChaseResponse, bool, pendingOrderChaseRequest, error) {
+	order, found, err := currentBinancePendingAlgoOrder(ctx, client, req)
+	if err != nil {
+		return pendingOrderChaseResponse{}, false, req, err
+	}
+	resp := pendingAlgoOrderResponse(req, req.APIID)
+	if !found {
+		resp.OK = false
+		resp.Status = "finished"
+		resp.Message = "pending algo order is no longer open"
+		return resp, true, req, nil
+	}
+	resp.AlgoID = strconv.FormatInt(order.AlgoID, 10)
+	resp.AlgoClOrdID = strings.TrimSpace(order.ClientAlgoID)
+	reason := binanceAlgoOrderChaseUnavailableReason(order)
+	if reason != "" {
+		return resp, false, req, errors.New(reason)
+	}
+	viewOrder := binanceAlgoOrderToPendingView(order).PendingOrder
+	midPx, chasePx, err := binancePendingAlgoOrderMidAndChasePrice(ctx, client, viewOrder, nil, nil)
+	if err != nil {
+		return resp, false, req, err
+	}
+	resp.MidPx = midPx
+	resp.Px = chasePx
+	currentPx := firstNonEmpty(order.TriggerPrice, order.ActivatePrice)
+	if strings.TrimSpace(currentPx) == chasePx {
+		resp.Status = "unchanged"
+		resp.Message = "pending algo order trigger price is already at chase price"
+		return resp, false, req, nil
+	}
+	if _, err := client.CancelAlgoOrder(ctx, order.AlgoID, strings.TrimSpace(order.ClientAlgoID)); err != nil {
+		return resp, false, req, err
+	}
+	newReq := binancePendingAlgoRecreateRequest(order, chasePx)
+	ack, err := client.NewAlgoOrder(ctx, newReq)
+	if err != nil {
+		return resp, false, req, err
+	}
+	nextReq := req
+	if ack.AlgoID != 0 {
+		nextReq.AlgoID = strconv.FormatInt(ack.AlgoID, 10)
+		resp.AlgoID = nextReq.AlgoID
+	}
+	if strings.TrimSpace(ack.ClientAlgoID) != "" {
+		nextReq.AlgoClOrdID = strings.TrimSpace(ack.ClientAlgoID)
+		resp.AlgoClOrdID = nextReq.AlgoClOrdID
+	}
+	resp.Status = "amended"
+	resp.Message = "pending algo order recreated at chase trigger price"
+	return resp, false, nextReq, nil
+}
+
+func pendingAlgoOrderResponse(req pendingOrderChaseRequest, apiID string) pendingOrderChaseResponse {
+	return pendingOrderChaseResponse{
+		OK:          true,
+		APIID:       apiID,
+		OrderGroup:  "algo",
+		InstID:      req.InstID,
+		AlgoID:      req.AlgoID,
+		AlgoClOrdID: req.AlgoClOrdID,
+	}
+}
+
+func pendingOrderStopResponse(req pendingOrderChaseRequest, apiID string, stopped bool) pendingOrderChaseResponse {
+	status := "not_running"
+	message := "pending order chase was not running"
+	if stopped {
+		status = "stopped"
+		message = "pending order chase stopped"
+	}
+	return pendingOrderChaseResponse{
+		OK:          true,
+		Status:      status,
+		APIID:       apiID,
+		OrderGroup:  req.OrderGroup,
+		InstID:      req.InstID,
+		OrdID:       req.OrdID,
+		ClOrdID:     req.ClOrdID,
+		AlgoID:      req.AlgoID,
+		AlgoClOrdID: req.AlgoClOrdID,
+		Message:     message,
+	}
+}
+
+func okxPendingAlgoAmendRequest(order okx.AlgoOrder, chasePx string) okx.AmendAlgoOrderRequest {
+	req := okx.AmendAlgoOrderRequest{
+		InstID:      strings.ToUpper(strings.TrimSpace(order.InstID)),
+		AlgoID:      strings.TrimSpace(order.AlgoID),
+		AlgoClOrdID: strings.TrimSpace(order.AlgoClOrdID),
+		CxlOnFail:   false,
+	}
+	if strings.TrimSpace(order.TPTriggerPx) != "" {
+		req.NewTPTriggerPx = chasePx
+		if strings.TrimSpace(order.TPOrdPx) != "" {
+			req.NewTPOrdPx = strings.TrimSpace(order.TPOrdPx)
+		}
+		if strings.TrimSpace(order.TPTriggerPxType) != "" {
+			req.NewTPTriggerPxType = strings.TrimSpace(order.TPTriggerPxType)
+		}
+	}
+	if strings.TrimSpace(order.SLTriggerPx) != "" {
+		req.NewSLTriggerPx = chasePx
+		if strings.TrimSpace(order.SLOrdPx) != "" {
+			req.NewSLOrdPx = strings.TrimSpace(order.SLOrdPx)
+		}
+		if strings.TrimSpace(order.SLTriggerPxType) != "" {
+			req.NewSLTriggerPxType = strings.TrimSpace(order.SLTriggerPxType)
+		}
+	}
+	if strings.TrimSpace(order.TriggerPx) != "" || (req.NewTPTriggerPx == "" && req.NewSLTriggerPx == "") {
+		req.NewTriggerPx = chasePx
+		if strings.TrimSpace(order.OrderPx) != "" {
+			req.NewOrderPx = strings.TrimSpace(order.OrderPx)
+		}
+		if strings.TrimSpace(order.TriggerPxType) != "" {
+			req.NewTriggerPxType = strings.TrimSpace(order.TriggerPxType)
+		}
+	}
+	return req
+}
+
+func recreateOKXMoveOrderStopAlgo(ctx context.Context, cfg config.Config, client okx.Client, order okx.AlgoOrder, chasePx string) error {
+	_, _, err := client.CancelAlgoOrders(ctx, []okx.CancelAlgoOrderRequest{{
+		InstID:      strings.ToUpper(strings.TrimSpace(order.InstID)),
+		AlgoID:      strings.TrimSpace(order.AlgoID),
+		AlgoClOrdID: strings.TrimSpace(order.AlgoClOrdID),
+	}})
+	if err != nil {
+		return err
+	}
+	tdMode := strings.ToLower(strings.TrimSpace(order.TDMode))
+	if tdMode == "" {
+		tdMode = cfg.MarginMode()
+	}
+	_, _, err = client.PlaceAlgoOrder(ctx, okx.PlaceAlgoOrderRequest{
+		InstID:         strings.ToUpper(strings.TrimSpace(order.InstID)),
+		TDMode:         tdMode,
+		AlgoClOrdID:    nextPendingOrderAlgoClOrdID(),
+		Side:           strings.ToLower(strings.TrimSpace(order.Side)),
+		PosSide:        normalizePosSide(order.PosSide),
+		OrdType:        "move_order_stop",
+		Sz:             strings.TrimSpace(order.Sz),
+		ReduceOnly:     okxRawBool(order.ReduceOnly),
+		CallbackRatio:  strings.TrimSpace(order.CallbackRatio),
+		CallbackSpread: strings.TrimSpace(order.CallbackSpread),
+		ActivePx:       chasePx,
+	})
+	return err
+}
+
+func binancePendingAlgoRecreateRequest(order binance.AlgoOpenOrder, chasePx string) binance.AlgoOrderRequest {
+	req := binance.AlgoOrderRequest{
+		Symbol:           strings.ToUpper(strings.TrimSpace(order.Symbol)),
+		Side:             strings.ToUpper(strings.TrimSpace(order.Side)),
+		PositionSide:     strings.ToUpper(strings.TrimSpace(order.PositionSide)),
+		Type:             strings.ToUpper(strings.TrimSpace(order.OrderType)),
+		Quantity:         strings.TrimSpace(order.Quantity),
+		WorkingType:      strings.ToUpper(strings.TrimSpace(order.WorkingType)),
+		NewClientOrderID: nextPendingOrderAlgoClOrdID(),
+		ReduceOnly:       order.ReduceOnly,
+		ClosePosition:    order.ClosePosition,
+	}
+	if strings.EqualFold(req.Type, "TRAILING_STOP_MARKET") {
+		req.ActivationPrice = chasePx
+		req.CallbackRate = firstNonEmpty(order.CallbackRate, order.PriceRate)
+	} else {
+		req.TriggerPrice = chasePx
+	}
+	return req
+}
+
 func currentPendingOrder(ctx context.Context, client okx.Client, req pendingOrderChaseRequest) (okx.PendingOrder, bool, error) {
 	orders, _, err := client.PendingOrders(ctx, "SWAP")
 	if err != nil {
@@ -2281,6 +3061,47 @@ func currentBinancePendingOrder(ctx context.Context, client binance.Client, req 
 		}
 	}
 	return okx.PendingOrder{}, false, nil
+}
+
+func currentOKXPendingAlgoOrder(ctx context.Context, client okx.Client, req pendingOrderChaseRequest) (okx.AlgoOrder, bool, error) {
+	orders, _, err := client.PendingAlgoOrders(ctx, "SWAP", req.InstID)
+	if err != nil {
+		return okx.AlgoOrder{}, false, err
+	}
+	for _, order := range orders {
+		if !strings.EqualFold(strings.TrimSpace(order.InstID), strings.TrimSpace(req.InstID)) {
+			continue
+		}
+		if strings.TrimSpace(req.AlgoID) != "" && strings.TrimSpace(order.AlgoID) == strings.TrimSpace(req.AlgoID) {
+			return order, true, nil
+		}
+		if strings.TrimSpace(req.AlgoID) == "" && strings.TrimSpace(req.AlgoClOrdID) != "" && strings.TrimSpace(order.AlgoClOrdID) == strings.TrimSpace(req.AlgoClOrdID) {
+			return order, true, nil
+		}
+	}
+	return okx.AlgoOrder{}, false, nil
+}
+
+func currentBinancePendingAlgoOrder(ctx context.Context, client binance.Client, req pendingOrderChaseRequest) (binance.AlgoOpenOrder, bool, error) {
+	orders, err := client.OpenAlgoOrders(ctx, req.InstID)
+	if err != nil {
+		return binance.AlgoOpenOrder{}, false, err
+	}
+	for _, order := range orders {
+		if !strings.EqualFold(strings.TrimSpace(order.Symbol), strings.TrimSpace(req.InstID)) {
+			continue
+		}
+		if strings.TrimSpace(req.AlgoID) != "" {
+			id, err := strconv.ParseInt(strings.TrimSpace(req.AlgoID), 10, 64)
+			if err == nil && order.AlgoID == id {
+				return order, true, nil
+			}
+		}
+		if strings.TrimSpace(req.AlgoID) == "" && strings.TrimSpace(req.AlgoClOrdID) != "" && strings.TrimSpace(order.ClientAlgoID) == strings.TrimSpace(req.AlgoClOrdID) {
+			return order, true, nil
+		}
+	}
+	return binance.AlgoOpenOrder{}, false, nil
 }
 
 func currentOKXPositionCloseOrder(ctx context.Context, client okx.Client, active positionCloseOrder) (okx.PendingOrder, bool, error) {
@@ -2697,6 +3518,103 @@ func binancePendingOrderMidAndChasePrice(ctx context.Context, client binance.Cli
 	return formatMidPrice(mid, tickRaw), chasePx, nil
 }
 
+func pendingAlgoOrderMidAndChasePrice(ctx context.Context, client okx.Client, order okx.PendingOrder, tickers map[string]okx.Ticker, instruments map[string]okx.Instrument) (string, string, error) {
+	instID := strings.ToUpper(strings.TrimSpace(order.InstID))
+	if instID == "" {
+		return "", "", errors.New("inst_id is required")
+	}
+	var inst okx.Instrument
+	var ok bool
+	if instruments != nil {
+		inst, ok = instruments[instID]
+	}
+	if !ok {
+		var err error
+		inst, err = client.SwapInstrument(ctx, instID)
+		if err != nil {
+			return "", "", err
+		}
+		if instruments != nil {
+			instruments[instID] = inst
+		}
+	}
+	var ticker okx.Ticker
+	if tickers != nil {
+		ticker, ok = tickers[instID]
+	} else {
+		ok = false
+	}
+	if !ok {
+		var err error
+		ticker, _, err = client.MarketTicker(ctx, instID)
+		if err != nil {
+			return "", "", err
+		}
+		if tickers != nil {
+			tickers[instID] = ticker
+		}
+	}
+	mid, err := tickerMidPrice(ticker)
+	if err != nil {
+		return "", "", err
+	}
+	chasePx, err := activePendingAlgoOrderPrice(ticker.BidPx, ticker.AskPx, ticker.Last, inst.TickSz, order.Side)
+	if err != nil {
+		return "", "", err
+	}
+	return formatMidPrice(mid, inst.TickSz), chasePx, nil
+}
+
+func binancePendingAlgoOrderMidAndChasePrice(ctx context.Context, client binance.Client, order okx.PendingOrder, tickers map[string]binance.BookTicker, instruments map[string]binance.SymbolInfo) (string, string, error) {
+	symbol := strings.ToUpper(strings.TrimSpace(order.InstID))
+	if symbol == "" {
+		return "", "", errors.New("inst_id is required")
+	}
+	var inst binance.SymbolInfo
+	var ok bool
+	if instruments != nil {
+		inst, ok = instruments[symbol]
+	}
+	if !ok {
+		var err error
+		inst, err = client.SymbolInfo(ctx, symbol)
+		if err != nil {
+			return "", "", err
+		}
+		if instruments != nil {
+			instruments[symbol] = inst
+		}
+	}
+	tickRaw, err := binanceTickSizeRaw(inst)
+	if err != nil {
+		return "", "", err
+	}
+	var ticker binance.BookTicker
+	if tickers != nil {
+		ticker, ok = tickers[symbol]
+	} else {
+		ok = false
+	}
+	if !ok {
+		ticker, err = client.BookTicker(ctx, symbol)
+		if err != nil {
+			return "", "", err
+		}
+		if tickers != nil {
+			tickers[symbol] = ticker
+		}
+	}
+	mid, err := binanceBookMidPrice(ticker)
+	if err != nil {
+		return "", "", err
+	}
+	chasePx, err := activePendingAlgoOrderPrice(ticker.BidPrice, ticker.AskPrice, "", tickRaw, order.Side)
+	if err != nil {
+		return "", "", err
+	}
+	return formatMidPrice(mid, tickRaw), chasePx, nil
+}
+
 func tickerMidPrice(ticker okx.Ticker) (float64, error) {
 	bid, bidErr := strconv.ParseFloat(strings.TrimSpace(ticker.BidPx), 64)
 	ask, askErr := strconv.ParseFloat(strings.TrimSpace(ticker.AskPx), 64)
@@ -2742,6 +3660,36 @@ func passivePendingOrderPrice(mid float64, tickRaw, side string) (string, error)
 		return formatPriceToTick(mid-tick, tick, tickRaw, false)
 	case "sell":
 		return formatPriceToTick(mid+tick, tick, tickRaw, true)
+	default:
+		return "", fmt.Errorf("unsupported order side %q", side)
+	}
+}
+
+func activePendingAlgoOrderPrice(bidRaw, askRaw, fallbackRaw, tickRaw, side string) (string, error) {
+	tick, err := strconv.ParseFloat(strings.TrimSpace(tickRaw), 64)
+	if err != nil || tick <= 0 {
+		return "", fmt.Errorf("invalid tick size %q", tickRaw)
+	}
+	bid, bidErr := strconv.ParseFloat(strings.TrimSpace(bidRaw), 64)
+	ask, askErr := strconv.ParseFloat(strings.TrimSpace(askRaw), 64)
+	fallback, fallbackErr := strconv.ParseFloat(strings.TrimSpace(fallbackRaw), 64)
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "buy":
+		if askErr != nil || ask <= 0 {
+			if fallbackErr != nil || fallback <= 0 {
+				return "", fmt.Errorf("invalid ask price %q", askRaw)
+			}
+			ask = fallback
+		}
+		return formatPriceToTick(ask, tick, tickRaw, true)
+	case "sell":
+		if bidErr != nil || bid <= 0 {
+			if fallbackErr != nil || fallback <= 0 {
+				return "", fmt.Errorf("invalid bid price %q", bidRaw)
+			}
+			bid = fallback
+		}
+		return formatPriceToTick(bid, tick, tickRaw, false)
 	default:
 		return "", fmt.Errorf("unsupported order side %q", side)
 	}
@@ -4014,14 +4962,30 @@ func normalizePosSide(raw string) string {
 func (r *pendingOrderChaseRequest) normalize() {
 	r.Exchange = trading.NormalizeExchange(r.Exchange)
 	r.APIID = strings.TrimSpace(r.APIID)
+	r.OrderGroup = strings.ToLower(strings.TrimSpace(r.OrderGroup))
+	if r.OrderGroup == "" {
+		r.OrderGroup = "normal"
+	}
 	r.InstID = strings.ToUpper(strings.TrimSpace(r.InstID))
 	r.OrdID = strings.TrimSpace(r.OrdID)
 	r.ClOrdID = strings.TrimSpace(r.ClOrdID)
+	r.AlgoID = strings.TrimSpace(r.AlgoID)
+	r.AlgoClOrdID = strings.TrimSpace(r.AlgoClOrdID)
 }
 
 func (r pendingOrderChaseRequest) validate() error {
 	if r.InstID == "" {
 		return errors.New("inst_id is required")
+	}
+	switch r.OrderGroup {
+	case "normal":
+	case "algo":
+		if r.AlgoID == "" && r.AlgoClOrdID == "" {
+			return errors.New("algo_id or algo_cl_ord_id is required")
+		}
+		return nil
+	default:
+		return errors.New("order_group must be normal or algo")
 	}
 	if r.OrdID == "" && r.ClOrdID == "" {
 		return errors.New("ord_id or cl_ord_id is required")
@@ -4030,11 +4994,20 @@ func (r pendingOrderChaseRequest) validate() error {
 }
 
 func pendingOrderChaseKey(req pendingOrderChaseRequest) string {
+	group := strings.ToLower(strings.TrimSpace(req.OrderGroup))
+	if group == "" {
+		group = "normal"
+	}
 	id := strings.TrimSpace(req.OrdID)
-	if id == "" {
+	if group == "algo" {
+		id = strings.TrimSpace(req.AlgoID)
+		if id == "" {
+			id = "acl:" + strings.TrimSpace(req.AlgoClOrdID)
+		}
+	} else if id == "" {
 		id = "cl:" + strings.TrimSpace(req.ClOrdID)
 	}
-	return trading.NormalizeExchange(req.Exchange) + "|" + strings.TrimSpace(req.APIID) + "|" + strings.ToUpper(strings.TrimSpace(req.InstID)) + "|" + id
+	return trading.NormalizeExchange(req.Exchange) + "|" + strings.TrimSpace(req.APIID) + "|" + group + "|" + strings.ToUpper(strings.TrimSpace(req.InstID)) + "|" + id
 }
 
 func positionCloseKey(exchange, apiID, instID, posSide string) string {
@@ -4156,6 +5129,11 @@ func nextPendingOrderLimitClOrdID() string {
 func nextPendingOrderMarketClOrdID() string {
 	seq := atomic.AddUint64(&pendingOrderMarketSeq, 1) % 1000000
 	return fmt.Sprintf("PCM%d%06d", time.Now().UTC().UnixMilli(), seq)
+}
+
+func nextPendingOrderAlgoClOrdID() string {
+	seq := atomic.AddUint64(&pendingOrderMarketSeq, 1) % 1000000
+	return fmt.Sprintf("PCA%d%06d", time.Now().UTC().UnixMilli(), seq)
 }
 
 func decimalsFromDecimalString(raw string) int {

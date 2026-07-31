@@ -428,6 +428,7 @@ func TestClientPendingAndCancelAlgoOrdersSignPrivateRequests(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
 	secret := "secret"
 	cancelReq := []CancelAlgoOrderRequest{{InstID: "BTC-USDT-SWAP", AlgoID: "900"}}
+	amendReq := AmendAlgoOrderRequest{InstID: "BTC-USDT-SWAP", AlgoID: "900", NewTriggerPx: "64001", NewOrderPx: "-1", NewTriggerPxType: "last"}
 	seenOrdTypes := map[string]bool{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -447,7 +448,7 @@ func TestClientPendingAndCancelAlgoOrdersSignPrivateRequests(t *testing.T) {
 				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","algoId":"900","algoClOrdId":"algo-900","side":"sell","posSide":"long","ordType":"conditional","sz":"1","state":"live"}]}`))
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","algoId":"900","algoClOrdId":"algo-900","side":"sell","posSide":"long","ordType":"conditional","sz":"1","state":"live","triggerPx":"64000","triggerPxType":"last","orderPx":"-1","activePx":"63900","callbackRatio":"0.5"}]}`))
 		case "/api/v5/trade/cancel-algos":
 			var body []CancelAlgoOrderRequest
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -462,6 +463,20 @@ func TestClientPendingAndCancelAlgoOrdersSignPrivateRequests(t *testing.T) {
 				t.Fatalf("unexpected cancel algo body: %#v", body)
 			}
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"algoId":"900","algoClOrdId":"algo-900","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/trade/amend-algos":
+			var body AmendAlgoOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			bodyBytes, _ := json.Marshal(amendReq)
+			wantSign := sign(timestamp, http.MethodPost, "/api/v5/trade/amend-algos", string(bodyBytes), secret)
+			if r.Header.Get("OK-ACCESS-TIMESTAMP") != timestamp || r.Header.Get("OK-ACCESS-SIGN") != wantSign {
+				t.Fatal("invalid OKX amend algo signature headers")
+			}
+			if body != amendReq {
+				t.Fatalf("unexpected amend algo body: %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"algoId":"900","algoClOrdId":"algo-900","reqId":"","sCode":"0","sMsg":""}]}`))
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -481,6 +496,9 @@ func TestClientPendingAndCancelAlgoOrdersSignPrivateRequests(t *testing.T) {
 	if len(orders) != 1 || orders[0].AlgoID != "900" || orders[0].RawJSON == "" {
 		t.Fatalf("bad pending algo orders: %#v", orders)
 	}
+	if orders[0].TriggerPx != "64000" || orders[0].ActivePx != "63900" || orders[0].CallbackRatio != "0.5" {
+		t.Fatalf("bad pending algo fields: %#v", orders[0])
+	}
 	for _, ordType := range pendingAlgoOrderTypes {
 		if !seenOrdTypes[ordType] {
 			t.Fatalf("expected pending algo ordType %s to be queried, seen=%#v", ordType, seenOrdTypes)
@@ -492,6 +510,13 @@ func TestClientPendingAndCancelAlgoOrdersSignPrivateRequests(t *testing.T) {
 	}
 	if len(acks) != 1 || acks[0].AlgoID != "900" {
 		t.Fatalf("bad cancel algo acks: %#v", acks)
+	}
+	amended, _, err := client.AmendAlgoOrder(context.Background(), amendReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amended.AlgoID != "900" || amended.AlgoClOrdID != "algo-900" {
+		t.Fatalf("bad amend algo ack: %#v", amended)
 	}
 }
 

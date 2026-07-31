@@ -236,6 +236,7 @@ type PlaceAlgoOrderRequest struct {
 	SLOrdPx         string `json:"slOrdPx,omitempty"`
 	SLTriggerPxType string `json:"slTriggerPxType,omitempty"`
 	CallbackRatio   string `json:"callbackRatio,omitempty"`
+	CallbackSpread  string `json:"callbackSpread,omitempty"`
 	ActivePx        string `json:"activePx,omitempty"`
 }
 
@@ -267,20 +268,35 @@ type CancelOrderAck struct {
 }
 
 type AlgoOrder struct {
-	InstType    string          `json:"instType"`
-	InstID      string          `json:"instId"`
-	AlgoID      string          `json:"algoId"`
-	AlgoClOrdID string          `json:"algoClOrdId"`
-	Side        string          `json:"side"`
-	PosSide     string          `json:"posSide"`
-	OrdType     string          `json:"ordType"`
-	Sz          string          `json:"sz"`
-	ActualSz    string          `json:"actualSz"`
-	State       string          `json:"state"`
-	ReduceOnly  json.RawMessage `json:"reduceOnly,omitempty"`
-	CTime       string          `json:"cTime"`
-	UTime       string          `json:"uTime"`
-	RawJSON     string          `json:"-"`
+	InstType          string          `json:"instType"`
+	InstID            string          `json:"instId"`
+	AlgoID            string          `json:"algoId"`
+	AlgoClOrdID       string          `json:"algoClOrdId"`
+	TDMode            string          `json:"tdMode"`
+	Side              string          `json:"side"`
+	PosSide           string          `json:"posSide"`
+	OrdType           string          `json:"ordType"`
+	Sz                string          `json:"sz"`
+	ActualSz          string          `json:"actualSz"`
+	State             string          `json:"state"`
+	ReduceOnly        json.RawMessage `json:"reduceOnly,omitempty"`
+	TriggerPx         string          `json:"triggerPx"`
+	TriggerPxType     string          `json:"triggerPxType"`
+	OrderPx           string          `json:"orderPx"`
+	TPTriggerPx       string          `json:"tpTriggerPx"`
+	TPOrdPx           string          `json:"tpOrdPx"`
+	TPTriggerPxType   string          `json:"tpTriggerPxType"`
+	SLTriggerPx       string          `json:"slTriggerPx"`
+	SLOrdPx           string          `json:"slOrdPx"`
+	SLTriggerPxType   string          `json:"slTriggerPxType"`
+	ActivePx          string          `json:"activePx"`
+	CallbackRatio     string          `json:"callbackRatio"`
+	CallbackSpread    string          `json:"callbackSpread"`
+	MoveTriggerPx     string          `json:"moveTriggerPx"`
+	MoveTriggerPxType string          `json:"moveTriggerPxType"`
+	CTime             string          `json:"cTime"`
+	UTime             string          `json:"uTime"`
+	RawJSON           string          `json:"-"`
 }
 
 var pendingAlgoOrderTypes = []string{"conditional", "trigger", "move_order_stop", "oco", "iceberg", "twap"}
@@ -313,6 +329,32 @@ type AmendOrderAck struct {
 	ReqID   string `json:"reqId,omitempty"`
 	SCode   string `json:"sCode"`
 	SMsg    string `json:"sMsg"`
+}
+
+type AmendAlgoOrderRequest struct {
+	InstID             string `json:"instId"`
+	AlgoID             string `json:"algoId,omitempty"`
+	AlgoClOrdID        string `json:"algoClOrdId,omitempty"`
+	CxlOnFail          bool   `json:"cxlOnFail,omitempty"`
+	ReqID              string `json:"reqId,omitempty"`
+	NewSz              string `json:"newSz,omitempty"`
+	NewTriggerPx       string `json:"newTriggerPx,omitempty"`
+	NewOrderPx         string `json:"newOrderPx,omitempty"`
+	NewTriggerPxType   string `json:"newTriggerPxType,omitempty"`
+	NewTPTriggerPx     string `json:"newTpTriggerPx,omitempty"`
+	NewTPOrdPx         string `json:"newTpOrdPx,omitempty"`
+	NewTPTriggerPxType string `json:"newTpTriggerPxType,omitempty"`
+	NewSLTriggerPx     string `json:"newSlTriggerPx,omitempty"`
+	NewSLOrdPx         string `json:"newSlOrdPx,omitempty"`
+	NewSLTriggerPxType string `json:"newSlTriggerPxType,omitempty"`
+}
+
+type AmendAlgoOrderAck struct {
+	AlgoID      string `json:"algoId"`
+	AlgoClOrdID string `json:"algoClOrdId"`
+	ReqID       string `json:"reqId,omitempty"`
+	SCode       string `json:"sCode"`
+	SMsg        string `json:"sMsg"`
 }
 
 type Instrument struct {
@@ -594,6 +636,24 @@ func (c Client) CancelAlgoOrders(ctx context.Context, reqs []CancelAlgoOrderRequ
 		}
 	}
 	return data, env, nil
+}
+
+func (c Client) AmendAlgoOrder(ctx context.Context, req AmendAlgoOrderRequest) (AmendAlgoOrderAck, Envelope, error) {
+	env, err := c.Do(ctx, http.MethodPost, "/api/v5/trade/amend-algos", nil, req, true)
+	if err != nil {
+		return AmendAlgoOrderAck{}, env, err
+	}
+	var data []AmendAlgoOrderAck
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return AmendAlgoOrderAck{}, env, err
+	}
+	if len(data) == 0 {
+		return AmendAlgoOrderAck{}, env, errors.New("okx amend algo response data is empty")
+	}
+	if data[0].SCode != "" && data[0].SCode != "0" {
+		return data[0], env, fmt.Errorf("okx amend algo rejected %s: %s", data[0].SCode, data[0].SMsg)
+	}
+	return data[0], env, nil
 }
 
 func (c Client) AmendOrder(ctx context.Context, req AmendOrderRequest) (AmendOrderAck, Envelope, error) {

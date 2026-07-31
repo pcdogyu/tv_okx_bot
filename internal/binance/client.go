@@ -277,6 +277,7 @@ type AlgoOrderRequest struct {
 	WorkingType      string
 	NewClientOrderID string
 	ReduceOnly       bool
+	ClosePosition    bool
 }
 
 type AlgoOrderAck struct {
@@ -306,6 +307,11 @@ type AlgoOpenOrder struct {
 	AlgoStatus    string `json:"algoStatus"`
 	ClosePosition bool   `json:"closePosition"`
 	ReduceOnly    bool   `json:"reduceOnly"`
+	TriggerPrice  string `json:"triggerPrice"`
+	ActivatePrice string `json:"activatePrice"`
+	CallbackRate  string `json:"callbackRate"`
+	PriceRate     string `json:"priceRate"`
+	WorkingType   string `json:"workingType"`
 	CreateTime    int64  `json:"createTime"`
 	UpdateTime    int64  `json:"updateTime"`
 }
@@ -786,6 +792,9 @@ func (c Client) NewAlgoOrder(ctx context.Context, req AlgoOrderRequest) (AlgoOrd
 	}
 	if req.ReduceOnly {
 		q.Set("reduceOnly", "true")
+	}
+	if req.ClosePosition {
+		q.Set("closePosition", "true")
 	}
 	b, err := c.Do(ctx, http.MethodPost, "/fapi/v1/algoOrder", q, true)
 	if err != nil {
