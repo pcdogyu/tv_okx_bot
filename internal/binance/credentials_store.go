@@ -160,6 +160,42 @@ func (s *CredentialStore) UpdateAccount(update CredentialAccountUpdate) (Credent
 	return s.statusLocked(), nil
 }
 
+func (s *CredentialStore) RenameAccount(oldID, newID string) (CredentialStatus, error) {
+	oldID = normalizeCredentialID(oldID)
+	if strings.TrimSpace(newID) == "" {
+		return CredentialStatus{}, errors.New("new API ID is required")
+	}
+	newID = normalizeCredentialID(newID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	account, ok := s.accounts[oldID]
+	if !ok || !credentialsConfigured(account.Credentials) {
+		return CredentialStatus{}, fmt.Errorf("Binance API %q is not configured", oldID)
+	}
+	if oldID == newID {
+		return s.statusLocked(), nil
+	}
+	if _, exists := s.accounts[newID]; exists {
+		return CredentialStatus{}, fmt.Errorf("Binance API %q already exists", newID)
+	}
+	delete(s.accounts, oldID)
+	account.ID = newID
+	account.Source = "file"
+	account.UpdatedAt = time.Now().UTC()
+	s.accounts[newID] = account
+	if s.activeID == oldID {
+		s.activeID = newID
+	}
+	if s.path != "" {
+		if err := s.saveLocked(); err != nil {
+			return CredentialStatus{}, err
+		}
+	}
+	return s.statusLocked(), nil
+}
+
 func (s *CredentialStore) DeleteAccount(id string) (CredentialStatus, error) {
 	id = normalizeCredentialID(id)
 	s.mu.Lock()

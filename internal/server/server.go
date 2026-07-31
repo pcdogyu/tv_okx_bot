@@ -491,6 +491,48 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, status)
 		}
+	case http.MethodPatch:
+		var req struct {
+			Exchange string `json:"exchange"`
+			ID       string `json:"id"`
+			NewID    string `json:"new_id"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+			return
+		}
+		if req.Exchange != "" {
+			exchange = trading.NormalizeExchange(req.Exchange)
+		}
+		id := strings.TrimSpace(req.ID)
+		if id == "" {
+			id = r.URL.Query().Get("id")
+		}
+		switch exchange {
+		case trading.ExchangeBinance:
+			if s.BinanceCredentials == nil {
+				writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+				return
+			}
+			status, err := s.BinanceCredentials.RenameAccount(id, req.NewID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, status)
+			return
+		default:
+			if s.OKXCredentials == nil {
+				writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+				return
+			}
+			status, err := s.OKXCredentials.RenameAccount(id, req.NewID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_api_keys", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, status)
+		}
 	case http.MethodDelete:
 		id := r.URL.Query().Get("id")
 		switch exchange {
@@ -519,7 +561,7 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, status)
 		}
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET, PUT and DELETE are allowed")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET, PUT, PATCH and DELETE are allowed")
 	}
 }
 

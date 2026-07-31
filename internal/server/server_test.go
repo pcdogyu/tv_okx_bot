@@ -142,6 +142,11 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("OKX Bot")) || !bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/config")) {
 		t.Fatalf("tvbot ui body does not look like dashboard")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("data-rename-active-api-id")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("renameActiveAPIID")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`method: "PATCH"`)) {
+		t.Fatalf("tvbot ui should include API ID rename controls")
+	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte(`id="order-info-status" hidden`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(".status[hidden]")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("syncOrderInfoVisibility")) ||
@@ -1456,6 +1461,42 @@ func TestTVBotBinanceAPIKeysSaveAndTest(t *testing.T) {
 	}
 	if !bytes.Contains(testRR.Body.Bytes(), []byte(`"exchange":"binance"`)) || !bytes.Contains(testRR.Body.Bytes(), []byte(`"api_id":"main"`)) || !bytes.Contains(testRR.Body.Bytes(), []byte(`"eq":"1000.25"`)) {
 		t.Fatalf("bad test response: %s", testRR.Body.String())
+	}
+}
+
+func TestTVBotAPIKeysRenameActiveID(t *testing.T) {
+	srv := newTestServer(t)
+	reqBody := []byte(`{"exchange":"binance","id":"tvbot","name":"binance-moni","api_key":"bnabcd12345678wxyz","secret_key":"binance-secret-value","active":true}`)
+	req := httptest.NewRequest(http.MethodPut, "/tvbot/api-keys?exchange=binance", bytes.NewReader(reqBody))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("save status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	renameReq := httptest.NewRequest(http.MethodPatch, "/tvbot/api-keys?exchange=binance", bytes.NewReader([]byte(`{"exchange":"binance","id":"tvbot","new_id":"binance-prod"}`)))
+	renameReq.SetBasicAuth("admin", "Admin123")
+	renameRR := httptest.NewRecorder()
+	srv.ServeHTTP(renameRR, renameReq)
+	if renameRR.Code != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", renameRR.Code, renameRR.Body.String())
+	}
+	if !bytes.Contains(renameRR.Body.Bytes(), []byte(`"active_id":"binance-prod"`)) ||
+		!bytes.Contains(renameRR.Body.Bytes(), []byte(`"id":"binance-prod"`)) ||
+		bytes.Contains(renameRR.Body.Bytes(), []byte(`"id":"tvbot"`)) ||
+		bytes.Contains(renameRR.Body.Bytes(), []byte("binance-secret-value")) {
+		t.Fatalf("bad rename response: %s", renameRR.Body.String())
+	}
+	creds, id, err := srv.BinanceCredentials.BinanceCredentials("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "binance-prod" || creds.APIKey != "bnabcd12345678wxyz" || creds.SecretKey != "binance-secret-value" {
+		t.Fatalf("bad renamed active credentials id=%q creds=%#v", id, creds)
+	}
+	if _, _, err := srv.BinanceCredentials.BinanceCredentials("tvbot"); err == nil {
+		t.Fatal("old API ID should not resolve after rename")
 	}
 }
 

@@ -528,6 +528,19 @@ const tvbotHTML = `<!doctype html>
       padding: 4px 8px;
       font-size: 12px;
     }
+    .api-key-id-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .api-key-active-id {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .api-key-id-row .btn {
+      flex: 0 0 auto;
+    }
     .btn.order-json-button {
       min-height: 24px;
       padding: 2px 7px;
@@ -3181,13 +3194,20 @@ const tvbotHTML = `<!doctype html>
       }).join("") || '<tr><td colspan="4" class="muted">-</td></tr>';
     }
 
+    function activeAPIIDStatusHTML(activeID) {
+      const apiID = String(activeID || "").trim();
+      if (!apiID) return "-";
+      const escaped = escapeHTML(apiID);
+      return '<div class="api-key-id-row"><span class="api-key-active-id">' + escaped + '</span><button class="btn small" type="button" data-rename-active-api-id="' + escaped + '" title="修改当前交易 API 的 API ID">改名</button></div>';
+    }
+
     function renderAPIKeyStatus(selected) {
       const exchange = normalizeExchange(state.apiKeyExchange);
       const status = apiKeyStatus(exchange);
       const rows = [
         ["交易所", exchangeLabel(exchange)],
         ["配置状态", status.configured ? "已配置" : "未配置"],
-        ["交易 API", status.active_id || "-"],
+        ["交易 API", activeAPIIDStatusHTML(status.active_id), true],
         ["API Key", status.api_key_masked || "-"],
         ["Secret Key", status.secret_key_set ? "已保存" : "未保存"]
       ];
@@ -3209,7 +3229,7 @@ const tvbotHTML = `<!doctype html>
           rows.push(["USDT 余额", exchangeLabel(exchange) + " 未返回 USDT 明细"]);
         }
       }
-      $("api-key-status").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(row[1]) + "</td></tr>").join("");
+      $("api-key-status").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + (row[2] ? row[1] : escapeHTML(row[1])) + "</td></tr>").join("");
     }
 
     function apiKeyStatus(exchange) {
@@ -4249,6 +4269,43 @@ const tvbotHTML = `<!doctype html>
       toast("API Key 已删除");
     }
 
+    async function renameActiveAPIID(button) {
+      const exchange = normalizeExchange(state.apiKeyExchange);
+      const status = apiKeyStatus(exchange);
+      const currentID = (button && button.dataset.renameActiveApiId) || status.active_id || "";
+      if (!currentID) return;
+      const nextID = window.prompt("新的 app id", currentID);
+      if (nextID === null) return;
+      const trimmed = nextID.trim();
+      if (!trimmed) {
+        toast("app id 不能为空");
+        return;
+      }
+      if (trimmed === currentID) return;
+      if (button) button.disabled = true;
+      try {
+        state.apiKeysByExchange[exchange] = await api("/tvbot/api-keys?exchange=" + encodeURIComponent(exchange), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ exchange: exchange, id: currentID, new_id: trimmed })
+        });
+      } finally {
+        if (button) button.disabled = false;
+      }
+      state.apiKeys = apiKeyStatus(exchange);
+      state.selectedAPIID = state.apiKeys.active_id || trimmed;
+      state.selectedAPIIDs[exchange] = state.selectedAPIID;
+      state.apiKeyTest = null;
+      state.apiKeyTestID = "";
+      state.apiKeyTestExchange = exchange;
+      renderAPIKeys();
+      renderTemplateAPIs();
+      renderPositionAPIs();
+      renderOrders();
+      updateMetrics();
+      toast("app id 已改名为 " + state.selectedAPIID);
+    }
+
     async function makeTemplate() {
       const req = {
         target_exchange: normalizeExchange($("tpl-target-exchange").value),
@@ -4552,6 +4609,11 @@ const tvbotHTML = `<!doctype html>
       toast(err.message);
     }));
     $("delete-api-key").addEventListener("click", () => deleteAPIKey().catch((err) => toast(err.message)));
+    $("api-key-status").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-rename-active-api-id]");
+      if (!button) return;
+      renameActiveAPIID(button).catch((err) => toast(err.message));
+    });
     document.querySelectorAll("[data-api-key-exchange]").forEach((button) => {
       button.addEventListener("click", () => {
         state.apiKeyExchange = normalizeExchange(button.dataset.apiKeyExchange);

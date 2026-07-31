@@ -91,3 +91,58 @@ func TestCredentialStoreSupportsMultipleAccountsAndActiveSelection(t *testing.T)
 		t.Fatalf("bad reloaded active id=%q creds=%#v", activeID, defaultCreds)
 	}
 }
+
+func TestCredentialStoreRenameAccountPreservesCredentialsAndActiveSelection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "okx-credentials.json")
+	store, err := NewCredentialStore(path, Credentials{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateAccount(CredentialAccountUpdate{
+		ID:     "Main Live",
+		Name:   "main",
+		Active: true,
+		Credentials: Credentials{
+			APIKey:     "main-key",
+			SecretKey:  "main-secret",
+			Passphrase: "main-pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateAccount(CredentialAccountUpdate{
+		ID:     "backup",
+		Active: false,
+		Credentials: Credentials{
+			APIKey:     "backup-key",
+			SecretKey:  "backup-secret",
+			Passphrase: "backup-pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.RenameAccount("main-live", "Primary API")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ActiveID != "primary-api" || len(status.Credentials) != 2 {
+		t.Fatalf("bad rename status: %#v", status)
+	}
+	if _, err := store.RenameAccount("primary-api", "backup"); err == nil {
+		t.Fatal("expected duplicate API ID error")
+	}
+	reloaded, err := NewCredentialStore(path, Credentials{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, id, err := reloaded.OKXCredentials("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "primary-api" || creds.APIKey != "main-key" || creds.SecretKey != "main-secret" || creds.Passphrase != "main-pass" {
+		t.Fatalf("bad renamed active credentials id=%q creds=%#v", id, creds)
+	}
+	if _, _, err := reloaded.OKXCredentials("main-live"); err == nil {
+		t.Fatal("old API ID should not resolve after rename")
+	}
+}
