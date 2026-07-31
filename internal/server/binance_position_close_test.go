@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -123,6 +124,92 @@ func TestTVBotBinancePositionCloseMarketAndLimit(t *testing.T) {
 	limit := orderForms[1]
 	if limit.Get("symbol") != "BTCUSDT" || limit.Get("side") != "BUY" || limit.Get("type") != "LIMIT" || limit.Get("timeInForce") != "GTC" || limit.Get("quantity") != "2" || limit.Get("price") != "100.2" || limit.Get("reduceOnly") != "true" {
 		t.Fatalf("bad limit close form: %#v", limit)
+	}
+}
+
+func TestTVBotBinanceLimitPositionCloseSplitsWhenQuantityExceedsMaxQty(t *testing.T) {
+	oldPoll := positionClosePollInterval
+	oldTimeout := positionCloseLimitTimeout
+	oldJobs := positionCloseJobs
+	positionClosePollInterval = time.Hour
+	positionCloseLimitTimeout = time.Hour
+	positionCloseJobs = newPositionCloseRegistry()
+	t.Cleanup(func() {
+		positionClosePollInterval = oldPoll
+		positionCloseLimitTimeout = oldTimeout
+		positionCloseJobs = oldJobs
+	})
+
+	srv := newTestServer(t)
+	var orderForms []url.Values
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/fapi/v1/exchangeInfo" && r.URL.Path != "/fapi/v1/ticker/bookTicker" && r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key for %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[{"symbol":"MANTAUSDT","positionSide":"BOTH","positionAmt":"25000","entryPrice":"0.06","markPrice":"0.059","unRealizedProfit":"-25","isolatedMargin":"150","notional":"1475","marginAsset":"USDT","leverage":"10","marginType":"isolated","updateTime":1784880000000}]`))
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"MANTAUSDT","status":"TRADING","pricePrecision":4,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.0001"},{"filterType":"LOT_SIZE","minQty":"1","maxQty":"10000","stepSize":"1"},{"filterType":"MARKET_LOT_SIZE","minQty":"1","maxQty":"10000","stepSize":"1"}]}]}`))
+		case "/fapi/v1/ticker/bookTicker":
+			_, _ = w.Write([]byte(`{"symbol":"MANTAUSDT","bidPrice":"0.0589","bidQty":"1","askPrice":"0.0591","askQty":"1","time":1784880000000}`))
+		case "/fapi/v1/order":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			form := cloneValues(r.Form)
+			orderForms = append(orderForms, form)
+			if form.Get("quantity") == "25000" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-4005,"msg":"Quantity greater than max quantity."}`))
+				return
+			}
+			orderID := strconv.Itoa(800 + len(orderForms))
+			_, _ = w.Write([]byte(`{"orderId":` + orderID + `,"symbol":"MANTAUSDT","status":"NEW","clientOrderId":"` + form.Get("newClientOrderId") + `","price":"0.0589","origQty":"` + form.Get("quantity") + `","executedQty":"0","type":"LIMIT","side":"SELL","positionSide":"BOTH"}`))
+		default:
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+	}))
+	defer binanceServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.BinanceHTTPClient = binanceServer.Client()
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:          "main",
+		Active:      true,
+		Credentials: binance.Credentials{APIKey: "binance-key", SecretKey: "binance-secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/positions/close", bytes.NewReader([]byte(`{"exchange":"binance","api_id":"main","inst_id":"MANTAUSDT","pos_side":"net","mode":"limit"}`)))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("limit close status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp positionCloseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.Status != "running" || resp.Sz != "25000" || resp.OrdID == "" || resp.ClOrdID == "" {
+		t.Fatalf("bad split close response: %#v", resp)
+	}
+	if len(orderForms) != 4 {
+		t.Fatalf("expected original failed order plus three split orders, got %#v", orderForms)
+	}
+	for i, want := range []string{"25000", "10000", "10000", "5000"} {
+		if orderForms[i].Get("symbol") != "MANTAUSDT" ||
+			orderForms[i].Get("side") != "SELL" ||
+			orderForms[i].Get("type") != "LIMIT" ||
+			orderForms[i].Get("quantity") != want ||
+			orderForms[i].Get("price") != "0.0589" ||
+			orderForms[i].Get("reduceOnly") != "true" {
+			t.Fatalf("bad split order %d: %#v", i, orderForms[i])
+		}
 	}
 }
 

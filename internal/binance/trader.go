@@ -771,6 +771,11 @@ func splitBinancePlaceOrderRequest(req PlaceOrderRequest, filters TradingFilters
 	return out, nil
 }
 
+// SplitPlaceOrderRequestByMaxQty splits a Binance place-order request by the symbol maxQty filters.
+func SplitPlaceOrderRequestByMaxQty(req PlaceOrderRequest, filters TradingFilters) ([]PlaceOrderRequest, error) {
+	return splitBinancePlaceOrderRequest(req, filters)
+}
+
 func splitBinanceAlgoOrderRequest(req AlgoOrderRequest, filters TradingFilters) ([]AlgoOrderRequest, error) {
 	chunks, err := splitBinanceQuantityByMax(req.Quantity, filters.MaxQtyForOrderType("MARKET"), filters.StepSizeForOrderType("MARKET"), filters.MinQtyForOrderType("MARKET"))
 	if err != nil {

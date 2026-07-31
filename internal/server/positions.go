@@ -192,6 +192,7 @@ type positionProtectionResponse struct {
 type positionCloseOrder struct {
 	Position okx.Position
 	Ack      okx.OrderAck
+	Acks     []okx.OrderAck
 	Px       string
 	CloseSz  string
 	Partial  bool
@@ -2291,12 +2292,53 @@ func currentOKXPositionCloseOrder(ctx context.Context, client okx.Client, active
 }
 
 func currentBinancePositionCloseOrder(ctx context.Context, client binance.Client, active positionCloseOrder) (okx.PendingOrder, bool, error) {
-	return currentBinancePendingOrder(ctx, client, pendingOrderChaseRequest{
-		Exchange: trading.ExchangeBinance,
-		InstID:   active.Position.InstID,
-		OrdID:    strings.TrimSpace(active.Ack.OrdID),
-		ClOrdID:  strings.TrimSpace(active.Ack.ClOrdID),
-	})
+	orders, found, err := currentBinancePositionCloseOrders(ctx, client, active)
+	if !found || err != nil {
+		return okx.PendingOrder{}, found, err
+	}
+	return orders[0], true, nil
+}
+
+func currentBinancePositionCloseOrders(ctx context.Context, client binance.Client, active positionCloseOrder) ([]okx.PendingOrder, bool, error) {
+	acks := positionCloseOrderAcks(active)
+	if len(acks) == 0 {
+		return nil, false, nil
+	}
+	orders, err := client.OpenOrders(ctx, active.Position.InstID)
+	if err != nil {
+		return nil, false, err
+	}
+	ordIDs := map[string]bool{}
+	clOrdIDs := map[string]bool{}
+	for _, ack := range acks {
+		if id := strings.TrimSpace(ack.OrdID); id != "" {
+			ordIDs[id] = true
+		}
+		if id := strings.TrimSpace(ack.ClOrdID); id != "" {
+			clOrdIDs[id] = true
+		}
+	}
+	out := make([]okx.PendingOrder, 0, len(acks))
+	for _, rawOrder := range orders {
+		order := binanceOpenOrderToOKX(rawOrder)
+		if !strings.EqualFold(order.InstID, active.Position.InstID) {
+			continue
+		}
+		if ordIDs[strings.TrimSpace(order.OrdID)] || clOrdIDs[strings.TrimSpace(order.ClOrdID)] {
+			out = append(out, order)
+		}
+	}
+	return out, len(out) > 0, nil
+}
+
+func positionCloseOrderAcks(active positionCloseOrder) []okx.OrderAck {
+	if len(active.Acks) > 0 {
+		return active.Acks
+	}
+	if strings.TrimSpace(active.Ack.OrdID) == "" && strings.TrimSpace(active.Ack.ClOrdID) == "" {
+		return nil
+	}
+	return []okx.OrderAck{active.Ack}
 }
 
 func cancelPendingOrder(ctx context.Context, client okx.Client, order okx.PendingOrder) error {
@@ -2470,6 +2512,36 @@ func pendingOrderRemainingSize(order okx.PendingOrder) (string, error) {
 		decimals = filledDecimals
 	}
 	out := trimDecimalZeros(remaining.FloatString(decimals))
+	if out == "" || out == "0" {
+		return "", errPendingOrderNoRemaining
+	}
+	return out, nil
+}
+
+func pendingOrdersRemainingSize(orders []okx.PendingOrder) (string, error) {
+	sum := new(big.Rat)
+	decimals := 0
+	for _, order := range orders {
+		remainingRaw, err := pendingOrderRemainingSize(order)
+		if err != nil {
+			if errors.Is(err, errPendingOrderNoRemaining) {
+				continue
+			}
+			return "", err
+		}
+		remaining, ok := new(big.Rat).SetString(remainingRaw)
+		if !ok || remaining.Sign() <= 0 {
+			continue
+		}
+		sum.Add(sum, remaining)
+		if d := decimalPlacesForDisplay(remainingRaw); d > decimals {
+			decimals = d
+		}
+	}
+	if sum.Sign() <= 0 {
+		return "", errPendingOrderNoRemaining
+	}
+	out := trimDecimalZeros(sum.FloatString(decimals))
 	if out == "" || out == "0" {
 		return "", errPendingOrderNoRemaining
 	}
@@ -3091,26 +3163,78 @@ func placeBinancePositionClose(ctx context.Context, client binance.Client, posit
 	}
 	ack, unknown, err := placeBinanceOrderWithUnknownRecovery(ctx, client, req)
 	if err != nil {
+		if split, splitErr := placeSplitBinancePositionCloseByMaxQty(ctx, client, position, req, px, partial, err); splitErr == nil {
+			return split, nil
+		}
 		ack, unknown, err = retryBinanceReduceOnlyPositionClose(ctx, client, req, err)
 		if err != nil {
 			return positionCloseOrder{}, err
 		}
 	}
+	return binancePositionCloseOrderFromAcks(position, []binance.OrderAck{ack}, px, req.Quantity, partial, unknown), nil
+}
+
+func placeSplitBinancePositionCloseByMaxQty(ctx context.Context, client binance.Client, position okx.Position, req binance.PlaceOrderRequest, px string, partial bool, originalErr error) (positionCloseOrder, error) {
+	if !binance.IsAPIErrorCode(originalErr, -4005) {
+		return positionCloseOrder{}, originalErr
+	}
+	inst, err := client.SymbolInfo(ctx, req.Symbol)
+	if err != nil {
+		return positionCloseOrder{}, originalErr
+	}
+	filters, err := inst.TradingFilters()
+	if err != nil {
+		return positionCloseOrder{}, originalErr
+	}
+	reqs, err := binance.SplitPlaceOrderRequestByMaxQty(req, filters)
+	if err != nil || len(reqs) <= 1 {
+		return positionCloseOrder{}, originalErr
+	}
+	acks := make([]binance.OrderAck, 0, len(reqs))
+	unknownAny := false
+	for i, part := range reqs {
+		ack, unknown, err := placeBinanceOrderWithUnknownRecovery(ctx, client, part)
+		if err != nil {
+			ack, unknown, err = retryBinanceReduceOnlyPositionClose(ctx, client, part, err)
+			if err != nil {
+				return positionCloseOrder{}, fmt.Errorf("Binance split close part %d/%d quantity %s: %w", i+1, len(reqs), part.Quantity, err)
+			}
+		}
+		acks = append(acks, ack)
+		unknownAny = unknownAny || unknown
+	}
+	return binancePositionCloseOrderFromAcks(position, acks, px, req.Quantity, partial, unknownAny), nil
+}
+
+func binancePositionCloseOrderFromAcks(position okx.Position, acks []binance.OrderAck, px, closeSz string, partial, unknown bool) positionCloseOrder {
+	okxAcks := make([]okx.OrderAck, 0, len(acks))
+	for _, ack := range acks {
+		okxAcks = append(okxAcks, okxAckFromBinanceOrderAck(ack))
+	}
+	primary := okx.OrderAck{}
+	if len(okxAcks) > 0 {
+		primary = okxAcks[0]
+	}
+	return positionCloseOrder{
+		Position: position,
+		Ack:      primary,
+		Acks:     okxAcks,
+		Px:       px,
+		CloseSz:  closeSz,
+		Partial:  partial,
+		Unknown:  unknown,
+	}
+}
+
+func okxAckFromBinanceOrderAck(ack binance.OrderAck) okx.OrderAck {
 	ordID := ""
 	if ack.OrderID != 0 {
 		ordID = strconv.FormatInt(ack.OrderID, 10)
 	}
-	return positionCloseOrder{
-		Position: position,
-		Ack: okx.OrderAck{
-			OrdID:   ordID,
-			ClOrdID: ack.ClientOrderID,
-		},
-		Px:      px,
-		CloseSz: req.Quantity,
-		Partial: partial,
-		Unknown: unknown,
-	}, nil
+	return okx.OrderAck{
+		OrdID:   ordID,
+		ClOrdID: ack.ClientOrderID,
+	}
 }
 
 func placeBinanceOrderWithUnknownRecovery(ctx context.Context, client binance.Client, req binance.PlaceOrderRequest) (binance.OrderAck, bool, error) {
@@ -3614,14 +3738,28 @@ func refreshBinanceLimitPositionClose(client binance.Client, active positionClos
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	order, found, err := currentBinancePositionCloseOrder(ctx, client, active)
+	orders, found, err := currentBinancePositionCloseOrders(ctx, client, active)
 	if err != nil {
 		return active, false, err
 	}
 	if !found {
+		if !active.Partial {
+			position, err := currentBinanceOpenPosition(ctx, client, active.Position.InstID, active.Position.PosSide)
+			if err != nil {
+				if errors.Is(err, errPositionNotOpen) {
+					return active, true, nil
+				}
+				return active, false, err
+			}
+			next, err := placeBinancePositionClose(ctx, client, position, "limit", "")
+			if err != nil {
+				return active, false, err
+			}
+			return next, false, nil
+		}
 		return active, true, nil
 	}
-	remaining, err := pendingOrderRemainingSize(order)
+	remaining, err := pendingOrdersRemainingSize(orders)
 	if err != nil {
 		if errors.Is(err, errPendingOrderNoRemaining) {
 			return active, true, nil
@@ -3648,11 +3786,13 @@ func refreshBinanceLimitPositionClose(client binance.Client, active positionClos
 		active.CloseSz = remaining
 		return active, false, nil
 	}
-	if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
-		if _, stillOpen, checkErr := currentBinancePositionCloseOrder(ctx, client, active); checkErr == nil && !stillOpen {
-			return active, true, nil
+	for _, order := range orders {
+		if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
+			if _, stillOpen, checkErr := currentBinancePositionCloseOrders(ctx, client, active); checkErr == nil && !stillOpen {
+				return active, true, nil
+			}
+			return active, false, err
 		}
-		return active, false, err
 	}
 	next, err := placeBinancePositionClose(ctx, client, position, "limit", remaining)
 	if err != nil {
@@ -3664,25 +3804,29 @@ func refreshBinanceLimitPositionClose(client binance.Client, active positionClos
 func fallbackBinanceMarketPositionClose(client binance.Client, active positionCloseOrder) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	order, found, err := currentBinancePositionCloseOrder(ctx, client, active)
+	orders, found, err := currentBinancePositionCloseOrders(ctx, client, active)
 	if err != nil {
 		return err
 	}
-	if !found {
+	remaining := ""
+	if found {
+		remaining, err = pendingOrdersRemainingSize(orders)
+		if err != nil {
+			if errors.Is(err, errPendingOrderNoRemaining) {
+				return nil
+			}
+			return err
+		}
+		for _, order := range orders {
+			if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
+				if _, stillOpen, checkErr := currentBinancePositionCloseOrders(ctx, client, active); checkErr == nil && !stillOpen {
+					return nil
+				}
+				return err
+			}
+		}
+	} else if active.Partial {
 		return nil
-	}
-	remaining, err := pendingOrderRemainingSize(order)
-	if err != nil {
-		if errors.Is(err, errPendingOrderNoRemaining) {
-			return nil
-		}
-		return err
-	}
-	if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
-		if _, stillOpen, checkErr := currentBinancePositionCloseOrder(ctx, client, active); checkErr == nil && !stillOpen {
-			return nil
-		}
-		return err
 	}
 	position, err := currentBinanceOpenPosition(ctx, client, active.Position.InstID, active.Position.PosSide)
 	if err != nil {
@@ -3690,6 +3834,9 @@ func fallbackBinanceMarketPositionClose(client binance.Client, active positionCl
 			return nil
 		}
 		return err
+	}
+	if remaining == "" {
+		remaining = absolutePositionSize(position.Pos)
 	}
 	remaining = capCloseSizeToPosition(position.Pos, remaining)
 	if remaining == "" || remaining == "0" {
