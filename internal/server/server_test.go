@@ -303,6 +303,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-menu-move")) {
 		t.Fatalf("tvbot ui should include menu settings tab")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("formatUpgradeLog")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("appendUpgradeBlock")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("finished status=")) ||
+		bytes.Contains(ui.Body.Bytes(), []byte("JSON.stringify(state.upgrade")) {
+		t.Fatalf("tvbot ui should render upgrade status as line-oriented logs")
+	}
 	if !bytes.Contains(ui.Body.Bytes(), []byte("订单类型")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`id="order-type"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("市价单")) ||

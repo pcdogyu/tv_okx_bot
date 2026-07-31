@@ -4202,7 +4202,47 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderUpgrade() {
-      $("upgrade-output").textContent = JSON.stringify(state.upgrade || {}, null, 2);
+      $("upgrade-output").textContent = formatUpgradeLog(state.upgrade);
+    }
+
+    function formatUpgradeLog(upgrade) {
+      if (!upgrade || !upgrade.status) return "-";
+      const lines = [];
+      const status = asText(upgrade.status);
+      const runID = asText(upgrade.run_id || "-");
+      lines.push("[" + upgradeLogTime(upgrade.started_at) + "] upgrade " + status + " run_id=" + runID);
+      if (upgrade.finished_at && !zeroTime(upgrade.finished_at)) {
+        lines.push("[" + upgradeLogTime(upgrade.finished_at) + "] finished status=" + status);
+      }
+      const steps = Array.isArray(upgrade.steps) ? upgrade.steps : [];
+      steps.forEach((step, index) => {
+        const label = asText(step.name || ("step_" + (index + 1)));
+        const started = upgradeLogTime(step.started || upgrade.started_at);
+        lines.push("[" + started + "] " + label + " started");
+        if (step.command) lines.push("  $ " + asText(step.command));
+        appendUpgradeBlock(lines, step.output, "  | ");
+        if (step.error) appendUpgradeBlock(lines, step.error, "  ! ");
+        if (step.finished && !zeroTime(step.finished)) {
+          lines.push("[" + upgradeLogTime(step.finished) + "] " + label + " finished");
+        }
+      });
+      if (upgrade.error) appendUpgradeBlock(lines, upgrade.error, "ERROR ");
+      return lines.join("\n");
+    }
+
+    function appendUpgradeBlock(lines, text, prefix) {
+      const raw = (text === null || text === undefined ? "" : String(text)).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
+      if (!raw) return;
+      raw.split("\n").forEach((line) => lines.push(prefix + line));
+    }
+
+    function upgradeLogTime(value) {
+      if (!value || zeroTime(value)) return "-";
+      return shanghaiTime(value);
+    }
+
+    function zeroTime(value) {
+      return !value || String(value).startsWith("0001-01-01");
     }
 
     async function saveConfig() {
@@ -4586,7 +4626,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function startUpgrade() {
-      $("upgrade-output").textContent = "starting...";
+      $("upgrade-output").textContent = "[" + shanghaiTime(new Date().toISOString()) + "] starting upgrade...";
       state.upgrade = await api("/upgrade", { method: "POST" });
       renderUpgrade();
       updateMetrics();
