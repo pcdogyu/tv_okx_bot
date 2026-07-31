@@ -168,6 +168,15 @@ func TestClientParsesAPIError(t *testing.T) {
 	}
 }
 
+func TestIsExecutionStatusUnknown(t *testing.T) {
+	if !IsExecutionStatusUnknown(APIError{Code: -1007, Msg: "Timeout waiting for response from backend server. Send status unknown; execution status unknown."}) {
+		t.Fatal("expected -1007 to be treated as unknown execution status")
+	}
+	if IsExecutionStatusUnknown(APIError{Code: -2022, Msg: "ReduceOnly Order is rejected."}) {
+		t.Fatal("reduce-only rejection should not be treated as unknown execution status")
+	}
+}
+
 func TestClientTradingEndpoints(t *testing.T) {
 	const secret = "secret"
 	seen := map[string]url.Values{}
@@ -214,6 +223,8 @@ func TestClientTradingEndpoints(t *testing.T) {
 			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","markPrice":"50000.0","indexPrice":"50001.0","lastFundingRate":"0.0001","time":1784880000000}`))
 		case "/fapi/v1/order":
 			switch r.Method {
+			case http.MethodGet:
+				_, _ = w.Write([]byte(`{"orderId":456,"symbol":"BTCUSDT","status":"FILLED","clientOrderId":"entry","price":"50000","origQty":"0.1","executedQty":"0.1","type":"LIMIT","side":"BUY","positionSide":"BOTH"}`))
 			case http.MethodPost:
 				_, _ = w.Write([]byte(`{"orderId":456,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"50000","origQty":"0.1","executedQty":"0","type":"LIMIT","side":"BUY"}`))
 			case http.MethodPut:
@@ -285,6 +296,13 @@ func TestClientTradingEndpoints(t *testing.T) {
 	if err != nil || ack.OrderID != 456 {
 		t.Fatalf("bad order ack err=%v ack=%#v", err, ack)
 	}
+	queried, err := client.QueryOrder(context.Background(), QueryOrderRequest{
+		Symbol:            "BTCUSDT",
+		OrigClientOrderID: "entry",
+	})
+	if err != nil || queried.OrderID != 456 || queried.Status != "FILLED" {
+		t.Fatalf("bad queried order err=%v order=%#v", err, queried)
+	}
 	modified, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{
 		Symbol:   "BTCUSDT",
 		Side:     "BUY",
@@ -331,6 +349,9 @@ func TestClientTradingEndpoints(t *testing.T) {
 	}
 	if seen[http.MethodPost+" /fapi/v1/order"].Get("timeInForce") != "GTC" || seen[http.MethodPost+" /fapi/v1/order"].Get("newClientOrderId") != "entry" {
 		t.Fatalf("bad order form: %#v", seen[http.MethodPost+" /fapi/v1/order"])
+	}
+	if seen[http.MethodGet+" /fapi/v1/order"].Get("origClientOrderId") != "entry" || seen[http.MethodGet+" /fapi/v1/order"].Get("symbol") != "BTCUSDT" {
+		t.Fatalf("bad query order form: %#v", seen[http.MethodGet+" /fapi/v1/order"])
 	}
 	if seen[http.MethodPut+" /fapi/v1/order"].Get("price") != "49999.9" || seen[http.MethodPut+" /fapi/v1/order"].Get("orderId") != "456" {
 		t.Fatalf("bad modify order form: %#v", seen[http.MethodPut+" /fapi/v1/order"])

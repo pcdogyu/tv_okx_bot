@@ -126,6 +126,155 @@ func TestTVBotBinancePositionCloseMarketAndLimit(t *testing.T) {
 	}
 }
 
+func TestTVBotBinanceMarketCloseRecoversUnknownStatusByClientOrderID(t *testing.T) {
+	srv := newTestServer(t)
+	var orderForms []url.Values
+	var queryForms []url.Values
+	closeClientID := ""
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key for %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/fapi/v3/positionRisk":
+			if r.URL.Query().Get("symbol") != "BTCUSDT" {
+				t.Fatalf("bad positions query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"-2","entryPrice":"100","markPrice":"100.1","unRealizedProfit":"-0.2","isolatedMargin":"20","notional":"200.2","marginAsset":"USDT","leverage":"10","marginType":"isolated","updateTime":1784880000000}]`))
+		case "/fapi/v1/order":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			switch r.Method {
+			case http.MethodPost:
+				orderForms = append(orderForms, cloneValues(r.Form))
+				closeClientID = r.Form.Get("newClientOrderId")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"code":-1007,"msg":"Timeout waiting for response from backend server. Send status unknown; execution status unknown."}`))
+			case http.MethodGet:
+				queryForms = append(queryForms, cloneValues(r.Form))
+				if r.Form.Get("origClientOrderId") != closeClientID {
+					t.Fatalf("bad query client id: %s want %s", r.Form.Get("origClientOrderId"), closeClientID)
+				}
+				_, _ = w.Write([]byte(`{"orderId":990,"symbol":"BTCUSDT","status":"FILLED","clientOrderId":"` + closeClientID + `","price":"0","origQty":"2","executedQty":"2","type":"MARKET","side":"BUY","positionSide":"BOTH"}`))
+			default:
+				t.Fatalf("unexpected Binance order method %s", r.Method)
+			}
+		default:
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+	}))
+	defer binanceServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.BinanceHTTPClient = binanceServer.Client()
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:          "main",
+		Active:      true,
+		Credentials: binance.Credentials{APIKey: "binance-key", SecretKey: "binance-secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"exchange":"binance","api_id":"main","inst_id":"BTCUSDT","pos_side":"net","mode":"market"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/positions/close", bytes.NewReader(body))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("market close recovery status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp positionCloseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.Status != "submitted" || resp.OrdID != "990" || resp.ClOrdID != closeClientID {
+		t.Fatalf("bad recovery response: %#v", resp)
+	}
+	if len(orderForms) != 1 || len(queryForms) != 1 {
+		t.Fatalf("expected one order and one query, orders=%#v queries=%#v", orderForms, queryForms)
+	}
+}
+
+func TestTVBotBinanceMarketCloseReturnsUnknownWhenTimeoutCannotBeResolved(t *testing.T) {
+	oldAttempts := binanceUnknownOrderLookupAttempts
+	oldDelay := binanceUnknownOrderLookupDelay
+	binanceUnknownOrderLookupAttempts = 2
+	binanceUnknownOrderLookupDelay = time.Millisecond
+	t.Cleanup(func() {
+		binanceUnknownOrderLookupAttempts = oldAttempts
+		binanceUnknownOrderLookupDelay = oldDelay
+	})
+
+	srv := newTestServer(t)
+	queryCount := 0
+	closeClientID := ""
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("X-MBX-APIKEY") != "binance-key" {
+			t.Fatalf("missing Binance API key for %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/fapi/v3/positionRisk":
+			_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"-2","entryPrice":"100","markPrice":"100.1","unRealizedProfit":"-0.2","isolatedMargin":"20","notional":"200.2","marginAsset":"USDT","leverage":"10","marginType":"isolated","updateTime":1784880000000}]`))
+		case "/fapi/v1/order":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			switch r.Method {
+			case http.MethodPost:
+				closeClientID = r.Form.Get("newClientOrderId")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"code":-1007,"msg":"Timeout waiting for response from backend server. Send status unknown; execution status unknown."}`))
+			case http.MethodGet:
+				queryCount++
+				if r.Form.Get("origClientOrderId") != closeClientID {
+					t.Fatalf("bad query client id: %s want %s", r.Form.Get("origClientOrderId"), closeClientID)
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":-2013,"msg":"Order does not exist."}`))
+			default:
+				t.Fatalf("unexpected Binance order method %s", r.Method)
+			}
+		default:
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+	}))
+	defer binanceServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.BinanceHTTPClient = binanceServer.Client()
+	if _, err := srv.BinanceCredentials.UpdateAccount(binance.CredentialAccountUpdate{
+		ID:          "main",
+		Active:      true,
+		Credentials: binance.Credentials{APIKey: "binance-key", SecretKey: "binance-secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"exchange":"binance","api_id":"main","inst_id":"BTCUSDT","pos_side":"net","mode":"market"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/positions/close", bytes.NewReader(body))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("market close unknown status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp positionCloseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.Status != "unknown" || resp.ClOrdID != closeClientID || resp.OrdID != "" {
+		t.Fatalf("bad unknown response: %#v", resp)
+	}
+	if queryCount != 2 {
+		t.Fatalf("expected two recovery queries, got %d", queryCount)
+	}
+}
+
 func TestTVBotBinanceLimitCloseRetriesAfterReduceOnlyConflict(t *testing.T) {
 	oldPoll := positionClosePollInterval
 	oldTimeout := positionCloseLimitTimeout

@@ -22,19 +22,21 @@ import (
 )
 
 var (
-	errPositionNotOpen             = errors.New("position is not open")
-	errPendingOrderNoRemaining     = errors.New("pending order has no remaining size")
-	positionClosePollInterval      = 5 * time.Second
-	positionCloseLimitTimeout      = 60 * time.Second
-	lowMarginPositionCheckInterval = time.Minute
-	lowMarginPositionThresholdUSDT = 10.0
-	positionCloseJobs              = newPositionCloseRegistry()
-	pendingOrderChaseInterval      = 5 * time.Second
-	pendingOrderChaseTimeout       = 60 * time.Second
-	pendingOrderChaseJobs          = newPendingOrderChaseRegistry()
-	positionCloseSeq               uint64
-	positionProtectionSeq          uint64
-	pendingOrderMarketSeq          uint64
+	errPositionNotOpen                = errors.New("position is not open")
+	errPendingOrderNoRemaining        = errors.New("pending order has no remaining size")
+	positionClosePollInterval         = 5 * time.Second
+	positionCloseLimitTimeout         = 60 * time.Second
+	binanceUnknownOrderLookupAttempts = 6
+	binanceUnknownOrderLookupDelay    = 500 * time.Millisecond
+	lowMarginPositionCheckInterval    = time.Minute
+	lowMarginPositionThresholdUSDT    = 10.0
+	positionCloseJobs                 = newPositionCloseRegistry()
+	pendingOrderChaseInterval         = 5 * time.Second
+	pendingOrderChaseTimeout          = 60 * time.Second
+	pendingOrderChaseJobs             = newPendingOrderChaseRegistry()
+	positionCloseSeq                  uint64
+	positionProtectionSeq             uint64
+	pendingOrderMarketSeq             uint64
 )
 
 const (
@@ -193,6 +195,7 @@ type positionCloseOrder struct {
 	Px       string
 	CloseSz  string
 	Partial  bool
+	Unknown  bool
 }
 
 type positionCloseRegistry struct {
@@ -912,9 +915,15 @@ func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusConflict, "position_close_running", "limit close is already running for this position")
 			return
 		}
+		status := "running"
+		message := "limit close order started"
+		if order.Unknown {
+			status = "unknown"
+			message = "Binance close order status is unknown; refresh positions before retrying"
+		}
 		writeJSON(w, http.StatusAccepted, positionCloseResponse{
 			OK:      true,
-			Status:  "running",
+			Status:  status,
 			Mode:    req.Mode,
 			APIID:   apiID,
 			InstID:  order.Position.InstID,
@@ -923,7 +932,7 @@ func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Reque
 			OrdID:   order.Ack.OrdID,
 			ClOrdID: order.Ack.ClOrdID,
 			Px:      order.Px,
-			Message: "limit close order started",
+			Message: message,
 		})
 		return
 	}
@@ -935,6 +944,11 @@ func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Reque
 	status := "submitted"
 	message := "market close order submitted"
 	code := http.StatusOK
+	if order.Unknown {
+		status = "unknown"
+		message = "Binance close order status is unknown; refresh positions before retrying"
+		code = http.StatusAccepted
+	}
 	writeJSON(w, code, positionCloseResponse{
 		OK:      true,
 		Status:  status,
@@ -3075,46 +3089,168 @@ func placeBinancePositionClose(ctx context.Context, client binance.Client, posit
 	if err != nil {
 		return positionCloseOrder{}, err
 	}
-	ack, err := client.PlaceOrder(ctx, req)
+	ack, unknown, err := placeBinanceOrderWithUnknownRecovery(ctx, client, req)
 	if err != nil {
-		ack, err = retryBinanceReduceOnlyPositionClose(ctx, client, req, err)
+		ack, unknown, err = retryBinanceReduceOnlyPositionClose(ctx, client, req, err)
 		if err != nil {
 			return positionCloseOrder{}, err
 		}
 	}
+	ordID := ""
+	if ack.OrderID != 0 {
+		ordID = strconv.FormatInt(ack.OrderID, 10)
+	}
 	return positionCloseOrder{
 		Position: position,
 		Ack: okx.OrderAck{
-			OrdID:   strconv.FormatInt(ack.OrderID, 10),
+			OrdID:   ordID,
 			ClOrdID: ack.ClientOrderID,
 		},
 		Px:      px,
 		CloseSz: req.Quantity,
 		Partial: partial,
+		Unknown: unknown,
 	}, nil
 }
 
-func retryBinanceReduceOnlyPositionClose(ctx context.Context, client binance.Client, req binance.PlaceOrderRequest, originalErr error) (binance.OrderAck, error) {
+func placeBinanceOrderWithUnknownRecovery(ctx context.Context, client binance.Client, req binance.PlaceOrderRequest) (binance.OrderAck, bool, error) {
+	ack, err := client.PlaceOrder(ctx, req)
+	if err == nil {
+		return ack, false, nil
+	}
+	if !binance.IsExecutionStatusUnknown(err) || strings.TrimSpace(req.NewClientOrderID) == "" {
+		return binance.OrderAck{}, false, err
+	}
+	if ack, found := recoverBinanceUnknownPlaceOrder(ctx, client, req); found {
+		return ack, false, nil
+	}
+	return binanceUnknownOrderAck(req), true, nil
+}
+
+func retryBinanceReduceOnlyPositionClose(ctx context.Context, client binance.Client, req binance.PlaceOrderRequest, originalErr error) (binance.OrderAck, bool, error) {
 	if !req.ReduceOnly || !binance.IsAPIErrorCode(originalErr, -2022) {
-		return binance.OrderAck{}, originalErr
+		return binance.OrderAck{}, false, originalErr
 	}
 	canceled, err := cancelBinanceConflictingReduceOnlyOpenOrders(ctx, client, req)
 	if err != nil {
-		return binance.OrderAck{}, originalErr
+		return binance.OrderAck{}, false, originalErr
 	}
 	canceledAlgos, err := cancelBinanceConflictingReduceOnlyAlgoOrders(ctx, client, req)
 	if err != nil && canceled == 0 {
-		return binance.OrderAck{}, originalErr
+		return binance.OrderAck{}, false, originalErr
 	}
 	canceled += canceledAlgos
 	if canceled == 0 {
-		return binance.OrderAck{}, originalErr
+		return binance.OrderAck{}, false, originalErr
 	}
-	ack, err := client.PlaceOrder(ctx, req)
+	ack, unknown, err := placeBinanceOrderWithUnknownRecovery(ctx, client, req)
 	if err != nil {
-		return binance.OrderAck{}, fmt.Errorf("Binance reduce-only close retry failed after canceling %d conflicting orders: %w", canceled, err)
+		return binance.OrderAck{}, false, fmt.Errorf("Binance reduce-only close retry failed after canceling %d conflicting orders: %w", canceled, err)
 	}
-	return ack, nil
+	return ack, unknown, nil
+}
+
+func recoverBinanceUnknownPlaceOrder(ctx context.Context, client binance.Client, req binance.PlaceOrderRequest) (binance.OrderAck, bool) {
+	attempts := binanceUnknownOrderLookupAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	query := binance.QueryOrderRequest{
+		Symbol:            req.Symbol,
+		OrigClientOrderID: strings.TrimSpace(req.NewClientOrderID),
+	}
+	for i := 0; i < attempts; i++ {
+		order, err := client.QueryOrder(ctx, query)
+		if err == nil {
+			if binanceQueriedOrderMatchesRequest(order, req) {
+				return binanceOrderAckFromOpenOrder(order, req), true
+			}
+			return binance.OrderAck{}, false
+		}
+		if !binancePendingOrderNoLongerOpen(err) && !binance.IsExecutionStatusUnknown(err) {
+			return binance.OrderAck{}, false
+		}
+		if i == attempts-1 {
+			break
+		}
+		timer := time.NewTimer(binanceUnknownOrderLookupDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return binance.OrderAck{}, false
+		case <-timer.C:
+		}
+	}
+	return binance.OrderAck{}, false
+}
+
+func binanceQueriedOrderMatchesRequest(order binance.OpenOrder, req binance.PlaceOrderRequest) bool {
+	if !strings.EqualFold(strings.TrimSpace(order.Symbol), strings.TrimSpace(req.Symbol)) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(order.ClientOrderID), strings.TrimSpace(req.NewClientOrderID)) {
+		return false
+	}
+	if strings.TrimSpace(req.Side) != "" && !strings.EqualFold(strings.TrimSpace(order.Side), strings.TrimSpace(req.Side)) {
+		return false
+	}
+	if strings.TrimSpace(req.Type) != "" && !strings.EqualFold(strings.TrimSpace(order.Type), strings.TrimSpace(req.Type)) {
+		return false
+	}
+	return normalizedBinanceClosePositionSide(order.PositionSide) == normalizedBinanceClosePositionSide(req.PositionSide)
+}
+
+func binanceOrderAckFromOpenOrder(order binance.OpenOrder, req binance.PlaceOrderRequest) binance.OrderAck {
+	ack := binance.OrderAck{
+		OrderID:       order.OrderID,
+		Symbol:        order.Symbol,
+		Status:        order.Status,
+		ClientOrderID: order.ClientOrderID,
+		Price:         order.Price,
+		OrigQty:       order.OrigQty,
+		ExecutedQty:   order.ExecutedQty,
+		Type:          order.Type,
+		Side:          order.Side,
+		PositionSide:  order.PositionSide,
+	}
+	if strings.TrimSpace(ack.Symbol) == "" {
+		ack.Symbol = strings.ToUpper(strings.TrimSpace(req.Symbol))
+	}
+	if strings.TrimSpace(ack.ClientOrderID) == "" {
+		ack.ClientOrderID = strings.TrimSpace(req.NewClientOrderID)
+	}
+	if strings.TrimSpace(ack.OrigQty) == "" {
+		ack.OrigQty = strings.TrimSpace(req.Quantity)
+	}
+	if strings.TrimSpace(ack.Type) == "" {
+		ack.Type = strings.ToUpper(strings.TrimSpace(req.Type))
+	}
+	if strings.TrimSpace(ack.Side) == "" {
+		ack.Side = strings.ToUpper(strings.TrimSpace(req.Side))
+	}
+	if strings.TrimSpace(ack.PositionSide) == "" {
+		ack.PositionSide = strings.ToUpper(strings.TrimSpace(req.PositionSide))
+	}
+	return ack
+}
+
+func binanceUnknownOrderAck(req binance.PlaceOrderRequest) binance.OrderAck {
+	return binance.OrderAck{
+		Symbol:        strings.ToUpper(strings.TrimSpace(req.Symbol)),
+		Status:        "UNKNOWN",
+		ClientOrderID: strings.TrimSpace(req.NewClientOrderID),
+		Price:         strings.TrimSpace(req.Price),
+		OrigQty:       strings.TrimSpace(req.Quantity),
+		ExecutedQty:   "0",
+		Type:          strings.ToUpper(strings.TrimSpace(req.Type)),
+		Side:          strings.ToUpper(strings.TrimSpace(req.Side)),
+		PositionSide:  strings.ToUpper(strings.TrimSpace(req.PositionSide)),
+	}
 }
 
 func cancelBinanceConflictingReduceOnlyOpenOrders(ctx context.Context, client binance.Client, req binance.PlaceOrderRequest) (int, error) {

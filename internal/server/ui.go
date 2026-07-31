@@ -4422,7 +4422,12 @@ const tvbotHTML = `<!doctype html>
         });
         const limitCloseText = "限价平仓已启动 ";
         const ratioText = body.ratio ? " " + Math.round(body.ratio * 100) + "%" : "";
-        toast(mode === "market" ? "市价平仓已提交" + ratioText : limitCloseText + asText(result.px) + ratioText);
+        if (result && result.status === "unknown") {
+          const clientID = result.cl_ord_id ? " " + asText(result.cl_ord_id) : "";
+          toast("Binance 平仓状态未知" + clientID + "，请刷新确认后再重试");
+        } else {
+          toast(mode === "market" ? "市价平仓已提交" + ratioText : limitCloseText + asText(result.px) + ratioText);
+        }
         await loadPositionView();
         window.setTimeout(() => loadPositionView().catch((err) => toast(err.message)), mode === "market" ? 1600 : 5200);
       } finally {

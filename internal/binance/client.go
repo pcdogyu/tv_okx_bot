@@ -60,6 +60,20 @@ func IsAPIErrorCode(err error, codes ...int) bool {
 	return false
 }
 
+func IsExecutionStatusUnknown(err error) bool {
+	var apiErr APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.Code == -1007 {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(apiErr.Msg))
+	return strings.Contains(msg, "execution status unknown") ||
+		strings.Contains(msg, "send status unknown") ||
+		strings.Contains(msg, "status unknown")
+}
+
 type Balance struct {
 	AccountAlias       string `json:"accountAlias"`
 	Asset              string `json:"asset"`
@@ -227,6 +241,12 @@ type ModifyOrderRequest struct {
 }
 
 type CancelOrderRequest struct {
+	Symbol            string
+	OrderID           string
+	OrigClientOrderID string
+}
+
+type QueryOrderRequest struct {
 	Symbol            string
 	OrderID           string
 	OrigClientOrderID string
@@ -431,6 +451,31 @@ func (c Client) OpenOrders(ctx context.Context, symbol string) ([]OpenOrder, err
 	var out []OpenOrder
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+func (c Client) QueryOrder(ctx context.Context, req QueryOrderRequest) (OpenOrder, error) {
+	q := url.Values{}
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	if symbol == "" {
+		return OpenOrder{}, errors.New("symbol is required")
+	}
+	q.Set("symbol", symbol)
+	if strings.TrimSpace(req.OrderID) != "" {
+		q.Set("orderId", strings.TrimSpace(req.OrderID))
+	} else if strings.TrimSpace(req.OrigClientOrderID) != "" {
+		q.Set("origClientOrderId", strings.TrimSpace(req.OrigClientOrderID))
+	} else {
+		return OpenOrder{}, errors.New("orderId or origClientOrderId is required")
+	}
+	b, err := c.Do(ctx, http.MethodGet, "/fapi/v1/order", q, true)
+	if err != nil {
+		return OpenOrder{}, err
+	}
+	var out OpenOrder
+	if err := json.Unmarshal(b, &out); err != nil {
+		return OpenOrder{}, err
 	}
 	return out, nil
 }
