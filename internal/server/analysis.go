@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"net/http"
 	"sort"
 	"strconv"
@@ -604,8 +605,12 @@ func (s *Server) fetchBinanceAnalysisBalance(ctx context.Context, client binance
 	if err != nil {
 		return analysisBalance{}, err
 	}
-	out := analysisBalanceFromBinance(balances)
-	if err := s.recordBinanceUSDTBalanceSnapshot(apiID, envName, balances, now); err != nil && s.Logger != nil {
+	positions, err := client.Positions(ctx, "")
+	if err != nil {
+		return analysisBalance{}, err
+	}
+	out := analysisBalanceFromBinance(balances, positions)
+	if err := s.recordBinanceUSDTBalanceSnapshot(apiID, envName, out, now); err != nil && s.Logger != nil {
 		s.Logger.Warn("failed to write USDT balance snapshot", "exchange", trading.ExchangeBinance, "api_id", apiID, "env", envName, "error", err)
 	}
 	return out, nil
@@ -659,26 +664,58 @@ func analysisBalanceFromOKX(balance okx.AccountBalanceData) analysisBalance {
 	return out
 }
 
-func analysisBalanceFromBinance(balances []binance.Balance) analysisBalance {
+func analysisBalanceFromBinance(balances []binance.Balance, positions []binance.Position) analysisBalance {
 	out := analysisBalance{Currency: "USDT"}
 	balance, ok := binance.USDTBalanceFromAccount(balances)
 	if !ok {
 		return out
 	}
 	updatedAt := binanceMillisToRFC3339(balance.UpdateTime)
-	out.TotalEq = strings.TrimSpace(balance.Balance)
+	equity := binanceUSDTEq(balance, positions)
+	if equity == "" {
+		equity = strings.TrimSpace(balance.Balance)
+	}
+	out.TotalEq = equity
 	out.AvailEq = strings.TrimSpace(balance.AvailableBalance)
 	out.UpdatedAt = updatedAt
 	out.Details = []analysisBalanceDetail{{
 		Ccy:       "USDT",
-		Eq:        strings.TrimSpace(balance.Balance),
-		EqUsd:     strings.TrimSpace(balance.Balance),
+		Eq:        equity,
+		EqUsd:     equity,
 		AvailBal:  strings.TrimSpace(balance.AvailableBalance),
 		AvailEq:   strings.TrimSpace(balance.AvailableBalance),
 		CashBal:   strings.TrimSpace(balance.CrossWalletBalance),
 		UpdatedAt: updatedAt,
 	}}
 	return out
+}
+
+func binanceUSDTEq(balance binance.Balance, positions []binance.Position) string {
+	rawBalance := strings.TrimSpace(balance.Balance)
+	total, ok := new(big.Rat).SetString(rawBalance)
+	if !ok {
+		return rawBalance
+	}
+	decimals := decimalsFromDecimalString(rawBalance)
+	for _, position := range positions {
+		if !strings.EqualFold(strings.TrimSpace(position.MarginAsset), "USDT") {
+			continue
+		}
+		positionAmt, ok := new(big.Rat).SetString(strings.TrimSpace(position.PositionAmt))
+		if !ok || positionAmt.Sign() == 0 {
+			continue
+		}
+		rawUPL := strings.TrimSpace(position.UnRealizedProfit)
+		upl, ok := new(big.Rat).SetString(rawUPL)
+		if !ok {
+			continue
+		}
+		total.Add(total, upl)
+		if uplDecimals := decimalsFromDecimalString(rawUPL); uplDecimals > decimals {
+			decimals = uplDecimals
+		}
+	}
+	return trimDecimalZeros(total.FloatString(decimals))
 }
 
 func sortBalanceDetails(details []analysisBalanceDetail) {
@@ -722,26 +759,38 @@ func (s *Server) recordUSDTBalanceSnapshot(apiID, envName string, balance okx.Ac
 	return nil
 }
 
-func (s *Server) recordBinanceUSDTBalanceSnapshot(apiID, envName string, balances []binance.Balance, observedAt time.Time) error {
+func (s *Server) recordBinanceUSDTBalanceSnapshot(apiID, envName string, balance analysisBalance, observedAt time.Time) error {
 	if s.Orders == nil {
 		return nil
 	}
-	balance, ok := binance.USDTBalanceFromAccount(balances)
-	if !ok {
+	var detail analysisBalanceDetail
+	for _, row := range balance.Details {
+		if strings.EqualFold(strings.TrimSpace(row.Ccy), "USDT") {
+			detail = row
+			break
+		}
+	}
+	if strings.TrimSpace(detail.Ccy) == "" {
 		return nil
+	}
+	updatedAt := detail.UpdatedAt
+	if updatedAt == "" {
+		updatedAt = balance.UpdatedAt
 	}
 	return s.Orders.UpsertUSDTBalanceSnapshot(storage.USDTBalanceSnapshot{
 		Exchange:         trading.ExchangeBinance,
 		APIID:            apiID,
 		Env:              envName,
 		ObservedAt:       observedAt.UTC(),
-		TotalEq:          strings.TrimSpace(balance.Balance),
-		Eq:               strings.TrimSpace(balance.Balance),
-		EqUsd:            strings.TrimSpace(balance.Balance),
-		AvailEq:          strings.TrimSpace(balance.AvailableBalance),
-		AvailBal:         strings.TrimSpace(balance.AvailableBalance),
-		CashBal:          strings.TrimSpace(balance.CrossWalletBalance),
-		BalanceUpdatedAt: binanceMillisToRFC3339(balance.UpdateTime),
+		TotalEq:          strings.TrimSpace(balance.TotalEq),
+		Eq:               strings.TrimSpace(detail.Eq),
+		EqUsd:            strings.TrimSpace(detail.EqUsd),
+		AvailEq:          strings.TrimSpace(detail.AvailEq),
+		AvailBal:         strings.TrimSpace(detail.AvailBal),
+		CashBal:          strings.TrimSpace(detail.CashBal),
+		FrozenBal:        strings.TrimSpace(detail.FrozenBal),
+		DisEq:            strings.TrimSpace(detail.DisEq),
+		BalanceUpdatedAt: updatedAt,
 	})
 }
 

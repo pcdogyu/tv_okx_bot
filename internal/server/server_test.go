@@ -2093,7 +2093,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 			binanceOverview = item
 		}
 	}
-	if binanceOverview.Status != "ok" || binanceOverview.APIID != "main" || len(binanceOverview.BalancePoints) != 1 || binanceOverview.Balance.Details[0].Eq != "2000.5" {
+	if binanceOverview.Status != "ok" || binanceOverview.APIID != "main" || len(binanceOverview.BalancePoints) != 1 || binanceOverview.Balance.Details[0].Eq != "2020.5" || math.Abs(binanceOverview.BalancePoints[0].Value-2020.5) > 0.0000001 {
 		t.Fatalf("bad Binance overview: %#v", overview)
 	}
 	for _, path := range []string{"/fapi/v3/positionRisk", "/fapi/v1/userTrades", "/fapi/v1/openOrders", "/fapi/v1/openAlgoOrders", "/fapi/v1/exchangeInfo", "/fapi/v1/ticker/bookTicker", "/fapi/v3/balance"} {

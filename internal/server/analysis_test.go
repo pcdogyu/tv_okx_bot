@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
@@ -134,6 +135,49 @@ func TestBalancePointsFromSnapshotsUsesEquityForChartValue(t *testing.T) {
 	}
 	if points[0].EqUsd != "4852.64" || points[0].Eq != "4858.04" || points[0].FrozenBal != "39.83" {
 		t.Fatalf("snapshot fields should be preserved: %#v", points[0])
+	}
+}
+
+func TestAnalysisBalanceFromBinanceIncludesUSDTPositionUnrealizedPnL(t *testing.T) {
+	got := analysisBalanceFromBinance([]binance.Balance{
+		{
+			Asset:              "USDT",
+			Balance:            "10306",
+			AvailableBalance:   "9900.25",
+			CrossWalletBalance: "10000",
+			UpdateTime:         1785522000000,
+		},
+	}, []binance.Position{
+		{
+			Symbol:           "MANTAUSDT",
+			PositionAmt:      "63222.3",
+			MarginAsset:      "USDT",
+			UnRealizedProfit: "-340.12345678",
+		},
+		{
+			Symbol:           "MEWUSDT",
+			PositionAmt:      "-15342129",
+			MarginAsset:      "USDT",
+			UnRealizedProfit: "20",
+		},
+		{
+			Symbol:           "ETHUSDT",
+			PositionAmt:      "0",
+			MarginAsset:      "USDT",
+			UnRealizedProfit: "999",
+		},
+		{
+			Symbol:           "BTCUSDC",
+			PositionAmt:      "1",
+			MarginAsset:      "USDC",
+			UnRealizedProfit: "999",
+		},
+	})
+	if got.TotalEq != "9985.87654322" || got.AvailEq != "9900.25" {
+		t.Fatalf("bad Binance balance: %#v", got)
+	}
+	if len(got.Details) != 1 || got.Details[0].Eq != "9985.87654322" || got.Details[0].EqUsd != "9985.87654322" || got.Details[0].CashBal != "10000" {
+		t.Fatalf("bad Binance USDT detail: %#v", got.Details)
 	}
 }
 
