@@ -289,6 +289,10 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("交易所 / 环境")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("今日累计成交金额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbolTableColumnDefs")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("nav button {")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(".symbol-catalog-table th,")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("padding: 7px 6px")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(".symbol-catalog-table .symbol-template-btn")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-symbol-sort")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-head")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-cols")) ||

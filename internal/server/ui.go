@@ -251,13 +251,13 @@ const tvbotHTML = `<!doctype html>
       display: flex;
       align-items: center;
       justify-content: flex-end;
-      gap: 10px;
+      gap: 8px;
       flex-wrap: wrap;
     }
     .global-exchange-switch {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 4px;
@@ -268,9 +268,10 @@ const tvbotHTML = `<!doctype html>
       border-radius: 6px;
       background: transparent;
       color: var(--text);
-      min-height: 30px;
-      padding: 5px 10px;
+      min-height: 28px;
+      padding: 4px 9px;
       font: inherit;
+      font-size: 13px;
       cursor: pointer;
     }
     .global-exchange-switch button[aria-selected="true"] {
@@ -280,7 +281,7 @@ const tvbotHTML = `<!doctype html>
     }
     nav {
       display: flex;
-      gap: 6px;
+      gap: 4px;
       flex-wrap: wrap;
       justify-content: flex-end;
     }
@@ -293,6 +294,11 @@ const tvbotHTML = `<!doctype html>
       font: inherit;
       cursor: pointer;
       min-height: 36px;
+    }
+    nav button {
+      min-height: 34px;
+      padding: 7px 10px;
+      font-size: 13px;
     }
     nav button[aria-selected="true"], .btn.primary {
       background: var(--blue);
@@ -829,6 +835,28 @@ const tvbotHTML = `<!doctype html>
     }
     .symbol-catalog-table {
       min-width: 1180px;
+    }
+    .symbol-catalog-table th,
+    .symbol-catalog-table td {
+      padding: 7px 6px;
+      font-size: 13px;
+      line-height: 1.32;
+    }
+    .symbol-catalog-table th {
+      font-size: 11px;
+    }
+    .symbol-catalog-table .pill {
+      min-height: 22px;
+      padding: 1px 6px;
+      font-size: 11px;
+    }
+    .symbol-catalog-table .symbol-template-cell {
+      gap: 5px;
+    }
+    .symbol-catalog-table .symbol-template-btn {
+      min-height: 26px;
+      padding: 3px 6px;
+      font-size: 11px;
     }
     .symbol-table th[data-symbol-sort] {
       cursor: pointer;
