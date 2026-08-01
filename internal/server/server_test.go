@@ -292,6 +292,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("data-symbol-sort")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-head")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-cols")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("生成报警")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbolTemplateButtonCell")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-symbol-template")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-template-exchange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-template-env")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("data-template-symbol")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("data.binance")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("formatSymbolTurnover")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("setSymbolSort")) ||
@@ -448,6 +454,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("多空都做")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("只做多")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("只做空")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("generateTemplateFromSymbolButton")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`$("tpl-target-exchange").value = normalizeExchange(button.dataset.templateExchange`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`$("tpl-trade-env").value = button.dataset.templateEnv`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`$("tpl-coinpair").value = symbol`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`activateTab("template", true)`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("await makeTemplate()")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("templateCoinpairOptions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("syncSymbols")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("position-exchange\"><option")) ||

@@ -523,6 +523,19 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: nowrap;
       white-space: nowrap;
     }
+    .symbol-template-cell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+    }
+    .symbol-template-text {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .symbol-template-btn {
+      white-space: nowrap;
+    }
     .btn.small {
       min-height: 28px;
       padding: 4px 8px;
@@ -1594,7 +1607,7 @@ const tvbotHTML = `<!doctype html>
     ];
     const symbolTableColumnDefs = [
       { id: "env", title: "交易所 / 环境", colClass: "symbol-env-col", sortType: "text", cell: (row) => tableCell(pill(symbolExchangeEnvText(row), row.env === "live" ? "ok" : "warn")), sortValue: (row) => symbolExchangeEnvText(row) },
-      { id: "symbol", title: "币对", colClass: "symbol-symbol-col", sortType: "text", cell: (row) => textTableCell(asText(symbolInstID(row))), sortValue: (row) => symbolInstID(row) },
+      { id: "symbol", title: "币对", colClass: "symbol-symbol-col", sortType: "text", cell: (row) => symbolTemplateButtonCell(row), sortValue: (row) => symbolInstID(row) },
       { id: "configured", title: "本地配置", colClass: "symbol-configured-col", sortType: "text", cell: (row) => symbolConfiguredCell(row), sortValue: (row) => symbolConfigured(row) ? "1" : "0" },
       { id: "state", title: "状态", colClass: "symbol-state-col", sortType: "text", cell: (row) => textTableCell(asText(symbolState(row))), sortValue: (row) => symbolState(row) },
       { id: "base_quote", title: "基础 / 计价", colClass: "symbol-base-quote-col", sortType: "text", cell: (row) => textTableCell(symbolBaseQuoteText(row)), sortValue: (row) => symbolBaseQuoteText(row) },
@@ -3164,6 +3177,17 @@ const tvbotHTML = `<!doctype html>
       return inst.instId || inst.symbol || "";
     }
 
+    function symbolTemplateButtonCell(row) {
+      const symbol = asText(symbolInstID(row));
+      const exchange = normalizeExchange((row || {}).exchange || "okx");
+      const env = (row || {}).env === "live" ? "live" : "demo";
+      const disabled = symbol ? "" : " disabled";
+      return tableCell(
+        '<div class="symbol-template-cell"><span class="symbol-template-text">' + escapeHTML(symbol) + '</span>' +
+        '<button class="btn small symbol-template-btn" type="button" data-symbol-template="true" data-template-exchange="' + escapeHTML(exchange) + '" data-template-env="' + escapeHTML(env) + '" data-template-symbol="' + escapeHTML(symbol) + '"' + disabled + '>生成报警</button></div>'
+      );
+    }
+
     function symbolState(row) {
       const inst = row && row.instrument ? row.instrument : {};
       return inst.state || inst.status || "";
@@ -4707,6 +4731,18 @@ const tvbotHTML = `<!doctype html>
       toast("模板已生成");
     }
 
+    async function generateTemplateFromSymbolButton(button) {
+      const symbol = String(button.dataset.templateSymbol || "").trim();
+      if (!symbol) return;
+      $("tpl-target-exchange").value = normalizeExchange(button.dataset.templateExchange || "okx");
+      $("tpl-trade-env").value = button.dataset.templateEnv === "live" ? "live" : "demo";
+      renderTemplateAPIs();
+      renderTemplateCoinpairs();
+      $("tpl-coinpair").value = symbol;
+      activateTab("template", true);
+      await makeTemplate();
+    }
+
     async function retryOrder(signalID) {
       if (!signalID || state.retrying[signalID]) return;
       state.retrying[signalID] = true;
@@ -5091,6 +5127,11 @@ const tvbotHTML = `<!doctype html>
     });
     $("tpl-trade-env").addEventListener("change", () => renderTemplateCoinpairs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
+    $("symbol-rows").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-symbol-template]");
+      if (!button) return;
+      generateTemplateFromSymbolButton(button).catch((err) => toast(err.message));
+    });
     $("copy-webhook-url").addEventListener("click", async () => {
       renderTemplateWebhookURL();
       await navigator.clipboard.writeText($("template-webhook-url").value);
