@@ -36,6 +36,7 @@ type OrderRecord struct {
 	APIID          string              `json:"api_id,omitempty"`
 	SourceExchange string              `json:"source_exchange,omitempty"`
 	TargetExchange string              `json:"target_exchange,omitempty"`
+	TradeEnv       string              `json:"trade_env,omitempty"`
 	Coinpair       string              `json:"coinpair"`
 	Ticker         string              `json:"ticker"`
 	Price          string              `json:"price"`
@@ -373,6 +374,7 @@ func (s *OrderStore) migrateSQLite() error {
 			api_id TEXT,
 			source_exchange TEXT,
 			target_exchange TEXT,
+			trade_env TEXT,
 			coinpair TEXT,
 			ticker TEXT,
 			price TEXT,
@@ -430,6 +432,18 @@ func (s *OrderStore) migrateSQLite() error {
 			payload_json TEXT NOT NULL,
 			refreshed_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS symbol_catalog_cache (
+			exchange TEXT NOT NULL,
+			env TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			count INTEGER NOT NULL DEFAULT 0,
+			synced_at TEXT,
+			attempted_at TEXT NOT NULL,
+			error TEXT,
+			ticker_error TEXT,
+			PRIMARY KEY(exchange, env)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_symbol_catalog_cache_attempted ON symbol_catalog_cache(exchange, env, attempted_at)`,
 		`CREATE TABLE IF NOT EXISTS usdt_balance_snapshots (
 			exchange TEXT NOT NULL DEFAULT 'okx',
 			api_id TEXT NOT NULL,
@@ -556,6 +570,11 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 			return err
 		}
 	}
+	if !columns["trade_env"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN trade_env TEXT`); err != nil {
+			return err
+		}
+	}
 	if !columns["raw_json"] {
 		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN raw_json TEXT`); err != nil {
 			return err
@@ -585,6 +604,9 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 		return err
 	}
 	if _, err := s.db.Exec(`UPDATE orders SET target_exchange = 'okx' WHERE target_exchange IS NULL OR target_exchange = ''`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`UPDATE orders SET trade_env = 'demo' WHERE trade_env IS NULL OR trade_env = ''`); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`UPDATE orders SET raw_json = '' WHERE raw_json IS NULL`); err != nil {
@@ -877,9 +899,9 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 		riskJSON = string(b)
 	}
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO orders (
-		signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
+		signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
 		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.SignalID,
 		rec.DedupeKey,
 		string(rec.Status),
@@ -887,6 +909,7 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 		rec.APIID,
 		rec.SourceExchange,
 		rec.TargetExchange,
+		rec.TradeEnv,
 		rec.Coinpair,
 		rec.Ticker,
 		rec.Price,
@@ -921,7 +944,7 @@ func (s *OrderStore) listSQLitePageLocked(limit, offset int) ([]OrderRecord, err
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
+	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
 		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders ORDER BY accepted_at DESC, signal_id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
@@ -953,7 +976,7 @@ func (s *OrderStore) listSQLiteByTargetExchangePageLocked(exchange string, limit
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
+	rows, err := s.db.Query(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
 		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders WHERE target_exchange = ? ORDER BY accepted_at DESC, signal_id DESC LIMIT ? OFFSET ?`, trading.NormalizeExchange(exchange), limit, offset)
 	if err != nil {
@@ -1005,7 +1028,7 @@ func (s *OrderStore) listPageMemoryLocked(limit, offset int, exchange string) []
 }
 
 func (s *OrderStore) findSQLiteLocked(signalID string) (OrderRecord, error) {
-	row := s.db.QueryRow(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, coinpair, ticker, price,
+	row := s.db.QueryRow(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
 		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders WHERE signal_id = ?`, signalID)
 	return scanOrder(row)
@@ -1030,7 +1053,7 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	var rec OrderRecord
 	var status, acceptedAt, updatedAt string
 	var action sql.NullString
-	var apiID, sourceExchange, targetExchange, coinpair, ticker, price, amount, riskJSON, orderIntent, positionEffect, positionSide, tokenHash, resultJSON, errorCode, errorText, rawJSON sql.NullString
+	var apiID, sourceExchange, targetExchange, tradeEnv, coinpair, ticker, price, amount, riskJSON, orderIntent, positionEffect, positionSide, tokenHash, resultJSON, errorCode, errorText, rawJSON sql.NullString
 	if err := scanner.Scan(
 		&rec.SignalID,
 		&rec.DedupeKey,
@@ -1039,6 +1062,7 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 		&apiID,
 		&sourceExchange,
 		&targetExchange,
+		&tradeEnv,
 		&coinpair,
 		&ticker,
 		&price,
@@ -1063,6 +1087,10 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	rec.APIID = nullableString(apiID)
 	rec.SourceExchange = nullableString(sourceExchange)
 	rec.TargetExchange = nullableString(targetExchange)
+	rec.TradeEnv = trading.NormalizeTradeEnv(nullableString(tradeEnv))
+	if rec.TradeEnv == "" {
+		rec.TradeEnv = trading.TradeEnvDemo
+	}
 	rec.Coinpair = nullableString(coinpair)
 	rec.Ticker = nullableString(ticker)
 	rec.Price = nullableString(price)
@@ -1161,6 +1189,7 @@ func DedupeKey(signal trading.Signal) string {
 	payload := string(signal.Action) + "|" +
 		trading.NormalizeExchange(signal.TargetExchange) + "|" +
 		signal.APIID + "|" +
+		trading.NormalizeTradeEnv(signal.TradeEnv) + "|" +
 		signal.Coinpair + "|" +
 		trading.NormalizeFloat(signal.Price.Value) + "|" +
 		signal.SentAt + "|" +
@@ -1181,6 +1210,7 @@ func RejectedKey(signal trading.Signal, code, message string, now time.Time) str
 		string(signal.Action) + "|" +
 		trading.NormalizeExchange(signal.TargetExchange) + "|" +
 		signal.APIID + "|" +
+		trading.NormalizeTradeEnv(signal.TradeEnv) + "|" +
 		signal.Coinpair + "|" +
 		trading.NormalizeFloat(signal.Price.Value) + "|" +
 		signal.SentAt + "|" +
@@ -1202,6 +1232,7 @@ func RetryKey(sourceSignalID string, signal trading.Signal, now time.Time) strin
 		string(signal.Action) + "|" +
 		trading.NormalizeExchange(signal.TargetExchange) + "|" +
 		signal.APIID + "|" +
+		trading.NormalizeTradeEnv(signal.TradeEnv) + "|" +
 		signal.Coinpair + "|" +
 		trading.NormalizeFloat(signal.Price.Value) + "|" +
 		signal.SentAt + "|" +
@@ -1243,6 +1274,7 @@ func newOrderRecord(signal trading.Signal, dedupeKey string, status OrderStatus,
 		APIID:          signal.APIID,
 		SourceExchange: strings.TrimSpace(signal.Exchange),
 		TargetExchange: trading.NormalizeExchange(signal.TargetExchange),
+		TradeEnv:       trading.NormalizeTradeEnv(signal.TradeEnv),
 		Coinpair:       signal.Coinpair,
 		Ticker:         signal.Ticker,
 		Leverage:       signal.Leverage,
@@ -1253,6 +1285,9 @@ func newOrderRecord(signal trading.Signal, dedupeKey string, status OrderStatus,
 		RawJSON:        strings.TrimSpace(signal.RawJSON),
 		AcceptedAt:     now.UTC(),
 		UpdatedAt:      now.UTC(),
+	}
+	if rec.TradeEnv == "" {
+		rec.TradeEnv = trading.TradeEnvDemo
 	}
 	if signal.Price.Set {
 		rec.Price = trading.NormalizeFloat(signal.Price.Value)

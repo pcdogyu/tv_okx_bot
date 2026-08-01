@@ -74,6 +74,7 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	signal := trading.Signal{
 		Action:   trading.ActionShort,
 		APIID:    "backup",
+		TradeEnv: trading.TradeEnvLive,
 		Coinpair: "ETH",
 		Price:    trading.NewFlexibleFloat(2500),
 		SentAt:   "2026-07-24T03:00:00Z",
@@ -124,7 +125,7 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 		t.Fatalf("risk settings should be preserved: %#v", records[1].Risk)
 	}
 	for _, rec := range records {
-		if rec.OrderIntent != "exit_long" || rec.PositionEffect != trading.PositionEffectClose || rec.PositionSide != trading.PositionSideLong {
+		if rec.OrderIntent != "exit_long" || rec.PositionEffect != trading.PositionEffectClose || rec.PositionSide != trading.PositionSideLong || rec.TradeEnv != trading.TradeEnvLive {
 			t.Fatalf("position semantics should be preserved: %#v", rec)
 		}
 	}
@@ -280,12 +281,55 @@ func TestSQLiteOrderStoreReadsLegacyRowsWithNullExchangeColumns(t *testing.T) {
 	if len(records) != 1 || records[0].SignalID != "sig-old" || records[0].TargetExchange != trading.ExchangeOKX {
 		t.Fatalf("legacy order should remain readable after exchange migration: %#v", records)
 	}
-	var sourceExchange, targetExchange, rawJSON, riskJSON, orderIntent, positionEffect, positionSide string
-	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange, raw_json, risk_json, order_intent, position_effect, position_side FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange, &rawJSON, &riskJSON, &orderIntent, &positionEffect, &positionSide); err != nil {
+	var sourceExchange, targetExchange, tradeEnv, rawJSON, riskJSON, orderIntent, positionEffect, positionSide string
+	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange, trade_env, raw_json, risk_json, order_intent, position_effect, position_side FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange, &tradeEnv, &rawJSON, &riskJSON, &orderIntent, &positionEffect, &positionSide); err != nil {
 		t.Fatal(err)
 	}
-	if sourceExchange != "" || targetExchange != trading.ExchangeOKX || rawJSON != "" || riskJSON != "" || orderIntent != "" || positionEffect != "" || positionSide != "" {
-		t.Fatalf("legacy order columns not backfilled source=%q target=%q raw_json=%q risk_json=%q order_intent=%q position_effect=%q position_side=%q", sourceExchange, targetExchange, rawJSON, riskJSON, orderIntent, positionEffect, positionSide)
+	if sourceExchange != "" || targetExchange != trading.ExchangeOKX || tradeEnv != trading.TradeEnvDemo || rawJSON != "" || riskJSON != "" || orderIntent != "" || positionEffect != "" || positionSide != "" {
+		t.Fatalf("legacy order columns not backfilled source=%q target=%q trade_env=%q raw_json=%q risk_json=%q order_intent=%q position_effect=%q position_side=%q", sourceExchange, targetExchange, tradeEnv, rawJSON, riskJSON, orderIntent, positionEffect, positionSide)
+	}
+}
+
+func TestSQLiteSymbolCatalogCache(t *testing.T) {
+	store, err := NewSQLiteOrderStore(filepath.Join(t.TempDir(), "tvbot.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+	if err := store.UpsertSymbolCatalogCaches([]SymbolCatalogCache{{
+		Exchange:    trading.ExchangeBinance,
+		Env:         trading.TradeEnvLive,
+		PayloadJSON: `{"env":"live","count":1,"instruments":[{"symbol":"BTCUSDT"}]}`,
+		Count:       1,
+		SyncedAt:    now,
+		AttemptedAt: now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ListSymbolCatalogCaches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Exchange != trading.ExchangeBinance || items[0].Env != trading.TradeEnvLive || items[0].Count != 1 || items[0].SyncedAt.IsZero() {
+		t.Fatalf("bad symbol cache item: %#v", items)
+	}
+	if err := store.UpsertSymbolCatalogCaches([]SymbolCatalogCache{{
+		Exchange:    trading.ExchangeBinance,
+		Env:         trading.TradeEnvLive,
+		PayloadJSON: `{"env":"live","count":0,"instruments":[],"error":"unavailable"}`,
+		Count:       0,
+		AttemptedAt: now.Add(time.Hour),
+		Error:       "unavailable",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ListSymbolCatalogCaches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Count != 0 || items[0].Error != "unavailable" || !items[0].SyncedAt.IsZero() {
+		t.Fatalf("symbol cache upsert should replace metadata: %#v", items)
 	}
 }
 

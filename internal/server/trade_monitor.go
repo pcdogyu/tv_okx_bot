@@ -556,6 +556,7 @@ func (s *Server) autoReentrySignal(ctx context.Context, cfg config.Config, clien
 		Action:         rec.Action,
 		APIID:          lifecycle.APIID,
 		TargetExchange: trading.ExchangeBinance,
+		TradeEnv:       orderRecordTradeEnv(rec),
 		Coinpair:       firstNonEmptyString(rec.Coinpair, lifecycle.Symbol),
 		Ticker:         firstNonEmptyString(rec.Ticker, lifecycle.Symbol),
 		Exchange:       "server_fill_monitor",

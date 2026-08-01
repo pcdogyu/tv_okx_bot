@@ -47,8 +47,9 @@ type Server struct {
 }
 
 const (
-	adminSessionCookieName = "tvbot_admin_session"
-	adminSessionTTL        = 12 * time.Hour
+	adminSessionCookieName    = "tvbot_admin_session"
+	adminSessionTTL           = 12 * time.Hour
+	symbolCatalogSyncInterval = 12 * time.Hour
 )
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -89,17 +90,21 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	signal.RawJSON = rawJSON
 	targetExchangeProvided := strings.TrimSpace(signal.TargetExchange) != ""
+	tradeEnvProvided := jsonFieldProvided(body, "trade_env")
 	signal.Normalize()
 	tokenSignal := signal
+	if !tradeEnvProvided {
+		signal.TradeEnv = trading.TradeEnvDemo
+	}
 	applySignalSourceExchangeRouting(&signal, targetExchangeProvided)
-	cfg := s.ConfigStore.Get()
+	cfg := configForTradeEnv(s.ConfigStore.Get(), signal.TradeEnv)
 	cfg.OrderSettings().ApplyToSignal(&signal)
 	if err := signal.Validate(now, time.Duration(cfg.Trading.SignalTTLSeconds)*time.Second, cfg); err != nil {
 		s.recordTVOrderRejected(r, signal, "invalid_signal", err, now)
 		writeError(w, http.StatusBadRequest, "invalid_signal", err.Error())
 		return
 	}
-	if !s.validSignalToken(tokenSignal, signal) {
+	if !s.validSignalToken(tokenSignal, signal, tradeEnvProvided) {
 		s.recordTVOrderRejected(r, signal, "invalid_token", errors.New("token validation failed"), now)
 		writeError(w, http.StatusUnauthorized, "invalid_token", "token validation failed")
 		return
@@ -183,13 +188,31 @@ func redactSensitiveJSONFields(value any) any {
 	}
 }
 
-func (s *Server) validSignalToken(raw, applied trading.Signal) bool {
+func jsonFieldProvided(body []byte, field string) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return false
+	}
+	_, ok := fields[field]
+	return ok
+}
+
+func (s *Server) validSignalToken(raw, applied trading.Signal, tradeEnvProvided bool) bool {
 	payloads := []string{
 		applied.CanonicalNonceWebhookTokenPayload(),
 		raw.CanonicalNonceWebhookTokenPayload(),
 		applied.CanonicalWebhookTokenPayload(),
-		applied.CanonicalTokenPayload(),
-		raw.CanonicalTokenPayload(),
+		raw.CanonicalWebhookTokenPayload(),
+	}
+	if !tradeEnvProvided {
+		payloads = append(payloads,
+			trading.CanonicalTargetWebhookTokenPayloadWithNonce(applied.TargetExchange, applied.APIID, applied.TokenNonce),
+			trading.CanonicalTargetWebhookTokenPayloadWithNonce(raw.TargetExchange, raw.APIID, raw.TokenNonce),
+			trading.CanonicalTargetWebhookTokenPayload(applied.TargetExchange, applied.APIID),
+			trading.CanonicalTargetWebhookTokenPayload(raw.TargetExchange, raw.APIID),
+			applied.CanonicalTokenPayload(),
+			raw.CanonicalTokenPayload(),
+		)
 	}
 	seen := map[string]bool{}
 	for _, payload := range payloads {
@@ -202,6 +225,16 @@ func (s *Server) validSignalToken(raw, applied trading.Signal) bool {
 		}
 	}
 	return false
+}
+
+func configForTradeEnv(cfg config.Config, tradeEnv string) config.Config {
+	switch trading.NormalizeTradeEnv(tradeEnv) {
+	case trading.TradeEnvLive:
+		cfg.Trading.Env = config.EnvLive
+	default:
+		cfg.Trading.Env = config.EnvDemo
+	}
+	return cfg
 }
 
 func applySignalSourceExchangeRouting(signal *trading.Signal, targetExchangeProvided bool) {
@@ -271,6 +304,7 @@ func signalPreviewFromJSON(body []byte) trading.Signal {
 	signal.Action = trading.Side(readString("action"))
 	signal.APIID = readString("api_id")
 	signal.TargetExchange = readString("target_exchange")
+	signal.TradeEnv = readString("trade_env")
 	signal.Coinpair = readString("coinpair")
 	signal.Price = readFloat("price")
 	signal.SentAt = readString("sent_at")
@@ -391,6 +425,7 @@ func (s *Server) logTVOrderRejected(r *http.Request, signal trading.Signal, code
 		"api_id", signal.APIID,
 		"coinpair", signal.Coinpair,
 		"ticker", signal.Ticker,
+		"trade_env", signal.TradeEnv,
 		"sent_at", signal.SentAt,
 	)
 }
@@ -693,50 +728,21 @@ func (s *Server) handleSymbols(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		cfg := s.ConfigStore.Get()
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		resp, err := s.cachedSymbolsResponse(cfg)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "symbol_cache_error", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case http.MethodPost:
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		type instrumentResult struct {
-			exchange   string
-			env        string
-			okxSet     okxInstrumentSet
-			binanceSet binanceInstrumentSet
+		resp, err := s.syncSymbolCatalogs(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "symbol_sync_error", err.Error())
+			return
 		}
-		results := make(chan instrumentResult, 4)
-		go func() {
-			results <- instrumentResult{exchange: trading.ExchangeOKX, env: config.EnvLive, okxSet: s.fetchOKXInstrumentSet(ctx, cfg, false)}
-		}()
-		go func() {
-			results <- instrumentResult{exchange: trading.ExchangeOKX, env: config.EnvDemo, okxSet: s.fetchOKXInstrumentSet(ctx, cfg, true)}
-		}()
-		go func() {
-			results <- instrumentResult{exchange: trading.ExchangeBinance, env: config.EnvLive, binanceSet: s.fetchBinanceInstrumentSet(ctx, cfg, false)}
-		}()
-		go func() {
-			results <- instrumentResult{exchange: trading.ExchangeBinance, env: config.EnvDemo, binanceSet: s.fetchBinanceInstrumentSet(ctx, cfg, true)}
-		}()
-		okxCatalog := okxSymbolsCatalog{}
-		binanceCatalog := binanceSymbolsCatalog{}
-		for i := 0; i < 4; i++ {
-			result := <-results
-			if result.exchange == trading.ExchangeBinance {
-				if result.env == config.EnvDemo {
-					binanceCatalog.Demo = result.binanceSet
-					continue
-				}
-				binanceCatalog.Live = result.binanceSet
-				continue
-			}
-			if result.env == config.EnvDemo {
-				okxCatalog.Demo = result.okxSet
-				continue
-			}
-			okxCatalog.Live = result.okxSet
-		}
-		writeJSON(w, http.StatusOK, symbolsResponse{
-			Symbols: cfg.Symbols,
-			OKX:     okxCatalog,
-			Binance: binanceCatalog,
-		})
+		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPut:
 		symbols, err := decodeSymbols(r)
 		if err != nil {
@@ -753,7 +759,7 @@ func (s *Server) handleSymbols(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"symbols": cfg.Symbols})
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and PUT are allowed")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET, POST and PUT are allowed")
 	}
 }
 
@@ -780,6 +786,8 @@ type okxInstrumentSet struct {
 	Instruments []symbolInstrument `json:"instruments"`
 	Error       string             `json:"error,omitempty"`
 	TickerError string             `json:"ticker_error,omitempty"`
+	SyncedAt    string             `json:"synced_at,omitempty"`
+	AttemptedAt string             `json:"attempted_at,omitempty"`
 }
 
 type symbolInstrument struct {
@@ -795,6 +803,8 @@ type binanceInstrumentSet struct {
 	Instruments []binanceSymbolInstrument `json:"instruments"`
 	Error       string                    `json:"error,omitempty"`
 	TickerError string                    `json:"ticker_error,omitempty"`
+	SyncedAt    string                    `json:"synced_at,omitempty"`
+	AttemptedAt string                    `json:"attempted_at,omitempty"`
 }
 
 type binanceSymbolInstrument struct {
@@ -806,6 +816,258 @@ type binanceSymbolInstrument struct {
 	MinNotional     string `json:"min_notional,omitempty"`
 	TurnoverUSDT24h string `json:"turnover_usdt_24h,omitempty"`
 	TickerUpdatedAt string `json:"ticker_updated_at,omitempty"`
+}
+
+type symbolInstrumentResult struct {
+	exchange   string
+	env        string
+	okxSet     okxInstrumentSet
+	binanceSet binanceInstrumentSet
+}
+
+func (s *Server) StartSymbolCatalogSyncer(ctx context.Context) {
+	if s.ConfigStore == nil || s.Orders == nil {
+		return
+	}
+	go s.runSymbolCatalogSyncer(ctx, symbolCatalogSyncInterval)
+}
+
+func (s *Server) runSymbolCatalogSyncer(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = symbolCatalogSyncInterval
+	}
+	s.syncSymbolCatalogsWithLog(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.syncSymbolCatalogsWithLog(ctx)
+		}
+	}
+}
+
+func (s *Server) syncSymbolCatalogsWithLog(ctx context.Context) {
+	syncCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := s.syncSymbolCatalogs(syncCtx); err != nil && s.Logger != nil {
+		s.Logger.Warn("failed to sync symbol catalog cache", "error", err)
+	}
+}
+
+func (s *Server) cachedSymbolsResponse(cfg config.Config) (symbolsResponse, error) {
+	resp := emptySymbolsResponse(cfg.Symbols)
+	if s.Orders == nil {
+		return resp, errors.New("order store is not configured")
+	}
+	items, err := s.Orders.ListSymbolCatalogCaches()
+	if err != nil {
+		return resp, err
+	}
+	for _, item := range items {
+		switch item.Exchange {
+		case trading.ExchangeBinance:
+			var set binanceInstrumentSet
+			if err := json.Unmarshal([]byte(item.PayloadJSON), &set); err != nil {
+				return resp, err
+			}
+			applyBinanceSetCacheMeta(&set, item)
+			if item.Env == config.EnvLive {
+				resp.Binance.Live = set
+			} else {
+				resp.Binance.Demo = set
+			}
+		case trading.ExchangeOKX:
+			var set okxInstrumentSet
+			if err := json.Unmarshal([]byte(item.PayloadJSON), &set); err != nil {
+				return resp, err
+			}
+			applyOKXSetCacheMeta(&set, item)
+			if item.Env == config.EnvLive {
+				resp.OKX.Live = set
+			} else {
+				resp.OKX.Demo = set
+			}
+		}
+	}
+	return resp, nil
+}
+
+func (s *Server) syncSymbolCatalogs(ctx context.Context) (symbolsResponse, error) {
+	if s.ConfigStore == nil || s.Orders == nil {
+		return symbolsResponse{}, errors.New("server stores are not configured")
+	}
+	cfg := s.ConfigStore.Get()
+	resp := s.fetchSymbolCatalogs(ctx, cfg)
+	now := s.now()
+	items, err := symbolCatalogCacheItems(resp, now)
+	if err != nil {
+		return resp, err
+	}
+	if err := s.Orders.UpsertSymbolCatalogCaches(items); err != nil {
+		return resp, err
+	}
+	return resp, nil
+}
+
+func (s *Server) fetchSymbolCatalogs(ctx context.Context, cfg config.Config) symbolsResponse {
+	results := make(chan symbolInstrumentResult, 4)
+	go func() {
+		results <- symbolInstrumentResult{exchange: trading.ExchangeOKX, env: config.EnvLive, okxSet: s.fetchOKXInstrumentSet(ctx, cfg, false)}
+	}()
+	go func() {
+		results <- symbolInstrumentResult{exchange: trading.ExchangeOKX, env: config.EnvDemo, okxSet: s.fetchOKXInstrumentSet(ctx, cfg, true)}
+	}()
+	go func() {
+		results <- symbolInstrumentResult{exchange: trading.ExchangeBinance, env: config.EnvLive, binanceSet: s.fetchBinanceInstrumentSet(ctx, cfg, false)}
+	}()
+	go func() {
+		results <- symbolInstrumentResult{exchange: trading.ExchangeBinance, env: config.EnvDemo, binanceSet: s.fetchBinanceInstrumentSet(ctx, cfg, true)}
+	}()
+	resp := emptySymbolsResponse(cfg.Symbols)
+	for i := 0; i < 4; i++ {
+		result := <-results
+		if result.exchange == trading.ExchangeBinance {
+			if result.env == config.EnvDemo {
+				resp.Binance.Demo = result.binanceSet
+				continue
+			}
+			resp.Binance.Live = result.binanceSet
+			continue
+		}
+		if result.env == config.EnvDemo {
+			resp.OKX.Demo = result.okxSet
+			continue
+		}
+		resp.OKX.Live = result.okxSet
+	}
+	return resp
+}
+
+func emptySymbolsResponse(symbols map[string]config.SymbolConfig) symbolsResponse {
+	return symbolsResponse{
+		Symbols: symbols,
+		OKX: okxSymbolsCatalog{
+			Live: okxInstrumentSet{Env: config.EnvLive, Demo: false, Instruments: []symbolInstrument{}},
+			Demo: okxInstrumentSet{Env: config.EnvDemo, Demo: true, Instruments: []symbolInstrument{}},
+		},
+		Binance: binanceSymbolsCatalog{
+			Live: binanceInstrumentSet{Env: config.EnvLive, Demo: false, Instruments: []binanceSymbolInstrument{}},
+			Demo: binanceInstrumentSet{Env: config.EnvDemo, Demo: true, Instruments: []binanceSymbolInstrument{}},
+		},
+	}
+}
+
+func symbolCatalogCacheItems(resp symbolsResponse, now time.Time) ([]storage.SymbolCatalogCache, error) {
+	now = now.UTC()
+	sets := []struct {
+		exchange string
+		env      string
+		okx      *okxInstrumentSet
+		binance  *binanceInstrumentSet
+	}{
+		{exchange: trading.ExchangeOKX, env: config.EnvLive, okx: &resp.OKX.Live},
+		{exchange: trading.ExchangeOKX, env: config.EnvDemo, okx: &resp.OKX.Demo},
+		{exchange: trading.ExchangeBinance, env: config.EnvLive, binance: &resp.Binance.Live},
+		{exchange: trading.ExchangeBinance, env: config.EnvDemo, binance: &resp.Binance.Demo},
+	}
+	items := make([]storage.SymbolCatalogCache, 0, len(sets))
+	for _, entry := range sets {
+		var payload []byte
+		var count int
+		var errorText, tickerError string
+		if entry.okx != nil {
+			applyOKXSetSyncMeta(entry.okx, now)
+			var err error
+			payload, err = json.Marshal(entry.okx)
+			if err != nil {
+				return nil, err
+			}
+			count = entry.okx.Count
+			errorText = entry.okx.Error
+			tickerError = entry.okx.TickerError
+		} else {
+			applyBinanceSetSyncMeta(entry.binance, now)
+			var err error
+			payload, err = json.Marshal(entry.binance)
+			if err != nil {
+				return nil, err
+			}
+			count = entry.binance.Count
+			errorText = entry.binance.Error
+			tickerError = entry.binance.TickerError
+		}
+		item := storage.SymbolCatalogCache{
+			Exchange:    entry.exchange,
+			Env:         entry.env,
+			PayloadJSON: string(payload),
+			Count:       count,
+			AttemptedAt: now,
+			Error:       errorText,
+			TickerError: tickerError,
+		}
+		if strings.TrimSpace(errorText) == "" {
+			item.SyncedAt = now
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func applyOKXSetSyncMeta(set *okxInstrumentSet, now time.Time) {
+	if set == nil {
+		return
+	}
+	set.AttemptedAt = now.UTC().Format(time.RFC3339Nano)
+	if strings.TrimSpace(set.Error) == "" {
+		set.SyncedAt = set.AttemptedAt
+	}
+}
+
+func applyBinanceSetSyncMeta(set *binanceInstrumentSet, now time.Time) {
+	if set == nil {
+		return
+	}
+	set.AttemptedAt = now.UTC().Format(time.RFC3339Nano)
+	if strings.TrimSpace(set.Error) == "" {
+		set.SyncedAt = set.AttemptedAt
+	}
+}
+
+func applyOKXSetCacheMeta(set *okxInstrumentSet, item storage.SymbolCatalogCache) {
+	if set.Instruments == nil {
+		set.Instruments = []symbolInstrument{}
+	}
+	set.Env = item.Env
+	set.Demo = item.Env == config.EnvDemo
+	set.Count = item.Count
+	set.Error = item.Error
+	set.TickerError = item.TickerError
+	if !item.SyncedAt.IsZero() {
+		set.SyncedAt = item.SyncedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !item.AttemptedAt.IsZero() {
+		set.AttemptedAt = item.AttemptedAt.UTC().Format(time.RFC3339Nano)
+	}
+}
+
+func applyBinanceSetCacheMeta(set *binanceInstrumentSet, item storage.SymbolCatalogCache) {
+	if set.Instruments == nil {
+		set.Instruments = []binanceSymbolInstrument{}
+	}
+	set.Env = item.Env
+	set.Demo = item.Env == config.EnvDemo
+	set.Count = item.Count
+	set.Error = item.Error
+	set.TickerError = item.TickerError
+	if !item.SyncedAt.IsZero() {
+		set.SyncedAt = item.SyncedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !item.AttemptedAt.IsZero() {
+		set.AttemptedAt = item.AttemptedAt.UTC().Format(time.RFC3339Nano)
+	}
 }
 
 func (s *Server) fetchOKXInstrumentSet(ctx context.Context, cfg config.Config, demo bool) okxInstrumentSet {
@@ -1144,7 +1406,7 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		writeError(w, http.StatusConflict, "not_retriable", "only failed orders can be retried")
 		return
 	}
-	cfg := s.ConfigStore.Get()
+	cfg := configForTradeEnv(s.ConfigStore.Get(), source.TradeEnv)
 	now := s.now()
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -1264,6 +1526,7 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 		Action:         rec.Action,
 		APIID:          rec.APIID,
 		TargetExchange: rec.TargetExchange,
+		TradeEnv:       orderRecordTradeEnv(rec),
 		Coinpair:       rec.Coinpair,
 		Ticker:         rec.Ticker,
 		Exchange:       rec.SourceExchange,
@@ -1279,18 +1542,23 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 		signal.Amount = trading.NewFlexibleFloat(amount)
 	}
 	signal.Normalize()
+	if signal.TradeEnv == "" {
+		signal.TradeEnv = trading.TradeEnvDemo
+	}
 	applySignalSourceExchangeRouting(&signal, true)
-	cfg.OrderSettings().ApplyToSignal(&signal)
+	execCfg := retryExecutionConfig(cfg, rec)
+	execCfg.OrderSettings().ApplyToSignal(&signal)
 	if risk, ok := retryRiskFromRecord(rec); ok {
 		signal.Risk = risk
 	}
-	if err := signal.Validate(now, 0, cfg); err != nil {
+	if err := signal.Validate(now, 0, execCfg); err != nil {
 		return trading.Signal{}, err
 	}
 	return signal, nil
 }
 
 func retryExecutionConfig(cfg config.Config, rec storage.OrderRecord) config.Config {
+	cfg = configForTradeEnv(cfg, orderRecordTradeEnv(rec))
 	risk, ok := retryRiskFromRecord(rec)
 	if !ok {
 		return cfg
@@ -1311,6 +1579,14 @@ func retryExecutionConfig(cfg config.Config, rec storage.OrderRecord) config.Con
 	}
 	cfg.Normalize()
 	return cfg
+}
+
+func orderRecordTradeEnv(rec storage.OrderRecord) string {
+	tradeEnv := trading.NormalizeTradeEnv(rec.TradeEnv)
+	if tradeEnv == "" {
+		return trading.TradeEnvDemo
+	}
+	return tradeEnv
 }
 
 func retryRiskFromRecord(rec storage.OrderRecord) (trading.Risk, bool) {

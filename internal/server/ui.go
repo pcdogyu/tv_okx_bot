@@ -1342,8 +1342,9 @@ const tvbotHTML = `<!doctype html>
         <div class="grid two">
           <label>Webhook URL<input id="template-webhook-url" readonly></label>
           <label>下单去向<select id="tpl-target-exchange"><option value="okx">OKX</option><option value="binance">Binance USDⓈ-M</option></select></label>
+          <label>交易环境<select id="tpl-trade-env"><option value="demo">模拟</option><option value="live">实盘</option></select></label>
           <label>交易 API<select id="tpl-api-id"></select></label>
-          <label>币对<select id="tpl-coinpair"><option value="">跟随 TradingView ({{ticker}})</option></select></label>
+          <label>币对<input id="tpl-coinpair" list="tpl-coinpair-list" autocomplete="off" spellcheck="false" placeholder="跟随 TradingView ({{ticker}})"><datalist id="tpl-coinpair-list"></datalist></label>
           <label>方向<select id="tpl-direction"><option value="both">多空都做</option><option value="long">只做多</option><option value="short">只做空</option></select></label>
           <label>价格源<select id="tpl-price-source"><option value="close">close</option><option value="high">high</option><option value="low">low</option></select></label>
           <div class="actions" style="margin-top:0"><button class="btn" type="button" id="copy-webhook-url">复制 URL</button></div>
@@ -2533,6 +2534,9 @@ const tvbotHTML = `<!doctype html>
       if (target === "symbols" && !state.symbols) {
         loadSymbols(true).catch((err) => toast(err.message));
       }
+      if (target === "template" && !state.symbols) {
+        loadSymbols(false).catch((err) => toast(err.message));
+      }
       if (target === "tradeMonitor" && !state.tradeMonitor) {
         loadTradeMonitor().catch((err) => toast(err.message));
       }
@@ -2851,6 +2855,23 @@ const tvbotHTML = `<!doctype html>
         state.symbolsError = "";
       } catch (err) {
         state.symbols = null;
+        state.symbolsError = err.message;
+        renderSymbols();
+        renderTemplateCoinpairs();
+        throw err;
+      }
+      renderSymbols();
+      renderTemplateCoinpairs();
+    }
+
+    async function syncSymbols(showLoading) {
+      if (showLoading) {
+        $("symbol-rows").innerHTML = '<tr><td colspan="' + tableColumnCount("symbols") + '" class="muted">同步中...</td></tr>';
+      }
+      try {
+        state.symbols = await api("/tvbot/symbols", { method: "POST" });
+        state.symbolsError = "";
+      } catch (err) {
         state.symbolsError = err.message;
         renderSymbols();
         renderTemplateCoinpairs();
@@ -3400,13 +3421,14 @@ const tvbotHTML = `<!doctype html>
     }
 
     function renderTemplateCoinpairs() {
-      const select = $("tpl-coinpair");
-      if (!select) return;
-      const previous = select.value;
+      const input = $("tpl-coinpair");
+      const list = $("tpl-coinpair-list");
+      if (!input || !list) return;
+      const previous = input.value;
       const pairs = templateCoinpairOptions();
-      select.innerHTML = '<option value="">跟随 TradingView ({{ticker}})</option>' + pairs.map((pair) => '<option value="' + escapeHTML(pair) + '">' + escapeHTML(pair) + '</option>').join("");
-      if (previous && pairs.includes(previous)) {
-        select.value = previous;
+      list.innerHTML = pairs.map((pair) => '<option value="' + escapeHTML(pair) + '"></option>').join("");
+      if (previous && !pairs.includes(String(previous).trim().toUpperCase())) {
+        input.value = previous;
       }
     }
 
@@ -3419,16 +3441,19 @@ const tvbotHTML = `<!doctype html>
         seen[normalized] = true;
         out.push(normalized);
       };
-      const collect = (symbols) => {
-        Object.keys(symbols || {}).forEach((key) => {
-          const item = symbols[key] || {};
-          add(item.coinpair);
-          add(key);
-        });
-      };
-      collect(state.config && state.config.symbols ? state.config.symbols : {});
-      collect(state.symbols && state.symbols.symbols ? state.symbols.symbols : {});
+      const data = state.symbols || {};
+      const exchange = $("tpl-target-exchange") ? normalizeExchange($("tpl-target-exchange").value) : activeExchange();
+      const env = templateTradeEnv();
+      const catalog = data[exchange] || {};
+      const set = catalog[env] || {};
+      const instruments = Array.isArray(set.instruments) ? set.instruments : [];
+      instruments.forEach((instrument) => add(symbolInstID({ instrument: instrument })));
       return out.sort((a, b) => a.localeCompare(b));
+    }
+
+    function templateTradeEnv() {
+      const raw = $("tpl-trade-env") ? String($("tpl-trade-env").value || "").trim().toLowerCase() : "demo";
+      return raw === "live" ? "live" : "demo";
     }
 
     function templateWebhookURL() {
@@ -4323,7 +4348,8 @@ const tvbotHTML = `<!doctype html>
         const exchangeResult = okxResult || binanceResult || errorText || "-";
         const apiID = order.api_id || (order.result && order.result.api_id);
         const sourceExchange = order.source_exchange || "-";
-        const targetText = exchangeLabel(targetExchange) + " / " + apiDisplayName(apiID, targetExchange);
+        const tradeEnvText = order.trade_env === "live" ? "实盘" : "模拟";
+        const targetText = exchangeLabel(targetExchange) + " " + tradeEnvText + " / " + apiDisplayName(apiID, targetExchange);
         const tone = order.status === "submitted" ? "ok" : (order.status === "failed" || order.status === "rejected" ? "bad" : "warn");
         const canRetry = order.status === "failed" && order.signal_id;
         const retrying = canRetry && state.retrying[order.signal_id];
@@ -4670,6 +4696,7 @@ const tvbotHTML = `<!doctype html>
     async function makeTemplate() {
       const req = {
         target_exchange: normalizeExchange($("tpl-target-exchange").value),
+        trade_env: templateTradeEnv(),
         api_id: $("tpl-api-id").value,
         coinpair: $("tpl-coinpair").value,
         direction: $("tpl-direction").value,
@@ -4945,7 +4972,7 @@ const tvbotHTML = `<!doctype html>
     $("refresh-all").addEventListener("click", () => loadAll().then(() => toast("已刷新")).catch((err) => toast(err.message)));
     $("check-okx").addEventListener("click", () => checkOKX());
     $("save-config").addEventListener("click", () => saveConfig().catch((err) => toast(err.message)));
-    $("refresh-symbols").addEventListener("click", () => loadSymbols(true).then(() => toast("币对已刷新")).catch((err) => toast(err.message)));
+    $("refresh-symbols").addEventListener("click", () => syncSymbols(true).then(() => toast("币对已同步")).catch((err) => toast(err.message)));
     $("symbol-search").addEventListener("input", () => renderSymbols());
     $("clear-symbol-search").addEventListener("click", () => clearSymbolSearch());
     $("symbol-exchange").addEventListener("change", () => renderSymbols());
@@ -5058,7 +5085,11 @@ const tvbotHTML = `<!doctype html>
         renderPendingOrders();
       });
     });
-    $("tpl-target-exchange").addEventListener("change", () => renderTemplateAPIs());
+    $("tpl-target-exchange").addEventListener("change", () => {
+      renderTemplateAPIs();
+      renderTemplateCoinpairs();
+    });
+    $("tpl-trade-env").addEventListener("change", () => renderTemplateCoinpairs());
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
     $("copy-webhook-url").addEventListener("click", async () => {
       renderTemplateWebhookURL();

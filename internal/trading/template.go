@@ -16,6 +16,7 @@ type alertTemplatePayload struct {
 	SentAt         string `json:"sent_at"`
 	APIID          string `json:"api_id,omitempty"`
 	TargetExchange string `json:"target_exchange,omitempty"`
+	TradeEnv       string `json:"trade_env"`
 	Action         string `json:"action"`
 	Ticker         string `json:"ticker"`
 	Coinpair       string `json:"coinpair"`
@@ -39,12 +40,19 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 	req.PriceSource = strings.ToLower(strings.TrimSpace(req.PriceSource))
 	req.APIID = strings.TrimSpace(req.APIID)
 	req.TargetExchange = NormalizeExchange(req.TargetExchange)
+	req.TradeEnv = NormalizeTradeEnv(req.TradeEnv)
 	req.Coinpair = templateCoinpair(req.Coinpair)
 	if req.PriceSource == "" {
 		req.PriceSource = "close"
 	}
+	if req.TradeEnv == "" {
+		req.TradeEnv = TradeEnvDemo
+	}
 	if !ValidTargetExchange(req.TargetExchange) {
 		return TemplateResponse{}, fmt.Errorf("target_exchange must be okx or binance")
+	}
+	if !ValidTradeEnv(req.TradeEnv) {
+		return TemplateResponse{}, fmt.Errorf("trade_env must be demo or live")
 	}
 	if req.PriceSource != "close" && req.PriceSource != "high" && req.PriceSource != "low" {
 		return TemplateResponse{}, fmt.Errorf("price_source must be close, high or low")
@@ -57,6 +65,7 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		Action:         Side(action),
 		APIID:          req.APIID,
 		TargetExchange: req.TargetExchange,
+		TradeEnv:       req.TradeEnv,
 		Coinpair:       req.Coinpair,
 		Price:          NewFlexibleFloat(0),
 		SentAt:         "{{timenow}}",
@@ -74,6 +83,7 @@ func BuildTemplate(req TemplateRequest, generator TokenGenerator) (TemplateRespo
 		SentAt:         signal.SentAt,
 		APIID:          req.APIID,
 		TargetExchange: req.TargetExchange,
+		TradeEnv:       req.TradeEnv,
 		Action:         action,
 		Ticker:         signal.Ticker,
 		Coinpair:       signal.Coinpair,

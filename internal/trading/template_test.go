@@ -26,6 +26,9 @@ func TestBuildTemplateProducesValidJSONAndToken(t *testing.T) {
 	if payload["price"] != "{{close}}" || payload["sent_at"] != "{{timenow}}" || payload["ticker"] != "{{ticker}}" {
 		t.Fatalf("unexpected placeholders: %#v", payload)
 	}
+	if payload["trade_env"] != TradeEnvDemo {
+		t.Fatalf("template should default to demo trade_env: %#v", payload)
+	}
 	if payload["action"] != "{{strategy.order.action}}" || payload["coinpair"] != "{{ticker}}" {
 		t.Fatalf("unexpected dynamic placeholders: %#v", payload)
 	}
@@ -51,7 +54,7 @@ func TestBuildTemplateProducesValidJSONAndToken(t *testing.T) {
 	if !ok || nonce == "" || nonce != resp.TokenNonce {
 		t.Fatalf("token_nonce not included: %#v", payload)
 	}
-	if !tokenSvc.Validate(CanonicalTargetWebhookTokenPayloadWithNonce(req.TargetExchange, req.APIID, resp.TokenNonce), resp.Token) {
+	if !tokenSvc.Validate(CanonicalTargetTradeEnvWebhookTokenPayloadWithNonce(req.TargetExchange, req.APIID, TradeEnvDemo, resp.TokenNonce), resp.Token) {
 		t.Fatal("generated token did not validate against canonical template payload")
 	}
 	if strings.LastIndex(resp.JSON, `"token"`) < strings.LastIndex(resp.JSON, `"source"`) {
@@ -63,6 +66,7 @@ func TestBuildTemplateCanBindSelectedAPI(t *testing.T) {
 	req := TemplateRequest{
 		PriceSource: "low",
 		APIID:       "backup",
+		TradeEnv:    TradeEnvLive,
 		Leverage:    3,
 		Amount:      NewFlexibleFloat(50),
 	}
@@ -78,12 +82,15 @@ func TestBuildTemplateCanBindSelectedAPI(t *testing.T) {
 	if payload["api_id"] != "backup" {
 		t.Fatalf("api_id not included: %#v", payload)
 	}
-	if !tokenSvc.Validate(CanonicalTargetWebhookTokenPayloadWithNonce(req.TargetExchange, req.APIID, resp.TokenNonce), resp.Token) {
+	if payload["trade_env"] != TradeEnvLive {
+		t.Fatalf("trade_env not included: %#v", payload)
+	}
+	if !tokenSvc.Validate(CanonicalTargetTradeEnvWebhookTokenPayloadWithNonce(req.TargetExchange, req.APIID, req.TradeEnv, resp.TokenNonce), resp.Token) {
 		t.Fatal("generated token did not validate against selected api payload")
 	}
 	withoutAPI := req
 	withoutAPI.APIID = ""
-	if tokenSvc.Validate(CanonicalTargetWebhookTokenPayloadWithNonce(withoutAPI.TargetExchange, withoutAPI.APIID, resp.TokenNonce), resp.Token) {
+	if tokenSvc.Validate(CanonicalTargetTradeEnvWebhookTokenPayloadWithNonce(withoutAPI.TargetExchange, withoutAPI.APIID, withoutAPI.TradeEnv, resp.TokenNonce), resp.Token) {
 		t.Fatal("token should be bound to api_id when api_id is selected")
 	}
 }
@@ -93,6 +100,7 @@ func TestBuildTemplateCanBindTargetExchange(t *testing.T) {
 		TargetExchange: ExchangeBinance,
 		PriceSource:    "close",
 		APIID:          "binance-main",
+		TradeEnv:       TradeEnvDemo,
 	}
 	tokenSvc := security.NewTokenService("unit-test-secret")
 	resp, err := BuildTemplate(req, tokenSvc)
@@ -106,12 +114,12 @@ func TestBuildTemplateCanBindTargetExchange(t *testing.T) {
 	if payload["target_exchange"] != ExchangeBinance || payload["api_id"] != "binance-main" {
 		t.Fatalf("target exchange not included: %#v", payload)
 	}
-	if !tokenSvc.Validate(CanonicalTargetWebhookTokenPayloadWithNonce(req.TargetExchange, req.APIID, resp.TokenNonce), resp.Token) {
+	if !tokenSvc.Validate(CanonicalTargetTradeEnvWebhookTokenPayloadWithNonce(req.TargetExchange, req.APIID, req.TradeEnv, resp.TokenNonce), resp.Token) {
 		t.Fatal("generated token did not validate against Binance target payload")
 	}
 	okxReq := req
 	okxReq.TargetExchange = ExchangeOKX
-	if tokenSvc.Validate(CanonicalTargetWebhookTokenPayloadWithNonce(okxReq.TargetExchange, okxReq.APIID, resp.TokenNonce), resp.Token) {
+	if tokenSvc.Validate(CanonicalTargetTradeEnvWebhookTokenPayloadWithNonce(okxReq.TargetExchange, okxReq.APIID, okxReq.TradeEnv, resp.TokenNonce), resp.Token) {
 		t.Fatal("Binance target token should not validate as OKX token")
 	}
 }
@@ -132,6 +140,7 @@ func TestBuildTemplateCanBindCoinpairAndDirection(t *testing.T) {
 			req := TemplateRequest{
 				TargetExchange: ExchangeBinance,
 				PriceSource:    "close",
+				TradeEnv:       TradeEnvDemo,
 				Coinpair:       "syrupusdt.p",
 				Direction:      tt.direction,
 			}
@@ -149,7 +158,7 @@ func TestBuildTemplateCanBindCoinpairAndDirection(t *testing.T) {
 			if payload["ticker"] != "SYRUPUSDT.P" || payload["coinpair"] != "SYRUPUSDT.P" {
 				t.Fatalf("unexpected fixed coinpair: %#v", payload)
 			}
-			if !tokenSvc.Validate(CanonicalTargetWebhookTokenPayloadWithNonce(req.TargetExchange, req.APIID, resp.TokenNonce), resp.Token) {
+			if !tokenSvc.Validate(CanonicalTargetTradeEnvWebhookTokenPayloadWithNonce(req.TargetExchange, req.APIID, req.TradeEnv, resp.TokenNonce), resp.Token) {
 				t.Fatal("generated token did not validate against selected target payload")
 			}
 		})
@@ -164,6 +173,17 @@ func TestBuildTemplateRejectsInvalidDirection(t *testing.T) {
 	tokenSvc := security.NewTokenService("unit-test-secret")
 	if _, err := BuildTemplate(req, tokenSvc); err == nil || !strings.Contains(err.Error(), "direction must be") {
 		t.Fatalf("expected invalid direction error, got %v", err)
+	}
+}
+
+func TestBuildTemplateRejectsInvalidTradeEnv(t *testing.T) {
+	req := TemplateRequest{
+		PriceSource: "close",
+		TradeEnv:    "sideways",
+	}
+	tokenSvc := security.NewTokenService("unit-test-secret")
+	if _, err := BuildTemplate(req, tokenSvc); err == nil || !strings.Contains(err.Error(), "trade_env must be") {
+		t.Fatalf("expected invalid trade_env error, got %v", err)
 	}
 }
 

@@ -24,6 +24,11 @@ const (
 	ExchangeBinance = "binance"
 )
 
+const (
+	TradeEnvDemo = "demo"
+	TradeEnvLive = "live"
+)
+
 type RiskType string
 
 const (
@@ -100,6 +105,7 @@ type Signal struct {
 	Action         Side          `json:"action"`
 	APIID          string        `json:"api_id,omitempty"`
 	TargetExchange string        `json:"target_exchange,omitempty"`
+	TradeEnv       string        `json:"trade_env,omitempty"`
 	Coinpair       string        `json:"coinpair"`
 	Price          FlexibleFloat `json:"price"`
 	SentAt         string        `json:"sent_at"`
@@ -134,6 +140,7 @@ type TemplateRequest struct {
 	PriceSource    string        `json:"price_source"`
 	APIID          string        `json:"api_id,omitempty"`
 	TargetExchange string        `json:"target_exchange,omitempty"`
+	TradeEnv       string        `json:"trade_env,omitempty"`
 	Coinpair       string        `json:"coinpair,omitempty"`
 	Direction      string        `json:"direction,omitempty"`
 	Leverage       int           `json:"leverage"`
@@ -221,6 +228,7 @@ func (s *Signal) Normalize() {
 	}
 	s.APIID = strings.TrimSpace(s.APIID)
 	s.TargetExchange = NormalizeExchange(s.TargetExchange)
+	s.TradeEnv = NormalizeTradeEnv(s.TradeEnv)
 	s.Coinpair = strings.ToUpper(strings.TrimSpace(s.Coinpair))
 	s.Ticker = strings.TrimSpace(s.Ticker)
 	s.SentAt = strings.TrimSpace(s.SentAt)
@@ -303,6 +311,29 @@ func TargetExchangeFromSignalSource(exchange, ticker string) (string, bool) {
 func ValidTargetExchange(exchange string) bool {
 	switch NormalizeExchange(exchange) {
 	case ExchangeOKX, ExchangeBinance:
+		return true
+	default:
+		return false
+	}
+}
+
+func NormalizeTradeEnv(env string) string {
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "", TradeEnvDemo, "sim", "simulated", "simulation", "paper", "paper_trade", "paper-trade", "test", "testing", "sandbox", "mock", "模拟", "模擬", "测试", "測試":
+		if strings.TrimSpace(env) == "" {
+			return ""
+		}
+		return TradeEnvDemo
+	case TradeEnvLive, "real", "prod", "production", "mainnet", "实盘", "實盤", "生产", "生產":
+		return TradeEnvLive
+	default:
+		return strings.ToLower(strings.TrimSpace(env))
+	}
+}
+
+func ValidTradeEnv(env string) bool {
+	switch NormalizeTradeEnv(env) {
+	case TradeEnvDemo, TradeEnvLive:
 		return true
 	default:
 		return false
@@ -395,6 +426,9 @@ func (s Signal) Validate(now time.Time, ttl time.Duration, cfg RuntimeConfig) er
 	}
 	if !ValidTargetExchange(s.TargetExchange) {
 		return fmt.Errorf("target_exchange must be %q or %q", ExchangeOKX, ExchangeBinance)
+	}
+	if !ValidTradeEnv(s.TradeEnv) {
+		return fmt.Errorf("trade_env must be %q or %q", TradeEnvDemo, TradeEnvLive)
 	}
 	if s.Coinpair == "" && strings.TrimSpace(s.Ticker) == "" {
 		return errors.New("coinpair or ticker is required")
@@ -511,15 +545,19 @@ func (s Signal) CanonicalTokenPayload() string {
 }
 
 func (s Signal) CanonicalWebhookTokenPayload() string {
-	return CanonicalTargetWebhookTokenPayload(s.TargetExchange, s.APIID)
+	return CanonicalTargetTradeEnvWebhookTokenPayload(s.TargetExchange, s.APIID, s.TradeEnv)
 }
 
 func (s Signal) CanonicalNonceWebhookTokenPayload() string {
-	return CanonicalTargetWebhookTokenPayloadWithNonce(s.TargetExchange, s.APIID, s.TokenNonce)
+	return CanonicalTargetTradeEnvWebhookTokenPayloadWithNonce(s.TargetExchange, s.APIID, s.TradeEnv, s.TokenNonce)
 }
 
 func (t TemplateRequest) CanonicalTokenPayload() string {
-	return CanonicalTargetWebhookTokenPayload(t.TargetExchange, t.APIID)
+	tradeEnv := NormalizeTradeEnv(t.TradeEnv)
+	if tradeEnv == "" {
+		tradeEnv = TradeEnvDemo
+	}
+	return CanonicalTargetTradeEnvWebhookTokenPayload(t.TargetExchange, t.APIID, tradeEnv)
 }
 
 func CanonicalTargetWebhookTokenPayloadWithNonce(targetExchange, apiID, tokenNonce string) string {
@@ -535,6 +573,24 @@ func CanonicalTargetWebhookTokenPayloadWithNonce(targetExchange, apiID, tokenNon
 	}, "\n")
 }
 
+func CanonicalTargetTradeEnvWebhookTokenPayloadWithNonce(targetExchange, apiID, tradeEnv, tokenNonce string) string {
+	tradeEnv = NormalizeTradeEnv(tradeEnv)
+	tokenNonce = strings.TrimSpace(tokenNonce)
+	if tradeEnv == "" {
+		return CanonicalTargetWebhookTokenPayloadWithNonce(targetExchange, apiID, tokenNonce)
+	}
+	if tokenNonce == "" {
+		return CanonicalTargetTradeEnvWebhookTokenPayload(targetExchange, apiID, tradeEnv)
+	}
+	return strings.Join([]string{
+		"v7",
+		NormalizeExchange(targetExchange),
+		strings.TrimSpace(apiID),
+		tradeEnv,
+		tokenNonce,
+	}, "\n")
+}
+
 func CanonicalTargetWebhookTokenPayload(targetExchange, apiID string) string {
 	targetExchange = NormalizeExchange(targetExchange)
 	apiID = strings.TrimSpace(apiID)
@@ -545,4 +601,17 @@ func CanonicalTargetWebhookTokenPayload(targetExchange, apiID string) string {
 		return strings.Join([]string{"v5", targetExchange}, "\n")
 	}
 	return strings.Join([]string{"v5", targetExchange, apiID}, "\n")
+}
+
+func CanonicalTargetTradeEnvWebhookTokenPayload(targetExchange, apiID, tradeEnv string) string {
+	tradeEnv = NormalizeTradeEnv(tradeEnv)
+	if tradeEnv == "" {
+		return CanonicalTargetWebhookTokenPayload(targetExchange, apiID)
+	}
+	return strings.Join([]string{
+		"v7",
+		NormalizeExchange(targetExchange),
+		strings.TrimSpace(apiID),
+		tradeEnv,
+	}, "\n")
 }

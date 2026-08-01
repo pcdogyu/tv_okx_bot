@@ -26,10 +26,14 @@ import (
 )
 
 type fakeExecutor struct {
-	calls chan trading.Signal
+	calls     chan trading.Signal
+	demoFlags chan bool
 }
 
 func (f fakeExecutor) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg trading.RuntimeConfig) (trading.OrderResult, error) {
+	if f.demoFlags != nil {
+		f.demoFlags <- cfg.DemoTradingHeaderEnabled()
+	}
 	f.calls <- signal
 	return trading.OrderResult{InstID: "BTC-USDT-SWAP", ClOrdID: "test", OrdID: "1", OKXCode: "0"}, nil
 }
@@ -435,13 +439,17 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("copy-webhook-url")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`new URL("/tvorder"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("target_exchange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("trade_env")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-target-exchange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-trade-env")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-coinpair")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-coinpair-list")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("tpl-direction")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("多空都做")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("只做多")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("只做空")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("templateCoinpairOptions")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("syncSymbols")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("position-exchange\"><option")) ||
 		bytes.Contains(ui.Body.Bytes(), []byte("position-api-id")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("order-okx")) ||
@@ -621,7 +629,7 @@ func TestTVBotConfigRepairsInvalidDefaultTab(t *testing.T) {
 	}
 }
 
-func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
+func TestTVBotSymbolsSyncsConfiguredAndExchangeCatalog(t *testing.T) {
 	var sawLive, sawDemo, sawLiveTickers, sawDemoTickers bool
 	okxTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -730,7 +738,7 @@ func TestTVBotSymbolsReturnsConfiguredAndOKXCatalog(t *testing.T) {
 	srv.OKXHTTPClient = okxTS.Client()
 	srv.BinanceHTTPClient = binanceLiveTS.Client()
 
-	req := httptest.NewRequest(http.MethodGet, "/tvbot/symbols", nil)
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/symbols", nil)
 	req.SetBasicAuth("admin", "Admin123")
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
@@ -834,7 +842,7 @@ func TestTVBotSymbolsKeepsCatalogWhenTickerFetchFails(t *testing.T) {
 	srv.OKXHTTPClient = ts.Client()
 	srv.BinanceHTTPClient = ts.Client()
 
-	req := httptest.NewRequest(http.MethodGet, "/tvbot/symbols", nil)
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/symbols", nil)
 	req.SetBasicAuth("admin", "Admin123")
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
@@ -862,6 +870,39 @@ func TestTVBotSymbolsKeepsCatalogWhenTickerFetchFails(t *testing.T) {
 	}
 	if resp.Binance.Live.Instruments[0].TurnoverUSDT24h != "" {
 		t.Fatalf("Binance turnover should be empty when ticker is unavailable: %#v", resp.Binance.Live.Instruments[0])
+	}
+}
+
+func TestTVBotSymbolsGETReadsSQLiteCache(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	okxPayload := `{"env":"live","demo":false,"count":1,"instruments":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","baseCcy":"BTC","quoteCcy":"USDT","settleCcy":"USDT","ctVal":"0.01","lotSz":"0.01","minSz":"0.01","state":"live"}]}`
+	binancePayload := `{"env":"demo","demo":true,"count":1,"instruments":[{"symbol":"DOGEUSDT","pair":"DOGEUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"DOGE","quoteAsset":"USDT","marginAsset":"USDT"}]}`
+	if err := srv.Orders.UpsertSymbolCatalogCaches([]storage.SymbolCatalogCache{
+		{Exchange: trading.ExchangeOKX, Env: config.EnvLive, PayloadJSON: okxPayload, Count: 1, SyncedAt: now, AttemptedAt: now},
+		{Exchange: trading.ExchangeBinance, Env: config.EnvDemo, PayloadJSON: binancePayload, Count: 1, SyncedAt: now, AttemptedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/symbols", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("symbols status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp symbolsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.OKX.Live.Count != 1 || resp.OKX.Live.Instruments[0].InstID != "BTC-USDT-SWAP" || resp.OKX.Live.SyncedAt == "" {
+		t.Fatalf("OKX live cache not returned: %#v", resp.OKX.Live)
+	}
+	if resp.Binance.Demo.Count != 1 || resp.Binance.Demo.Instruments[0].Symbol != "DOGEUSDT" || !resp.Binance.Demo.Demo {
+		t.Fatalf("Binance demo cache not returned: %#v", resp.Binance.Demo)
+	}
+	if resp.OKX.Demo.Count != 0 || resp.Binance.Live.Count != 0 {
+		t.Fatalf("missing cache entries should remain empty sets: %#v", resp)
 	}
 }
 
@@ -933,6 +974,134 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 	}
 	if len(list.Orders) != 2 || !foundDuplicate {
 		t.Fatalf("duplicate signal should be listed in history: %#v", list.Orders)
+	}
+}
+
+func TestTVOrderTradeEnvDefaultsDemoAndLiveOverridesExecutionConfig(t *testing.T) {
+	srv := newTestServer(t)
+	srv.Executor = fakeExecutor{calls: make(chan trading.Signal, 2), demoFlags: make(chan bool, 2)}
+	missingEnv := validSignal(t, srv)
+	body, err := json.Marshal(missingEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := httptest.NewRecorder()
+	srv.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("missing env status=%d body=%s", first.Code, first.Body.String())
+	}
+	firstResp := decodeTVOrderSignalResponse(t, first.Body.Bytes())
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		if got.TradeEnv != trading.TradeEnvDemo {
+			t.Fatalf("missing trade_env should default to demo: %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor was not called for missing trade_env")
+	}
+	select {
+	case demo := <-srv.Executor.(fakeExecutor).demoFlags:
+		if !demo {
+			t.Fatal("missing trade_env should execute with demo config")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor config was not recorded")
+	}
+	firstRecord := waitOrderStatus(t, srv.Orders, firstResp.SignalID, storage.StatusSubmitted)
+	if firstRecord.TradeEnv != trading.TradeEnvDemo {
+		t.Fatalf("order record should save default demo env: %#v", firstRecord)
+	}
+
+	live := validSignal(t, srv)
+	live.SentAt = "2026-07-24T03:00:01Z"
+	live.TradeEnv = trading.TradeEnvLive
+	live.Token = srv.Token.Generate(live.CanonicalWebhookTokenPayload())
+	body, err = json.Marshal(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := httptest.NewRecorder()
+	srv.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("live env status=%d body=%s", second.Code, second.Body.String())
+	}
+	secondResp := decodeTVOrderSignalResponse(t, second.Body.Bytes())
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		if got.TradeEnv != trading.TradeEnvLive {
+			t.Fatalf("explicit live trade_env not preserved: %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor was not called for live trade_env")
+	}
+	select {
+	case demo := <-srv.Executor.(fakeExecutor).demoFlags:
+		if demo {
+			t.Fatal("live trade_env should execute with live config")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executor config was not recorded for live trade_env")
+	}
+	secondRecord := waitOrderStatus(t, srv.Orders, secondResp.SignalID, storage.StatusSubmitted)
+	if secondRecord.TradeEnv != trading.TradeEnvLive {
+		t.Fatalf("order record should save live env: %#v", secondRecord)
+	}
+}
+
+func TestTVOrderExplicitTradeEnvRejectsLegacyTokenAndDedupesByEnv(t *testing.T) {
+	srv := newTestServer(t)
+	explicitDemoOldToken := validSignal(t, srv)
+	explicitDemoOldToken.TradeEnv = trading.TradeEnvDemo
+	explicitDemoOldToken.Token = srv.Token.Generate(explicitDemoOldToken.CanonicalTokenPayload())
+	body, err := json.Marshal(explicitDemoOldToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected := httptest.NewRecorder()
+	srv.ServeHTTP(rejected, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if rejected.Code != http.StatusUnauthorized {
+		t.Fatalf("explicit trade_env with legacy token should reject, status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+	select {
+	case <-srv.Executor.(fakeExecutor).calls:
+		t.Fatal("rejected explicit trade_env executed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	srv.Executor = fakeExecutor{calls: make(chan trading.Signal, 2)}
+	demo := validSignal(t, srv)
+	demo.TradeEnv = trading.TradeEnvDemo
+	demo.Token = srv.Token.Generate(demo.CanonicalWebhookTokenPayload())
+	live := demo
+	live.TradeEnv = trading.TradeEnvLive
+	live.Token = srv.Token.Generate(live.CanonicalWebhookTokenPayload())
+	for _, signal := range []trading.Signal{demo, live} {
+		body, err := json.Marshal(signal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("status=%d body=%s signal=%#v", rr.Code, rr.Body.String(), signal)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-srv.Executor.(fakeExecutor).calls:
+		case <-time.After(time.Second):
+			t.Fatal("expected demo and live signals to execute separately")
+		}
+	}
+	records := srv.Orders.List(10)
+	seen := map[string]bool{}
+	for _, rec := range records {
+		if rec.Status == storage.StatusAccepted || rec.Status == storage.StatusSubmitted {
+			seen[rec.TradeEnv] = true
+		}
+	}
+	if !seen[trading.TradeEnvDemo] || !seen[trading.TradeEnvLive] {
+		t.Fatalf("demo/live records should not dedupe each other: %#v", records)
 	}
 }
 

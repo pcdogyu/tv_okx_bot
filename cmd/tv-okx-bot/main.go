@@ -159,6 +159,7 @@ func runServe(args []string) error {
 	handler.StartUSDTBalanceSampler(context.Background())
 	handler.StartLowMarginPositionMonitor(context.Background())
 	handler.StartTradeFillMonitor(context.Background())
+	handler.StartSymbolCatalogSyncer(context.Background())
 	logger.Info("tv okx bot listening", "addr", cfg.Server.Addr, "env", cfg.Trading.Env, "commit", buildInfo.CommitHash, "branch", buildInfo.CommitBranch)
 	return srv.ListenAndServe()
 }
@@ -199,6 +200,7 @@ func gitOutput(workDir string, args ...string) string {
 func runTemplate(args []string) error {
 	fs := flag.NewFlagSet("template", flag.ContinueOnError)
 	priceSource := fs.String("price-source", "close", "close, high or low")
+	tradeEnv := fs.String("trade-env", trading.TradeEnvDemo, "demo or live")
 	leverage := fs.Int("leverage", 0, "deprecated; order leverage is configured on the server")
 	amount := fs.Float64("amount", 0, "deprecated; USDT notional amount is configured on the server")
 	if err := fs.Parse(args); err != nil {
@@ -210,6 +212,7 @@ func runTemplate(args []string) error {
 	}
 	req := trading.TemplateRequest{
 		PriceSource: *priceSource,
+		TradeEnv:    *tradeEnv,
 		Leverage:    *leverage,
 		Amount:      trading.NewFlexibleFloat(*amount),
 	}
