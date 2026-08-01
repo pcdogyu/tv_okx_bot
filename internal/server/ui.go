@@ -411,6 +411,17 @@ const tvbotHTML = `<!doctype html>
       flex-wrap: wrap;
       margin-top: 14px;
     }
+    .template-title-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .template-title-row .btn {
+      min-height: 36px;
+      white-space: nowrap;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -985,6 +996,7 @@ const tvbotHTML = `<!doctype html>
       .header-controls { justify-content: flex-start; }
       nav { justify-content: flex-start; }
       .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics, .dashboard-balance-grid, .analysis-balance-grid { grid-template-columns: 1fr; }
+      .template-title-row { grid-template-columns: 1fr; }
       .analysis-period-row { flex-direction: column; }
       .analysis-time-status { min-width: 0; }
       .balance-window-toolbar { justify-content: flex-start; }
@@ -1363,6 +1375,10 @@ const tvbotHTML = `<!doctype html>
           <div class="actions" style="margin-top:0"><button class="btn" type="button" id="copy-webhook-url">复制 URL</button></div>
         </div>
         <div>
+          <div class="template-title-row">
+            <label>报警标题<input id="template-title" readonly></label>
+            <button class="btn" type="button" id="copy-template-title">复制标题</button>
+          </div>
           <textarea id="template-output" readonly></textarea>
           <div class="actions"><button class="btn" type="button" id="copy-template">复制 JSON</button></div>
         </div>
@@ -1518,6 +1534,7 @@ const tvbotHTML = `<!doctype html>
     let menuSettingsSynced = false;
     let tableColumnDrag = null;
     let tableColumnDropSuppressClick = false;
+    let templateTitleGeneratedAt = new Date();
     const positionViewPollIntervalMs = 5000;
     const pendingLimitCloseOrderCacheMs = 90000;
     const missingPositionEntrySyncIntervalMs = 180000;
@@ -3490,6 +3507,33 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
+    function templateTradeEnvLabel() {
+      return templateTradeEnv() === "live" ? "实盘" : "模拟";
+    }
+
+    function templateCoinpairTitleText() {
+      const raw = $("tpl-coinpair") ? String($("tpl-coinpair").value || "").trim() : "";
+      return raw ? raw.toUpperCase() : "{{ticker}}";
+    }
+
+    function templateAlertTitle(generatedAt) {
+      const exchange = $("tpl-target-exchange") ? normalizeExchange($("tpl-target-exchange").value) : activeExchange();
+      return [
+        exchangeLabel(exchange),
+        templateTradeEnvLabel(),
+        templateCoinpairTitleText(),
+        shanghaiTime(generatedAt || new Date())
+      ].join(" ");
+    }
+
+    function renderTemplateTitle(generatedAt) {
+      if (generatedAt) templateTitleGeneratedAt = generatedAt;
+      if (!$("template-title")) return "";
+      const title = templateAlertTitle(templateTitleGeneratedAt);
+      $("template-title").value = title;
+      return title;
+    }
+
     function renderPositionAPIs() {
       const summary = $("position-exchange-summary");
       if (!summary) return;
@@ -4728,6 +4772,7 @@ const tvbotHTML = `<!doctype html>
       };
       const resp = await api("/tvbot/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
       $("template-output").value = resp.json || "";
+      renderTemplateTitle(new Date());
       toast("模板已生成");
     }
 
@@ -5124,8 +5169,13 @@ const tvbotHTML = `<!doctype html>
     $("tpl-target-exchange").addEventListener("change", () => {
       renderTemplateAPIs();
       renderTemplateCoinpairs();
+      renderTemplateTitle(new Date());
     });
-    $("tpl-trade-env").addEventListener("change", () => renderTemplateCoinpairs());
+    $("tpl-trade-env").addEventListener("change", () => {
+      renderTemplateCoinpairs();
+      renderTemplateTitle(new Date());
+    });
+    $("tpl-coinpair").addEventListener("input", () => renderTemplateTitle(new Date()));
     $("make-template").addEventListener("click", () => makeTemplate().catch((err) => toast(err.message)));
     $("symbol-rows").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-symbol-template]");
@@ -5136,6 +5186,10 @@ const tvbotHTML = `<!doctype html>
       renderTemplateWebhookURL();
       await navigator.clipboard.writeText($("template-webhook-url").value);
       toast("Webhook URL 已复制");
+    });
+    $("copy-template-title").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(renderTemplateTitle());
+      toast("报警标题已复制");
     });
     $("copy-template").addEventListener("click", async () => {
       await navigator.clipboard.writeText($("template-output").value);
@@ -5192,6 +5246,7 @@ const tvbotHTML = `<!doctype html>
     state.selectedExchange = storedSelectedExchange();
     renderGlobalExchangeSwitch();
     renderTemplateWebhookURL();
+    renderTemplateTitle(new Date());
     updateBalanceWindowButtons();
     initTableColumnDrag();
     initAnalysisTradeColumnDrag();

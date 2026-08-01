@@ -443,6 +443,11 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("Webhook URL")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("template-webhook-url")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("copy-webhook-url")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("报警标题")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("template-title")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("copy-template-title")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("templateAlertTitle")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("renderTemplateTitle")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`new URL("/tvorder"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("target_exchange")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("trade_env")) ||
