@@ -1,5 +1,6 @@
 //@version=6
-// SMC Order Block Only Test Strategy version: 4.0.19
+// SMC Order Block Only Test Strategy version: 4.0.20
+// v4.0.20：大均线交易方式下拉改为“关闭、正向交易、反向交易”；正向交易为均线上方只开多、均线下方只开空，反向交易为均线上方只开空、均线下方只开多，关闭时不限制订单块信号。
 // v4.0.19：调整反向订单块截断规则：旧订单块向右延伸时，只有与新出现的反向订单块在时间区间和价格区间实际接触/重叠，才停止延伸并从后续共振与自动目标计算中移除；未接触的反向订单块不会截断。
 // v4.0.18：新增可调大周期方向EMA（默认200，可设100/200等）及方向模式：关闭、正向、反向。正向模式为价格在EMA上方只做多、下方只做空；反向模式为EMA上方只做空、下方只做多。EMA过滤同时作用于直接突破与回踩确认入场。
 // v4.0.17：根据回测结果将“突破后回踩确认”默认关闭，恢复订单块边界直接突破开仓；回踩确认功能仍保留为可选实验参数，避免默认过滤掉趋势行情中的有效机会。
@@ -30,7 +31,7 @@
 // v3.0.0：FVG回补信号确认后使用strategy市价开仓，回测在下一根K线开盘成交。
 // Version rule: every future code change should increase the patch version by 0.0.1.
 
-const string SCRIPT_VERSION = "4.0.19"
+const string SCRIPT_VERSION = "4.0.20"
 const int ORDER_BLOCK_STRUCTURE_LENGTH = 3
 
 strategy(
@@ -100,9 +101,9 @@ majorEmaLength = input.int(
 
 majorEmaTradeMode = input.string(
      "关闭",
-     "大均线交易方向模式",
-     options = ["关闭", "正向", "反向"],
-     tooltip = "关闭：EMA不限制订单块信号。\n正向：价格高于EMA只允许开多，低于EMA只允许开空。\n反向：价格高于EMA只允许开空，低于EMA只允许开多。\n价格刚好等于EMA时不提交新订单。",
+     "大均线交易方式",
+     options = ["关闭", "正向交易", "反向交易"],
+     tooltip = "关闭：大均线不限制订单块信号。\n正向交易：均线上方只开多单，均线下方只开空单。\n反向交易：均线上方只开空单，均线下方只开多单。\n价格刚好等于EMA时不提交新订单。",
      group = "02A. 大均线方向过滤")
 
 showMajorEma = input.bool(
@@ -132,16 +133,19 @@ plot(
 
 bool priceAboveMajorEma = not na(majorEma) and close > majorEma
 bool priceBelowMajorEma = not na(majorEma) and close < majorEma
+bool majorEmaFilterDisabled = majorEmaTradeMode == "关闭"
+bool majorEmaForwardMode = majorEmaTradeMode == "正向交易" or majorEmaTradeMode == "正向"
+bool majorEmaReverseMode = majorEmaTradeMode == "反向交易" or majorEmaTradeMode == "反向"
 
 bool majorEmaLongAllowed =
-     majorEmaTradeMode == "关闭" or
-     (majorEmaTradeMode == "正向" and priceAboveMajorEma) or
-     (majorEmaTradeMode == "反向" and priceBelowMajorEma)
+     majorEmaFilterDisabled or
+     (majorEmaForwardMode and priceAboveMajorEma) or
+     (majorEmaReverseMode and priceBelowMajorEma)
 
 bool majorEmaShortAllowed =
-     majorEmaTradeMode == "关闭" or
-     (majorEmaTradeMode == "正向" and priceBelowMajorEma) or
-     (majorEmaTradeMode == "反向" and priceAboveMajorEma)
+     majorEmaFilterDisabled or
+     (majorEmaForwardMode and priceBelowMajorEma) or
+     (majorEmaReverseMode and priceAboveMajorEma)
 
 // =============================================================================
 // 03. 订单块唯一开仓信号
