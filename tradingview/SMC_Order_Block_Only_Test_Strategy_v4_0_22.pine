@@ -1,5 +1,6 @@
 //@version=6
-// SMC Order Block Only Test Strategy version: 4.0.21
+// SMC Order Block Only Test Strategy version: 4.0.22
+// v4.0.22：TEST版订单块恢复固定1H结构来源；新增1H结构方向过滤与当前周期FVG 50%回补过滤，使订单块信号先通过1H BOS/偏向与FVG确认后再开仓。
 // v4.0.21：新增反向订单块最小间距过滤（默认1%）。红色空单订单块与下方最近绿色多单订单块相邻边界距离不足阈值时，同时忽略对应红绿订单块的入场信号来源，但保留图形显示和自动目标搜索。
 // v4.0.20：大均线交易方式下拉改为“关闭、正向交易、反向交易”；正向交易为均线上方只开多、均线下方只开空，反向交易为均线上方只开空、均线下方只开多，关闭时不限制订单块信号。
 // v4.0.19：调整反向订单块截断规则：旧订单块向右延伸时，只有与新出现的反向订单块在时间区间和价格区间实际接触/重叠，才停止延伸并从后续共振与自动目标计算中移除；未接触的反向订单块不会截断。
@@ -32,8 +33,9 @@
 // v3.0.0：FVG回补信号确认后使用strategy市价开仓，回测在下一根K线开盘成交。
 // Version rule: every future code change should increase the patch version by 0.0.1.
 
-const string SCRIPT_VERSION = "4.0.21"
-const int ORDER_BLOCK_STRUCTURE_LENGTH = 3
+const string SCRIPT_VERSION = "4.0.22"
+const string STRUCTURE_TIMEFRAME = "60"
+const int DEFAULT_ORDER_BLOCK_STRUCTURE_LENGTH = 3
 
 strategy(
      title = "SMC Order Block Only TEST Strategy v" + SCRIPT_VERSION,
@@ -68,10 +70,17 @@ strategy(
      max_labels_count = 500)
 
 // =============================================================================
-// 01. 当前周期订单块结构
-// 不再使用固定1小时结构信号，也不再提供“1H结构长度”输入项。
-// 订单块直接依据当前图表周期的BOS生成，结构长度固定为3。
+// 01. 1H订单块结构
+// TEST版固定使用1小时BOS与订单块，避免低周期图表生成过密订单块。
 // =============================================================================
+
+htfStructureLength = input.int(
+     DEFAULT_ORDER_BLOCK_STRUCTURE_LENGTH,
+     "1H结构长度",
+     minval = 1,
+     maxval = 20,
+     tooltip = "固定使用1小时BOS与订单块。当前图表为5分钟时，也只按1小时结构生成订单块。",
+     group = "01. 1H结构")
 
 // =============================================================================
 // 02. 测试版交易方向
@@ -207,6 +216,22 @@ oppositeObMinGapPct = input.float(
      step = 0.1,
      tooltip = "0表示关闭该过滤。空单按红块下沿到下方最近绿色订单块上沿计算；多单按绿色订单块上沿到上方最近红色订单块下沿计算。距离不足该百分比时，相应红绿订单块不参与开仓信号。",
      group = "03A. 订单块数量参数")
+
+// =============================================================================
+// 03A-1. FVG / 1H结构过滤
+// =============================================================================
+
+enableHtfStructureFilter = input.bool(
+     true,
+     "启用1H结构方向过滤",
+     tooltip = "开启后，多单要求最新1H结构偏多，空单要求最新1H结构偏空。关闭后，订单块方向仍来自1H订单块，但不再额外检查最新1H偏向。",
+     group = "03A-1. FVG / 1H结构过滤")
+
+enableFvgFilter = input.bool(
+     true,
+     "启用FVG 50%回补过滤",
+     tooltip = "开启后，多单要求最近看涨FVG的50%被回补触及，空单要求最近看跌FVG的50%被回补触及。开启突破后回踩确认时，FVG过滤用于建立回踩等待任务的突破K线。",
+     group = "03A-1. FVG / 1H结构过滤")
 
 // =============================================================================
 // 03A-2. 订单块回踩确认（实验功能，默认关闭）
@@ -430,6 +455,12 @@ const int OB_MILLISECOND_PER_MINUTE = 60 * 1000
 // =============================================================================
 // 08. 图表显示
 // =============================================================================
+
+showFvg = input.bool(
+     false,
+     "显示最近FVG 50%",
+     tooltip = "默认关闭。开启后绘制最近一个当前周期FVG的50%回补线，便于确认FVG过滤位置。",
+     group = "08. 图表显示")
 
 showLevels = input.bool(
      false,
@@ -851,10 +882,10 @@ int vrvpLookbackBars =
      enableVrvp and barstate.islast and vrvpLookbackBars > 0)
 
 // =============================================================================
-// 当前图表周期订单块结构函数
+// 固定1H订单块结构函数
 // =============================================================================
 
-f_chart_smc(_structureLength) =>
+f_htf_smc(_structureLength) =>
     ph = ta.pivothigh(high, _structureLength, _structureLength)
     pl = ta.pivotlow(low, _structureLength, _structureLength)
 
@@ -870,11 +901,11 @@ f_chart_smc(_structureLength) =>
     bullBos = not na(lastSwingHigh) and ta.crossover(close, lastSwingHigh)
     bearBos = not na(lastSwingLow) and ta.crossunder(close, lastSwingLow)
 
-    // 看涨订单块候选：当前图表周期最后一根阴线。
+    // 看涨订单块候选：最后一根1H阴线。
     var float lastBearTop = na
     var float lastBearBottom = na
 
-    // 看跌订单块候选：当前图表周期最后一根阳线。
+    // 看跌订单块候选：最后一根1H阳线。
     var float lastBullTop = na
     var float lastBullBottom = na
 
@@ -907,11 +938,15 @@ f_chart_smc(_structureLength) =>
     [bias, obTop, obBottom, bosLevel, bullBos, bearBos]
 
 // =============================================================================
-// 获取当前图表周期结构数据
+// 获取固定1H结构数据
 // =============================================================================
 
-[structureBias, structureObTop, structureObBottom, structureBosLevel, structureBullBos, structureBearBos] = f_chart_smc(
-     ORDER_BLOCK_STRUCTURE_LENGTH)
+[structureBias, structureObTop, structureObBottom, structureBosLevel, structureBullBos, structureBearBos] = request.security(
+     syminfo.tickerid,
+     STRUCTURE_TIMEFRAME,
+     f_htf_smc(htfStructureLength),
+     barmerge.gaps_off,
+     barmerge.lookahead_off)
 
 newBullBos =
      barstate.isconfirmed and
@@ -1471,6 +1506,60 @@ bearObStackPriceReady =
      close >= bearObStackMinEntryPrice
 
 // =============================================================================
+// 当前周期FVG过滤
+// =============================================================================
+
+bullFvg = not na(high[2]) and low > high[2]
+bearFvg = not na(low[2]) and high < low[2]
+
+var int fvgDir = 0
+var float fvgTop = na
+var float fvgBottom = na
+var float fvgMid = na
+var int fvgBar = na
+var bool fvgUsed = false
+
+if barstate.isconfirmed and bullFvg
+    fvgDir := 1
+    fvgTop := low
+    fvgBottom := high[2]
+    fvgMid := (fvgTop + fvgBottom) / 2.0
+    fvgBar := bar_index
+    fvgUsed := false
+
+if barstate.isconfirmed and bearFvg
+    fvgDir := -1
+    fvgTop := low[2]
+    fvgBottom := high
+    fvgMid := (fvgTop + fvgBottom) / 2.0
+    fvgBar := bar_index
+    fvgUsed := false
+
+fvgTouched =
+     not fvgUsed and
+     not na(fvgMid) and
+     not na(fvgBar) and
+     bar_index > fvgBar and
+     low <= fvgMid and
+     high >= fvgMid
+
+htfLongStructureReady =
+     not enableHtfStructureFilter or
+     structureBias == 1
+
+htfShortStructureReady =
+     not enableHtfStructureFilter or
+     structureBias == -1
+
+fvgLongFilterReady =
+     not enableFvgFilter or
+     (fvgDir == 1 and fvgTouched)
+
+fvgShortFilterReady =
+     not enableFvgFilter or
+     (fvgDir == -1 and fvgTouched)
+
+// =============================================================================
 // 禁止下单时间计算
 // 中国窗口固定使用Asia/Shanghai；美国窗口使用America/New_York自动处理夏令时。
 // 同时检查当前K线时间和预计成交时间，防止下一根K线在禁止窗口内成交。
@@ -1604,6 +1693,8 @@ bullObBreakoutCandidate =
      enableBullObStackBuy and
      enableLong and
      majorEmaLongAllowed and
+     htfLongStructureReady and
+     fvgLongFilterReady and
      barstate.isconfirmed and
      baseEntryAllowed and
      bullObStackStructureReady and
@@ -1614,6 +1705,8 @@ bearObBreakoutCandidate =
      enableBearObStackSell and
      enableShort and
      majorEmaShortAllowed and
+     htfShortStructureReady and
+     fvgShortFilterReady and
      barstate.isconfirmed and
      baseEntryAllowed and
      bearObStackStructureReady and
@@ -1707,6 +1800,7 @@ bullObRetestConfirmed =
      enableObRetestConfirmation and
      bullObRetestArmed and
      majorEmaLongAllowed and
+     htfLongStructureReady and
      barstate.isconfirmed and
      baseEntryAllowed and
      bar_index > bullObRetestArmBar and
@@ -1720,6 +1814,7 @@ bearObRetestConfirmed =
      enableObRetestConfirmation and
      bearObRetestArmed and
      majorEmaShortAllowed and
+     htfShortStructureReady and
      barstate.isconfirmed and
      baseEntryAllowed and
      bar_index > bearObRetestArmBar and
@@ -1805,6 +1900,9 @@ if validLong
          alert_message = TVBOT_ENTER_LONG_COMMENT,
          disable_alert = not enableTvbotAlert)
 
+    if enableFvgFilter
+        fvgUsed := true
+
 if validShort
     submittedEntryObTop := validShortObTop
     submittedEntryObBottom := validShortObBottom
@@ -1820,6 +1918,9 @@ if validShort
          comment = shortEntryFillComment,
          alert_message = TVBOT_ENTER_SHORT_COMMENT,
          disable_alert = not enableTvbotAlert)
+
+    if enableFvgFilter
+        fvgUsed := true
 
 // =============================================================================
 // 获取真实模拟成交时间和成交K线
@@ -2170,6 +2271,45 @@ if positionClosed
     activeAutoTarget := na
 
 // =============================================================================
+// FVG 50%显示线
+// =============================================================================
+
+var line fvgMidDisplayLine = na
+var int displayedFvgBar = na
+
+fvgDisplayColor =
+     fvgDir == 1 ?
+     color.new(color.lime, 0) :
+     color.new(color.red, 0)
+
+if showFvg and not na(fvgMid) and not na(fvgBar)
+    if na(fvgMidDisplayLine) or displayedFvgBar != fvgBar
+        if not na(fvgMidDisplayLine)
+            line.delete(fvgMidDisplayLine)
+
+        fvgMidDisplayLine := line.new(
+             x1 = fvgBar,
+             y1 = fvgMid,
+             x2 = bar_index,
+             y2 = fvgMid,
+             xloc = xloc.bar_index,
+             extend = extend.none,
+             color = fvgDisplayColor,
+             width = 2)
+
+        displayedFvgBar := fvgBar
+    else
+        line.set_x2(fvgMidDisplayLine, bar_index)
+        line.set_y1(fvgMidDisplayLine, fvgMid)
+        line.set_y2(fvgMidDisplayLine, fvgMid)
+        line.set_color(fvgMidDisplayLine, fvgDisplayColor)
+else
+    if not na(fvgMidDisplayLine)
+        line.delete(fvgMidDisplayLine)
+        fvgMidDisplayLine := na
+        displayedFvgBar := na
+
+// =============================================================================
 // 订单块开仓信号
 // =============================================================================
 
@@ -2424,12 +2564,12 @@ if barstate.islast
 alertcondition(
      bullObStackLongSignalThisBar,
      title = "订单块测试版开多信号",
-     message = "订单块测试版开多信号：绿色订单块达到设定数量并逐级抬高；启用回踩确认时，价格突破后回踩订单块上沿并重新向上收盘。")
+     message = "订单块测试版开多信号：1H绿色订单块达到设定数量并逐级抬高，且通过1H结构方向与FVG过滤；启用回踩确认时，价格突破后回踩订单块上沿并重新向上收盘。")
 
 alertcondition(
      bearObStackShortSignalThisBar,
      title = "订单块测试版开空信号",
-     message = "订单块测试版开空信号：红色订单块达到设定数量并逐级下移；启用回踩确认时，价格跌破后回踩订单块下沿并重新向下收盘。")
+     message = "订单块测试版开空信号：1H红色订单块达到设定数量并逐级下移，且通过1H结构方向与FVG过滤；启用回踩确认时，价格跌破后回踩订单块下沿并重新向下收盘。")
 
 alertcondition(
      stopTriggeredThisBar,
