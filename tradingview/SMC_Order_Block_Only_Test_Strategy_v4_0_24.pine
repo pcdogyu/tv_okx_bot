@@ -1,5 +1,6 @@
 //@version=6
-// SMC Order Block Only Test Strategy version: 4.0.23
+// SMC Order Block Only Test Strategy version: 4.0.24
+// v4.0.24：新增自动止盈最小距离保护。中频模式下自动目标距离开仓价不足1%时不再使用贴近的订单块/值区目标，回退到备用百分比止盈，避免空单开仓后因目标过近立刻止盈。
 // v4.0.23：新增交易频率模式，默认“中频”。中频模式自动放宽为1个1H订单块、1H结构长度2、关闭1H/FVG/反向间距过滤、追价距离至少5%、最短持仓1小时、止损冷静期2小时，并默认不使用禁开仓窗口，用于把订单频率提高到日均1-2笔级别。
 // v4.0.22：TEST版订单块恢复固定1H结构来源；新增1H结构方向过滤与当前周期FVG 50%回补过滤，使订单块信号先通过1H BOS/偏向与FVG确认后再开仓。
 // v4.0.21：新增反向订单块最小间距过滤（默认1%）。红色空单订单块与下方最近绿色多单订单块相邻边界距离不足阈值时，同时忽略对应红绿订单块的入场信号来源，但保留图形显示和自动目标搜索。
@@ -34,7 +35,7 @@
 // v3.0.0：FVG回补信号确认后使用strategy市价开仓，回测在下一根K线开盘成交。
 // Version rule: every future code change should increase the patch version by 0.0.1.
 
-const string SCRIPT_VERSION = "4.0.23"
+const string SCRIPT_VERSION = "4.0.24"
 const string STRUCTURE_TIMEFRAME = "60"
 const int DEFAULT_ORDER_BLOCK_STRUCTURE_LENGTH = 3
 
@@ -380,6 +381,20 @@ valueAreaEntryTolerancePct = input.float(
      step = 1.0,
      tooltip = "以当日VAH减VAL的宽度为基准。默认10表示：成交价与VAL或VAH的距离不超过值区宽度的10%，即视为在该边界附近。0表示仅允许最小报价单位范围。",
      group = "04. 止盈止损")
+
+autoTargetMinDistancePct = input.float(
+     1.0,
+     "自动止盈最小距离 %",
+     minval = 0.0,
+     maxval = 20.0,
+     step = 0.1,
+     tooltip = "自动模式下，值区或对向订单块止盈目标距离开仓价不足该百分比时，改用备用止盈百分比。中频模式至少使用1%，保守模式为0以保持4.0.22风格，手动模式使用此参数。",
+     group = "04. 止盈止损")
+
+float effectiveAutoTargetMinDistancePct =
+     mediumFrequencyMode ? math.max(autoTargetMinDistancePct, 1.0) :
+     conservativeFrequencyMode ? 0.0 :
+     autoTargetMinDistancePct
 
 stopBufferBps = input.float(
      1.0,
@@ -2135,13 +2150,22 @@ if strategy.position_size > 0
          entryPrice *
          (1.0 + takeProfitPct / 100.0)
 
+    minimumAutoTarget =
+         entryPrice *
+         (1.0 + effectiveAutoTargetMinDistancePct / 100.0)
+
+    autoTargetReady =
+         not na(activeAutoTarget) and
+         activeAutoTarget > entryPrice and
+         (effectiveAutoTargetMinDistancePct <= 0.0 or activeAutoTarget >= minimumAutoTarget)
+
     orderBlockStop =
          not na(activeOrderBlockBottom) and activeOrderBlockBottom < entryPrice ?
          activeOrderBlockBottom * (1.0 - bufferMult) :
          percentStop
 
     orderBlockTarget =
-         not na(activeAutoTarget) and activeAutoTarget > entryPrice ?
+         autoTargetReady ?
          activeAutoTarget :
          percentTarget
 
@@ -2167,13 +2191,22 @@ else if strategy.position_size < 0
          entryPrice *
          (1.0 - takeProfitPct / 100.0)
 
+    maximumAutoTarget =
+         entryPrice *
+         (1.0 - effectiveAutoTargetMinDistancePct / 100.0)
+
+    autoTargetReady =
+         not na(activeAutoTarget) and
+         activeAutoTarget < entryPrice and
+         (effectiveAutoTargetMinDistancePct <= 0.0 or activeAutoTarget <= maximumAutoTarget)
+
     orderBlockStop =
          not na(activeOrderBlockTop) and activeOrderBlockTop > entryPrice ?
          activeOrderBlockTop * (1.0 + bufferMult) :
          percentStop
 
     orderBlockTarget =
-         not na(activeAutoTarget) and activeAutoTarget < entryPrice ?
+         autoTargetReady ?
          activeAutoTarget :
          percentTarget
 
