@@ -1,5 +1,6 @@
 //@version=6
-// SMC Order Block Only Test Strategy version: 4.0.20
+// SMC Order Block Only Test Strategy version: 4.0.21
+// v4.0.21：新增反向订单块最小间距过滤（默认1%）。红色空单订单块与下方最近绿色多单订单块相邻边界距离不足阈值时，同时忽略对应红绿订单块的入场信号来源，但保留图形显示和自动目标搜索。
 // v4.0.20：大均线交易方式下拉改为“关闭、正向交易、反向交易”；正向交易为均线上方只开多、均线下方只开空，反向交易为均线上方只开空、均线下方只开多，关闭时不限制订单块信号。
 // v4.0.19：调整反向订单块截断规则：旧订单块向右延伸时，只有与新出现的反向订单块在时间区间和价格区间实际接触/重叠，才停止延伸并从后续共振与自动目标计算中移除；未接触的反向订单块不会截断。
 // v4.0.18：新增可调大周期方向EMA（默认200，可设100/200等）及方向模式：关闭、正向、反向。正向模式为价格在EMA上方只做多、下方只做空；反向模式为EMA上方只做空、下方只做多。EMA过滤同时作用于直接突破与回踩确认入场。
@@ -31,7 +32,7 @@
 // v3.0.0：FVG回补信号确认后使用strategy市价开仓，回测在下一根K线开盘成交。
 // Version rule: every future code change should increase the patch version by 0.0.1.
 
-const string SCRIPT_VERSION = "4.0.20"
+const string SCRIPT_VERSION = "4.0.21"
 const int ORDER_BLOCK_STRUCTURE_LENGTH = 3
 
 strategy(
@@ -196,6 +197,15 @@ obStackMaxDistancePct = input.float(
      maxval = 20.0,
      step = 0.1,
      tooltip = "多单为收盘价高出最新绿色订单块上沿的最大距离；空单为收盘价低于最新红色订单块下沿的最大距离。该参数对所选1-4个订单块数量统一生效。",
+     group = "03A. 订单块数量参数")
+
+oppositeObMinGapPct = input.float(
+     1.0,
+     "反向订单块最小间距 %",
+     minval = 0.0,
+     maxval = 20.0,
+     step = 0.1,
+     tooltip = "0表示关闭该过滤。空单按红块下沿到下方最近绿色订单块上沿计算；多单按绿色订单块上沿到上方最近红色订单块下沿计算。距离不足该百分比时，相应红绿订单块不参与开仓信号。",
      group = "03A. 订单块数量参数")
 
 // =============================================================================
@@ -1292,24 +1302,56 @@ while bullObStackScanIndex >= 0 and bullObStackCount < obStackRequiredCount and 
         float bullStackTop = array.get(activeFilterObTops, bullObStackScanIndex)
         float bullStackBottom = array.get(activeFilterObBottoms, bullObStackScanIndex)
         float bullStackMid = (bullStackTop + bullStackBottom) / 2.0
+        bool bullStackTooCloseToUpperBear = false
 
-        if bullObStackCount == 0
-            bullObStackNewestTop := bullStackTop
-            bullObStackNewestBottom := bullStackBottom
-            bullObStackNewestLeftTime := bullStackLeftTime
-            bullObStackPreviousNewerMid := bullStackMid
-            bullObStackCount := 1
-        else
-            bool bullStepReady =
-                 obStackMinStepPct <= 0.0 ?
-                 bullObStackPreviousNewerMid > bullStackMid :
-                 bullObStackPreviousNewerMid >= bullStackMid * obStackStepMult
+        if oppositeObMinGapPct > 0.0
+            int bullOppositeIndex = array.size(activeFilterObDirections) - 1
+            float nearestUpperBearBottom = na
 
-            if bullStepReady
+            while bullOppositeIndex >= 0
+                int upperBearDirection = array.get(activeFilterObDirections, bullOppositeIndex)
+                int upperBearLeftTime = array.get(activeFilterObLeftTimes, bullOppositeIndex)
+                int upperBearRightTime = array.get(activeFilterObRightTimes, bullOppositeIndex)
+                bool upperBearAvailable =
+                     time >= upperBearLeftTime and
+                     time < upperBearRightTime
+
+                if upperBearAvailable and upperBearDirection == -1
+                    float upperBearBottom = array.get(activeFilterObBottoms, bullOppositeIndex)
+                    float upperBearGap = upperBearBottom - bullStackTop
+
+                    if upperBearGap >= 0.0 and (na(nearestUpperBearBottom) or upperBearBottom < nearestUpperBearBottom)
+                        nearestUpperBearBottom := upperBearBottom
+
+                bullOppositeIndex -= 1
+
+            if not na(nearestUpperBearBottom)
+                float upperBearGapPct =
+                     (nearestUpperBearBottom - bullStackTop) /
+                     bullStackTop *
+                     100.0
+                bullStackTooCloseToUpperBear :=
+                     upperBearGapPct >= 0.0 and
+                     upperBearGapPct < oppositeObMinGapPct
+
+        if not bullStackTooCloseToUpperBear
+            if bullObStackCount == 0
+                bullObStackNewestTop := bullStackTop
+                bullObStackNewestBottom := bullStackBottom
+                bullObStackNewestLeftTime := bullStackLeftTime
                 bullObStackPreviousNewerMid := bullStackMid
-                bullObStackCount += 1
+                bullObStackCount := 1
             else
-                bullObStackRising := false
+                bool bullStepReady =
+                     obStackMinStepPct <= 0.0 ?
+                     bullObStackPreviousNewerMid > bullStackMid :
+                     bullObStackPreviousNewerMid >= bullStackMid * obStackStepMult
+
+                if bullStepReady
+                    bullObStackPreviousNewerMid := bullStackMid
+                    bullObStackCount += 1
+                else
+                    bullObStackRising := false
 
     bullObStackScanIndex -= 1
 
@@ -1355,24 +1397,56 @@ while bearObStackScanIndex >= 0 and bearObStackCount < obStackRequiredCount and 
         float bearStackTop = array.get(activeFilterObTops, bearObStackScanIndex)
         float bearStackBottom = array.get(activeFilterObBottoms, bearObStackScanIndex)
         float bearStackMid = (bearStackTop + bearStackBottom) / 2.0
+        bool bearStackTooCloseToLowerBull = false
 
-        if bearObStackCount == 0
-            bearObStackNewestTop := bearStackTop
-            bearObStackNewestBottom := bearStackBottom
-            bearObStackNewestLeftTime := bearStackLeftTime
-            bearObStackPreviousNewerMid := bearStackMid
-            bearObStackCount := 1
-        else
-            bool bearStepReady =
-                 obStackMinStepPct <= 0.0 ?
-                 bearStackMid > bearObStackPreviousNewerMid :
-                 bearStackMid >= bearObStackPreviousNewerMid * obStackStepMult
+        if oppositeObMinGapPct > 0.0
+            int bearOppositeIndex = array.size(activeFilterObDirections) - 1
+            float nearestLowerBullTop = na
 
-            if bearStepReady
+            while bearOppositeIndex >= 0
+                int lowerBullDirection = array.get(activeFilterObDirections, bearOppositeIndex)
+                int lowerBullLeftTime = array.get(activeFilterObLeftTimes, bearOppositeIndex)
+                int lowerBullRightTime = array.get(activeFilterObRightTimes, bearOppositeIndex)
+                bool lowerBullAvailable =
+                     time >= lowerBullLeftTime and
+                     time < lowerBullRightTime
+
+                if lowerBullAvailable and lowerBullDirection == 1
+                    float lowerBullTop = array.get(activeFilterObTops, bearOppositeIndex)
+                    float lowerBullGap = bearStackBottom - lowerBullTop
+
+                    if lowerBullGap >= 0.0 and (na(nearestLowerBullTop) or lowerBullTop > nearestLowerBullTop)
+                        nearestLowerBullTop := lowerBullTop
+
+                bearOppositeIndex -= 1
+
+            if not na(nearestLowerBullTop)
+                float lowerBullGapPct =
+                     (bearStackBottom - nearestLowerBullTop) /
+                     bearStackBottom *
+                     100.0
+                bearStackTooCloseToLowerBull :=
+                     lowerBullGapPct >= 0.0 and
+                     lowerBullGapPct < oppositeObMinGapPct
+
+        if not bearStackTooCloseToLowerBull
+            if bearObStackCount == 0
+                bearObStackNewestTop := bearStackTop
+                bearObStackNewestBottom := bearStackBottom
+                bearObStackNewestLeftTime := bearStackLeftTime
                 bearObStackPreviousNewerMid := bearStackMid
-                bearObStackCount += 1
+                bearObStackCount := 1
             else
-                bearObStackFalling := false
+                bool bearStepReady =
+                     obStackMinStepPct <= 0.0 ?
+                     bearStackMid > bearObStackPreviousNewerMid :
+                     bearStackMid >= bearObStackPreviousNewerMid * obStackStepMult
+
+                if bearStepReady
+                    bearObStackPreviousNewerMid := bearStackMid
+                    bearObStackCount += 1
+                else
+                    bearObStackFalling := false
 
     bearObStackScanIndex -= 1
 
