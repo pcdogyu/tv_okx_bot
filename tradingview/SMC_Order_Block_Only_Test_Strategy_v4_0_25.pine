@@ -1,5 +1,6 @@
 //@version=6
-// SMC Order Block Only Test Strategy version: 4.0.24
+// SMC Order Block Only Test Strategy version: 4.0.25
+// v4.0.25：关闭calc_on_order_fills，避免TradingView因成交后历史K线内重算提示“可能使用前瞻偏见”。止盈止损不再于历史回测的入场成交瞬间同K线创建，而是在下一次正常脚本计算后创建。
 // v4.0.24：新增自动止盈最小距离保护。中频模式下自动目标距离开仓价不足1%时不再使用贴近的订单块/值区目标，回退到备用百分比止盈，避免空单开仓后因目标过近立刻止盈。
 // v4.0.23：新增交易频率模式，默认“中频”。中频模式自动放宽为1个1H订单块、1H结构长度2、关闭1H/FVG/反向间距过滤、追价距离至少5%、最短持仓1小时、止损冷静期2小时，并默认不使用禁开仓窗口，用于把订单频率提高到日均1-2笔级别。
 // v4.0.22：TEST版订单块恢复固定1H结构来源；新增1H结构方向过滤与当前周期FVG 50%回补过滤，使订单块信号先通过1H BOS/偏向与FVG确认后再开仓。
@@ -35,7 +36,7 @@
 // v3.0.0：FVG回补信号确认后使用strategy市价开仓，回测在下一根K线开盘成交。
 // Version rule: every future code change should increase the patch version by 0.0.1.
 
-const string SCRIPT_VERSION = "4.0.24"
+const string SCRIPT_VERSION = "4.0.25"
 const string STRUCTURE_TIMEFRAME = "60"
 const int DEFAULT_ORDER_BLOCK_STRUCTURE_LENGTH = 3
 
@@ -56,7 +57,7 @@ strategy(
 
      // VRVP在实时K线内随成交量变化即时刷新。
      // BOS、订单块失效和订单块开仓信号均使用barstate.isconfirmed，避免未收盘信号反复变化。
-     calc_on_order_fills = true,
+     calc_on_order_fills = false,
      calc_on_every_tick = true,
 
      // 市价开仓订单不在信号K线收盘tick成交，回测使用下一根K线开盘价。
@@ -407,7 +408,7 @@ stopBufferBps = input.float(
 enableImmediateOrderBlockStop = input.bool(
      true,
      "启用订单块破位即时止损",
-     tooltip = "开启后，多单成交后立即在入场绿色订单块下沿外侧放置止损；空单成交后立即在入场红色订单块上沿外侧放置止损。该结构止损不受最短持仓时间限制，止盈和其他止损仍需等待最短持仓结束。",
+     tooltip = "开启后，多单在入场绿色订单块下沿外侧放置止损；空单在入场红色订单块上沿外侧放置止损。关闭calc_on_order_fills后，历史回测中该结构止损会在成交后的下一次正常脚本计算时创建；止盈和其他止损仍需等待最短持仓结束。",
      group = "04. 止盈止损")
 
 // =============================================================================
@@ -2221,7 +2222,7 @@ else if strategy.position_size < 0
          percentTarget
 
 // =============================================================================
-// 订单块破位止损立即生效；止盈和普通止损在达到最短持仓时间后生效。
+// 订单块破位止损在成交后的下一次正常脚本计算时生效；止盈和普通止损在达到最短持仓时间后生效。
 // 多单：价格跌破入场绿色订单块下沿外侧止损。
 // 空单：价格突破入场红色订单块上沿外侧止损。
 // =============================================================================
