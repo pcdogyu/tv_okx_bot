@@ -1,5 +1,6 @@
 //@version=6
-// SMC Order Block Only Test Strategy version: 4.0.22
+// SMC Order Block Only Test Strategy version: 4.0.23
+// v4.0.23：新增交易频率模式，默认“中频”。中频模式自动放宽为1个1H订单块、1H结构长度2、关闭1H/FVG/反向间距过滤、追价距离至少5%、最短持仓1小时、止损冷静期2小时，并默认不使用禁开仓窗口，用于把订单频率提高到日均1-2笔级别。
 // v4.0.22：TEST版订单块恢复固定1H结构来源；新增1H结构方向过滤与当前周期FVG 50%回补过滤，使订单块信号先通过1H BOS/偏向与FVG确认后再开仓。
 // v4.0.21：新增反向订单块最小间距过滤（默认1%）。红色空单订单块与下方最近绿色多单订单块相邻边界距离不足阈值时，同时忽略对应红绿订单块的入场信号来源，但保留图形显示和自动目标搜索。
 // v4.0.20：大均线交易方式下拉改为“关闭、正向交易、反向交易”；正向交易为均线上方只开多、均线下方只开空，反向交易为均线上方只开空、均线下方只开多，关闭时不限制订单块信号。
@@ -33,7 +34,7 @@
 // v3.0.0：FVG回补信号确认后使用strategy市价开仓，回测在下一根K线开盘成交。
 // Version rule: every future code change should increase the patch version by 0.0.1.
 
-const string SCRIPT_VERSION = "4.0.22"
+const string SCRIPT_VERSION = "4.0.23"
 const string STRUCTURE_TIMEFRAME = "60"
 const int DEFAULT_ORDER_BLOCK_STRUCTURE_LENGTH = 3
 
@@ -70,6 +71,20 @@ strategy(
      max_labels_count = 500)
 
 // =============================================================================
+// 00. 交易频率模式
+// =============================================================================
+
+tradeFrequencyMode = input.string(
+     "中频",
+     "交易频率模式",
+     options = ["中频", "保守", "手动"],
+     tooltip = "中频：默认面向每天1-2笔级别，自动放宽关键过滤。\n保守：锁定4.0.22风格的低频过滤。\n手动：完全使用下面各项参数。",
+     group = "00. 交易频率模式")
+
+bool mediumFrequencyMode = tradeFrequencyMode == "中频"
+bool conservativeFrequencyMode = tradeFrequencyMode == "保守"
+
+// =============================================================================
 // 01. 1H订单块结构
 // TEST版固定使用1小时BOS与订单块，避免低周期图表生成过密订单块。
 // =============================================================================
@@ -79,8 +94,13 @@ htfStructureLength = input.int(
      "1H结构长度",
      minval = 1,
      maxval = 20,
-     tooltip = "固定使用1小时BOS与订单块。当前图表为5分钟时，也只按1小时结构生成订单块。",
+     tooltip = "固定使用1小时BOS与订单块。中频模式自动使用2，保守模式使用3，手动模式使用此参数。",
      group = "01. 1H结构")
+
+int effectiveHtfStructureLength =
+     mediumFrequencyMode ? 2 :
+     conservativeFrequencyMode ? DEFAULT_ORDER_BLOCK_STRUCTURE_LENGTH :
+     htfStructureLength
 
 // =============================================================================
 // 02. 测试版交易方向
@@ -196,7 +216,7 @@ obStackRequiredCount = input.int(
      minval = 1,
      maxval = 4,
      step = 1,
-     tooltip = "直接输入1、2、3或4。多单要求最近对应数量的有效绿色订单块逐级抬高；空单要求最近对应数量的有效红色订单块逐级下移。默认3。",
+     tooltip = "直接输入1、2、3或4。中频模式自动使用1，保守模式使用3，手动模式使用此参数。",
      group = "03A. 订单块数量参数")
 
 obStackMaxDistancePct = input.float(
@@ -205,7 +225,7 @@ obStackMaxDistancePct = input.float(
      minval = 0.0,
      maxval = 20.0,
      step = 0.1,
-     tooltip = "多单为收盘价高出最新绿色订单块上沿的最大距离；空单为收盘价低于最新红色订单块下沿的最大距离。该参数对所选1-4个订单块数量统一生效。",
+     tooltip = "多单为收盘价高出最新绿色订单块上沿的最大距离；空单为收盘价低于最新红色订单块下沿的最大距离。中频模式至少使用5%，保守模式使用2%，手动模式使用此参数。",
      group = "03A. 订单块数量参数")
 
 oppositeObMinGapPct = input.float(
@@ -214,8 +234,23 @@ oppositeObMinGapPct = input.float(
      minval = 0.0,
      maxval = 20.0,
      step = 0.1,
-     tooltip = "0表示关闭该过滤。空单按红块下沿到下方最近绿色订单块上沿计算；多单按绿色订单块上沿到上方最近红色订单块下沿计算。距离不足该百分比时，相应红绿订单块不参与开仓信号。",
+     tooltip = "0表示关闭该过滤。中频模式自动关闭，保守模式使用1%，手动模式使用此参数。",
      group = "03A. 订单块数量参数")
+
+int effectiveObStackRequiredCount =
+     mediumFrequencyMode ? 1 :
+     conservativeFrequencyMode ? 3 :
+     obStackRequiredCount
+
+float effectiveObStackMaxDistancePct =
+     mediumFrequencyMode ? math.max(obStackMaxDistancePct, 5.0) :
+     conservativeFrequencyMode ? 2.0 :
+     obStackMaxDistancePct
+
+float effectiveOppositeObMinGapPct =
+     mediumFrequencyMode ? 0.0 :
+     conservativeFrequencyMode ? 1.0 :
+     oppositeObMinGapPct
 
 // =============================================================================
 // 03A-1. FVG / 1H结构过滤
@@ -224,14 +259,24 @@ oppositeObMinGapPct = input.float(
 enableHtfStructureFilter = input.bool(
      true,
      "启用1H结构方向过滤",
-     tooltip = "开启后，多单要求最新1H结构偏多，空单要求最新1H结构偏空。关闭后，订单块方向仍来自1H订单块，但不再额外检查最新1H偏向。",
+     tooltip = "开启后，多单要求最新1H结构偏多，空单要求最新1H结构偏空。中频模式自动关闭，保守模式自动开启，手动模式使用此参数。",
      group = "03A-1. FVG / 1H结构过滤")
 
 enableFvgFilter = input.bool(
      true,
      "启用FVG 50%回补过滤",
-     tooltip = "开启后，多单要求最近看涨FVG的50%被回补触及，空单要求最近看跌FVG的50%被回补触及。开启突破后回踩确认时，FVG过滤用于建立回踩等待任务的突破K线。",
+     tooltip = "开启后，多单要求最近看涨FVG的50%被回补触及，空单要求最近看跌FVG的50%被回补触及。中频模式自动关闭，保守模式自动开启，手动模式使用此参数。",
      group = "03A-1. FVG / 1H结构过滤")
+
+bool effectiveHtfStructureFilterEnabled =
+     mediumFrequencyMode ? false :
+     conservativeFrequencyMode ? true :
+     enableHtfStructureFilter
+
+bool effectiveFvgFilterEnabled =
+     mediumFrequencyMode ? false :
+     conservativeFrequencyMode ? true :
+     enableFvgFilter
 
 // =============================================================================
 // 03A-2. 订单块回踩确认（实验功能，默认关闭）
@@ -275,14 +320,24 @@ obRetestRequireDirectionCandle = input.bool(
 enableChinaNoTradeWindow = input.bool(
      true,
      "禁止中国时间04:30-09:00下单",
-     tooltip = "开启后，中国时间每天04:30（含）至09:00（不含）禁止提交新的多单或空单。",
+     tooltip = "开启后，中国时间每天04:30（含）至09:00（不含）禁止提交新的多单或空单。中频模式自动关闭，保守模式自动开启，手动模式使用此参数。",
      group = "03B. 禁止下单时间")
 
 enableUsOpenNoTradeWindow = input.bool(
      true,
      "禁止纽约时间09:30-10:30下单",
-     tooltip = "开启后，纽约时间每天09:30（含）至10:30（不含）禁止提交新订单。使用America/New_York时区自动处理夏令时：夏令时通常对应中国时间21:30-22:30，冬令时通常对应22:30-23:30。",
+     tooltip = "开启后，纽约时间每天09:30（含）至10:30（不含）禁止提交新订单。中频模式自动关闭，保守模式自动开启，手动模式使用此参数。",
      group = "03B. 禁止下单时间")
+
+bool effectiveEnableChinaNoTradeWindow =
+     mediumFrequencyMode ? false :
+     conservativeFrequencyMode ? true :
+     enableChinaNoTradeWindow
+
+bool effectiveEnableUsOpenNoTradeWindow =
+     mediumFrequencyMode ? false :
+     conservativeFrequencyMode ? true :
+     enableUsOpenNoTradeWindow
 
 // =============================================================================
 // 04. 止盈止损
@@ -349,7 +404,7 @@ minHoldHours = input.float(
      "最短持仓时间（小时）",
      minval = 1.0,
      step = 0.25,
-     tooltip = "开仓后达到该时间之前，不创建止盈或普通止损订单；订单块破位即时止损不受该时间限制。默认4小时，最低1小时。",
+     tooltip = "开仓后达到该时间之前，不创建止盈或普通止损订单；订单块破位即时止损不受该时间限制。中频模式自动使用1小时，保守模式使用4小时，手动模式使用此参数。",
      group = "05. 持仓时间与冷静期")
 
 stopCooldownHours = input.float(
@@ -357,11 +412,18 @@ stopCooldownHours = input.float(
      "止损后冷静期（小时）",
      minval = 0.0,
      step = 1.0,
-     tooltip = "发生亏损止损后，指定时间内禁止再次开仓。默认12小时，止盈不触发冷静期。",
+     tooltip = "发生亏损止损后，指定时间内禁止再次开仓。中频模式自动使用2小时，保守模式使用12小时，手动模式使用此参数。",
      group = "05. 持仓时间与冷静期")
 
 float effectiveMinHoldHours =
+     mediumFrequencyMode ? 1.0 :
+     conservativeFrequencyMode ? 4.0 :
      math.max(minHoldHours, 1.0)
+
+float effectiveStopCooldownHours =
+     mediumFrequencyMode ? 2.0 :
+     conservativeFrequencyMode ? 12.0 :
+     stopCooldownHours
 
 // =============================================================================
 // 07. 订单区块矩形
@@ -944,7 +1006,7 @@ f_htf_smc(_structureLength) =>
 [structureBias, structureObTop, structureObBottom, structureBosLevel, structureBullBos, structureBearBos] = request.security(
      syminfo.tickerid,
      STRUCTURE_TIMEFRAME,
-     f_htf_smc(htfStructureLength),
+     f_htf_smc(effectiveHtfStructureLength),
      barmerge.gaps_off,
      barmerge.lookahead_off)
 
@@ -1310,7 +1372,7 @@ while latestFilterObIndex >= 0 and (na(latestBullFilterObTop) or na(latestBearFi
 // 多订单块共振结构
 // 绿色订单块：从最新向前检查，要求较新的中点逐级高于较旧的中点。
 // 红色订单块：从最新向前检查，要求较新的中点逐级低于较旧的中点。
-// 按“订单块数量（1-4）”参数检查对应数量的同向订单块。
+// 按交易频率模式的生效订单块数量检查对应数量的同向订单块。
 // =============================================================================
 
 float obStackStepMult = 1.0 + obStackMinStepPct / 100.0
@@ -1324,7 +1386,7 @@ int bullObStackNewestLeftTime = na
 
 int bullObStackScanIndex = array.size(activeFilterObDirections) - 1
 
-while bullObStackScanIndex >= 0 and bullObStackCount < obStackRequiredCount and bullObStackRising
+while bullObStackScanIndex >= 0 and bullObStackCount < effectiveObStackRequiredCount and bullObStackRising
     int bullStackDirection = array.get(activeFilterObDirections, bullObStackScanIndex)
     int bullStackLeftTime = array.get(activeFilterObLeftTimes, bullObStackScanIndex)
     int bullStackRightTime = array.get(activeFilterObRightTimes, bullObStackScanIndex)
@@ -1339,7 +1401,7 @@ while bullObStackScanIndex >= 0 and bullObStackCount < obStackRequiredCount and 
         float bullStackMid = (bullStackTop + bullStackBottom) / 2.0
         bool bullStackTooCloseToUpperBear = false
 
-        if oppositeObMinGapPct > 0.0
+        if effectiveOppositeObMinGapPct > 0.0
             int bullOppositeIndex = array.size(activeFilterObDirections) - 1
             float nearestUpperBearBottom = na
 
@@ -1367,7 +1429,7 @@ while bullObStackScanIndex >= 0 and bullObStackCount < obStackRequiredCount and 
                      100.0
                 bullStackTooCloseToUpperBear :=
                      upperBearGapPct >= 0.0 and
-                     upperBearGapPct < oppositeObMinGapPct
+                     upperBearGapPct < effectiveOppositeObMinGapPct
 
         if not bullStackTooCloseToUpperBear
             if bullObStackCount == 0
@@ -1390,8 +1452,8 @@ while bullObStackScanIndex >= 0 and bullObStackCount < obStackRequiredCount and 
 
     bullObStackScanIndex -= 1
 
-int bullObStackSelectedCount = bullObStackCount >= obStackRequiredCount ? obStackRequiredCount : 0
-float bullObStackSelectedDistancePct = bullObStackSelectedCount > 0 ? obStackMaxDistancePct : na
+int bullObStackSelectedCount = bullObStackCount >= effectiveObStackRequiredCount ? effectiveObStackRequiredCount : 0
+float bullObStackSelectedDistancePct = bullObStackSelectedCount > 0 ? effectiveObStackMaxDistancePct : na
 
 bullObStackStructureReady =
      bullObStackSelectedCount > 0 and
@@ -1419,7 +1481,7 @@ int bearObStackNewestLeftTime = na
 
 int bearObStackScanIndex = array.size(activeFilterObDirections) - 1
 
-while bearObStackScanIndex >= 0 and bearObStackCount < obStackRequiredCount and bearObStackFalling
+while bearObStackScanIndex >= 0 and bearObStackCount < effectiveObStackRequiredCount and bearObStackFalling
     int bearStackDirection = array.get(activeFilterObDirections, bearObStackScanIndex)
     int bearStackLeftTime = array.get(activeFilterObLeftTimes, bearObStackScanIndex)
     int bearStackRightTime = array.get(activeFilterObRightTimes, bearObStackScanIndex)
@@ -1434,7 +1496,7 @@ while bearObStackScanIndex >= 0 and bearObStackCount < obStackRequiredCount and 
         float bearStackMid = (bearStackTop + bearStackBottom) / 2.0
         bool bearStackTooCloseToLowerBull = false
 
-        if oppositeObMinGapPct > 0.0
+        if effectiveOppositeObMinGapPct > 0.0
             int bearOppositeIndex = array.size(activeFilterObDirections) - 1
             float nearestLowerBullTop = na
 
@@ -1462,7 +1524,7 @@ while bearObStackScanIndex >= 0 and bearObStackCount < obStackRequiredCount and 
                      100.0
                 bearStackTooCloseToLowerBull :=
                      lowerBullGapPct >= 0.0 and
-                     lowerBullGapPct < oppositeObMinGapPct
+                     lowerBullGapPct < effectiveOppositeObMinGapPct
 
         if not bearStackTooCloseToLowerBull
             if bearObStackCount == 0
@@ -1485,8 +1547,8 @@ while bearObStackScanIndex >= 0 and bearObStackCount < obStackRequiredCount and 
 
     bearObStackScanIndex -= 1
 
-int bearObStackSelectedCount = bearObStackCount >= obStackRequiredCount ? obStackRequiredCount : 0
-float bearObStackSelectedDistancePct = bearObStackSelectedCount > 0 ? obStackMaxDistancePct : na
+int bearObStackSelectedCount = bearObStackCount >= effectiveObStackRequiredCount ? effectiveObStackRequiredCount : 0
+float bearObStackSelectedDistancePct = bearObStackSelectedCount > 0 ? effectiveObStackMaxDistancePct : na
 
 bearObStackStructureReady =
      bearObStackSelectedCount > 0 and
@@ -1544,19 +1606,19 @@ fvgTouched =
      high >= fvgMid
 
 htfLongStructureReady =
-     not enableHtfStructureFilter or
+     not effectiveHtfStructureFilterEnabled or
      structureBias == 1
 
 htfShortStructureReady =
-     not enableHtfStructureFilter or
+     not effectiveHtfStructureFilterEnabled or
      structureBias == -1
 
 fvgLongFilterReady =
-     not enableFvgFilter or
+     not effectiveFvgFilterEnabled or
      (fvgDir == 1 and fvgTouched)
 
 fvgShortFilterReady =
-     not enableFvgFilter or
+     not effectiveFvgFilterEnabled or
      (fvgDir == -1 and fvgTouched)
 
 // =============================================================================
@@ -1578,11 +1640,11 @@ f_in_us_open_no_trade_window(_timestamp) =>
     minuteOfDay >= 9 * 60 + 30 and minuteOfDay < 10 * 60 + 30
 
 bool chinaNoTradeNow =
-     enableChinaNoTradeWindow and
+     effectiveEnableChinaNoTradeWindow and
      (f_in_china_no_trade_window(time) or f_in_china_no_trade_window(time_close))
 
 bool usOpenNoTradeNow =
-     enableUsOpenNoTradeWindow and
+     effectiveEnableUsOpenNoTradeWindow and
      (f_in_us_open_no_trade_window(time) or f_in_us_open_no_trade_window(time_close))
 
 bool inNoTradeWindow =
@@ -1595,7 +1657,7 @@ bool inNoTradeWindow =
 
 int hourMilliseconds = 60 * 60 * 1000
 int minHoldMilliseconds = int(effectiveMinHoldHours * hourMilliseconds)
-int cooldownMilliseconds = int(stopCooldownHours * hourMilliseconds)
+int cooldownMilliseconds = int(effectiveStopCooldownHours * hourMilliseconds)
 
 // =============================================================================
 // 交易状态变量
@@ -1807,7 +1869,7 @@ bullObRetestConfirmed =
      bar_index <= bullObRetestExpiryBar and
      low <= bullRetestTouchCeiling and
      close >= bullObRetestTop and
-     close <= bullObRetestTop * (1.0 + obStackMaxDistancePct / 100.0) and
+     close <= bullObRetestTop * (1.0 + effectiveObStackMaxDistancePct / 100.0) and
      bullDirectionCandleReady
 
 bearObRetestConfirmed =
@@ -1821,7 +1883,7 @@ bearObRetestConfirmed =
      bar_index <= bearObRetestExpiryBar and
      high >= bearRetestTouchFloor and
      close <= bearObRetestBottom and
-     close >= bearObRetestBottom * (1.0 - obStackMaxDistancePct / 100.0) and
+     close >= bearObRetestBottom * (1.0 - effectiveObStackMaxDistancePct / 100.0) and
      bearDirectionCandleReady
 
 // 关闭回踩确认时使用原始突破候选；开启时仅使用回踩确认结果。
@@ -1900,7 +1962,7 @@ if validLong
          alert_message = TVBOT_ENTER_LONG_COMMENT,
          disable_alert = not enableTvbotAlert)
 
-    if enableFvgFilter
+    if effectiveFvgFilterEnabled
         fvgUsed := true
 
 if validShort
@@ -1919,7 +1981,7 @@ if validShort
          alert_message = TVBOT_ENTER_SHORT_COMMENT,
          disable_alert = not enableTvbotAlert)
 
-    if enableFvgFilter
+    if effectiveFvgFilterEnabled
         fvgUsed := true
 
 // =============================================================================
@@ -2252,7 +2314,7 @@ if strategy.closedtrades > lastProcessedClosedTrade
     if stoppedOut
         stopTriggeredThisBar := true
 
-        if stopCooldownHours > 0
+        if effectiveStopCooldownHours > 0
             cooldownUntil :=
                  time + cooldownMilliseconds
 
@@ -2564,12 +2626,12 @@ if barstate.islast
 alertcondition(
      bullObStackLongSignalThisBar,
      title = "订单块测试版开多信号",
-     message = "订单块测试版开多信号：1H绿色订单块达到设定数量并逐级抬高，且通过1H结构方向与FVG过滤；启用回踩确认时，价格突破后回踩订单块上沿并重新向上收盘。")
+     message = "订单块测试版开多信号：按当前交易频率模式，1H绿色订单块达到生效数量并逐级抬高，价格突破最新绿色订单块上沿；启用回踩确认时，价格突破后回踩并重新向上收盘。")
 
 alertcondition(
      bearObStackShortSignalThisBar,
      title = "订单块测试版开空信号",
-     message = "订单块测试版开空信号：1H红色订单块达到设定数量并逐级下移，且通过1H结构方向与FVG过滤；启用回踩确认时，价格跌破后回踩订单块下沿并重新向下收盘。")
+     message = "订单块测试版开空信号：按当前交易频率模式，1H红色订单块达到生效数量并逐级下移，价格跌破最新红色订单块下沿；启用回踩确认时，价格跌破后回踩并重新向下收盘。")
 
 alertcondition(
      stopTriggeredThisBar,
