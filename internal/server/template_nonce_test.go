@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
@@ -52,6 +53,7 @@ func TestTVBotTemplatesGenerateFreshTokenAndWebhookValidates(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("webhook status=%d body=%s", rr.Code, rr.Body.String())
 	}
+	orderResp := decodeTVOrderSignalResponse(t, rr.Body.Bytes())
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		if got.TokenNonce != first.TokenNonce || got.TargetExchange != trading.ExchangeBinance || got.APIID != "binance-main" {
@@ -60,4 +62,5 @@ func TestTVBotTemplatesGenerateFreshTokenAndWebhookValidates(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor was not called")
 	}
+	waitOrderStatus(t, srv.Orders, orderResp.SignalID, storage.StatusSubmitted)
 }
