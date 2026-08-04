@@ -89,7 +89,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		Sz:             sz,
 		AttachAlgoOrds: attachAlgoOrders(signal, clOrdID),
 	}
-	ack, env, err := client.PlaceOrder(ctx, req)
+	ack, env, err := t.placeOrderWithTrailingFallback(ctx, client, req, signal, clOrdID, sizingPx)
 	result := trading.OrderResult{
 		SignalID:       "",
 		APIID:          apiID,
@@ -110,6 +110,26 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		t.Logger.Info("okx order submitted", "api_id", apiID, "inst_id", sym.InstID, "action", signal.Action, "cl_ord_id", clOrdID, "okx_code", env.Code)
 	}
 	return result, nil
+}
+
+func (t Trader) placeOrderWithTrailingFallback(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx float64) (OrderAck, Envelope, error) {
+	ack, env, err := client.PlaceOrder(ctx, req)
+	if err == nil || !shouldRetryWithTrailingCallbackSpread(signal, req, err, referencePx) {
+		return ack, env, err
+	}
+	fallbackReq := req
+	fallbackReq.AttachAlgoOrds = trailingCallbackSpreadAttachAlgoOrders(signal.Risk, clOrdID, referencePx)
+	if len(fallbackReq.AttachAlgoOrds) == 0 {
+		return ack, env, err
+	}
+	if t.Logger != nil {
+		t.Logger.Warn("okx trailing callback ratio rejected, retrying with callback spread", "inst_id", req.InstID, "cl_ord_id", req.ClOrdID, "reference_px", trading.NormalizeFloat(referencePx), "error", err)
+	}
+	fallbackAck, fallbackEnv, fallbackErr := client.PlaceOrder(ctx, fallbackReq)
+	if fallbackErr != nil {
+		return fallbackAck, fallbackEnv, fmt.Errorf("okx trailing callback ratio rejected: %v; callback spread fallback failed: %w", err, fallbackErr)
+	}
+	return fallbackAck, fallbackEnv, nil
 }
 
 func (t Trader) ensureLeverage(ctx context.Context, client Client, req SetLeverageRequest, state directionSwitchState, action trading.Side) (int, error) {
@@ -389,6 +409,58 @@ func AttachAlgoOrders(action trading.Side, risk trading.Risk, clOrdID string) []
 	default:
 		return nil
 	}
+}
+
+func shouldRetryWithTrailingCallbackSpread(signal trading.Signal, req PlaceOrderRequest, err error, referencePx float64) bool {
+	risk := signal.Risk
+	risk.Normalize()
+	return risk.Type == trading.RiskTrailing &&
+		referencePx > 0 &&
+		placeOrderRequestUsesTrailingCallbackRatio(req) &&
+		isDynamicTrailingUnsupportedError(err)
+}
+
+func placeOrderRequestUsesTrailingCallbackRatio(req PlaceOrderRequest) bool {
+	for _, attach := range req.AttachAlgoOrds {
+		if strings.EqualFold(strings.TrimSpace(attach["ordType"]), "move_order_stop") &&
+			strings.TrimSpace(attach["callbackRatio"]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func isDynamicTrailingUnsupportedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr APIError
+	if errors.As(err, &apiErr) && apiErr.HasCode("54079") {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "54079") ||
+		(strings.Contains(text, "dynamic change") && strings.Contains(text, "futures mode"))
+}
+
+func trailingCallbackSpreadAttachAlgoOrders(risk trading.Risk, clOrdID string, referencePx float64) []map[string]string {
+	risk.Normalize()
+	if risk.Type != trading.RiskTrailing || risk.TrailingPct == nil || referencePx <= 0 {
+		return nil
+	}
+	spread := referencePx * risk.TrailingPct.Value / 100
+	if spread <= 0 {
+		return nil
+	}
+	callbackSpread := trading.NormalizeFloat(spread)
+	if callbackSpread == "" || callbackSpread == "0" {
+		return nil
+	}
+	return []map[string]string{{
+		"attachAlgoClOrdId": attachAlgoClOrdID(clOrdID, "T"),
+		"ordType":           "move_order_stop",
+		"callbackSpread":    callbackSpread,
+	}}
 }
 
 func attachAlgoClOrdID(clOrdID, suffix string) string {

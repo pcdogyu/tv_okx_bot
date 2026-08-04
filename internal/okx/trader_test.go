@@ -116,6 +116,74 @@ func TestTraderExecuteSignalPlacesDefaultMarketOrderWithTPSL(t *testing.T) {
 	}
 }
 
+func TestTraderExecuteSignalRetriesTrailingWithCallbackSpreadOnOKX54079(t *testing.T) {
+	var orderReqs []PlaceOrderRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			var req PlaceOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			orderReqs = append(orderReqs, req)
+			if len(orderReqs) == 1 {
+				_, _ = w.Write([]byte(`{"code":"1","msg":"All operations failed","data":[{"sCode":"54079","sMsg":"Dynamic change is available only for futures trading in futures mode or multi-currency mode."}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"x","ordId":"456","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	trailingPct := trading.NewFlexibleFloat(1.5)
+	signal := trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		SentAt:   "2026-07-24T03:00:00Z",
+		Ticker:   "BTCUSDT",
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(100),
+		Risk:     trading.Risk{Type: trading.RiskTrailing, TrailingPct: &trailingPct},
+	}
+	trader := Trader{
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	result, err := trader.ExecuteSignal(context.Background(), signal, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OrdID != "456" {
+		t.Fatalf("ord id = %q", result.OrdID)
+	}
+	if len(orderReqs) != 2 {
+		t.Fatalf("expected trailing fallback retry, got %#v", orderReqs)
+	}
+	firstAttach := orderReqs[0].AttachAlgoOrds[0]
+	if firstAttach["ordType"] != "move_order_stop" || firstAttach["callbackRatio"] != "0.015" || firstAttach["callbackSpread"] != "" {
+		t.Fatalf("bad first trailing attach: %#v", firstAttach)
+	}
+	secondAttach := orderReqs[1].AttachAlgoOrds[0]
+	if secondAttach["ordType"] != "move_order_stop" || secondAttach["callbackRatio"] != "" || secondAttach["callbackSpread"] != "750" {
+		t.Fatalf("bad fallback trailing attach: %#v", secondAttach)
+	}
+	if orderReqs[1].ClOrdID != orderReqs[0].ClOrdID || orderReqs[1].Sz != orderReqs[0].Sz {
+		t.Fatalf("fallback should retry same entry details: first=%#v second=%#v", orderReqs[0], orderReqs[1])
+	}
+}
+
 func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *testing.T) {
 	var orderReq PlaceOrderRequest
 	var instrumentSeen bool
