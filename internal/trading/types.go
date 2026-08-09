@@ -206,6 +206,7 @@ type SymbolInfo struct {
 	Coinpair string
 	InstID   string
 	CtVal    float64
+	TickSz   float64
 	LotSz    float64
 	MinSz    float64
 }

@@ -28,6 +28,9 @@ func TestAttachAlgoOrdersBuildsTPSLAndTrailing(t *testing.T) {
 	if tpsl[0]["attachAlgoClOrdId"] != "CLIENT100A" || tpsl[0]["tpTriggerRatio"] != "-0.02" || tpsl[0]["slTriggerRatio"] != "0.01" || tpsl[0]["tpOrdPx"] != "-1" || tpsl[0]["slOrdPx"] != "-1" {
 		t.Fatalf("bad tp/sl attach: %#v", tpsl[0])
 	}
+	if tpsl[0]["tpTriggerPxType"] != "last" || tpsl[0]["slTriggerPxType"] != "last" {
+		t.Fatalf("dynamic tp/sl should use last price triggers: %#v", tpsl[0])
+	}
 
 	trailingPct := trading.NewFlexibleFloat(1.5)
 	trailing := AttachAlgoOrders(trading.ActionLong, trading.Risk{Type: trading.RiskTrailing, TrailingPct: &trailingPct}, "CLIENT200")
@@ -113,6 +116,87 @@ func TestTraderExecuteSignalPlacesDefaultMarketOrderWithTPSL(t *testing.T) {
 	attach := orderReq.AttachAlgoOrds[0]
 	if attach["tpTriggerRatio"] != "0.02" || attach["slTriggerRatio"] != "0.01" || attach["tpOrdPx"] != "-1" || attach["slOrdPx"] != "-1" {
 		t.Fatalf("bad attach algo: %#v", attach)
+	}
+	if attach["tpTriggerPxType"] != "last" || attach["slTriggerPxType"] != "last" {
+		t.Fatalf("dynamic tp/sl should use last price triggers: %#v", attach)
+	}
+}
+
+func TestTraderExecuteSignalRetriesTPSLWithFixedTriggerPricesOnOKX54079(t *testing.T) {
+	var orderReqs []PlaceOrderRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instId") != "BNB-USDT-SWAP" {
+				t.Fatalf("bad instruments query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BNB-USDT-SWAP","ctVal":"1","tickSz":"0.1","lotSz":"0.1","minSz":"0.1"}]}`))
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			var req PlaceOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			orderReqs = append(orderReqs, req)
+			if len(orderReqs) == 1 {
+				_, _ = w.Write([]byte(`{"code":"1","msg":"All operations failed","data":[{"sCode":"54079","sMsg":"Dynamic change is available only for futures trading in futures mode or multi-currency mode. Note that when selecting dynamic change, the trigger price can only be calculated using the last price."}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"x","ordId":"789","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Symbols = map[string]config.SymbolConfig{}
+	cfg.Trading.BaseURL = ts.URL
+	tp := trading.NewFlexibleFloat(1.5)
+	sl := trading.NewFlexibleFloat(2)
+	signal := trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "BNB-USDT-SWAP",
+		Price:    trading.NewFlexibleFloat(603),
+		SentAt:   "2026-08-08T19:50:03Z",
+		Ticker:   "BNB-USDT-SWAP",
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(500),
+		Risk:     trading.Risk{Type: trading.RiskTPSL, TPPct: &tp, SLPct: &sl},
+	}
+	trader := Trader{
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	result, err := trader.ExecuteSignal(context.Background(), signal, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OrdID != "789" {
+		t.Fatalf("ord id = %q", result.OrdID)
+	}
+	if len(orderReqs) != 2 {
+		t.Fatalf("expected TP/SL fallback retry, got %#v", orderReqs)
+	}
+	firstAttach := orderReqs[0].AttachAlgoOrds[0]
+	if firstAttach["tpTriggerRatio"] != "-0.015" || firstAttach["slTriggerRatio"] != "0.02" || firstAttach["tpTriggerPxType"] != "last" || firstAttach["slTriggerPxType"] != "last" {
+		t.Fatalf("bad first tp/sl attach: %#v", firstAttach)
+	}
+	secondAttach := orderReqs[1].AttachAlgoOrds[0]
+	if secondAttach["tpTriggerRatio"] != "" || secondAttach["slTriggerRatio"] != "" || secondAttach["tpTriggerPx"] != "593.9" || secondAttach["slTriggerPx"] != "615.1" {
+		t.Fatalf("bad fallback tp/sl attach: %#v", secondAttach)
+	}
+	if secondAttach["tpOrdPx"] != "-1" || secondAttach["slOrdPx"] != "-1" || secondAttach["tpTriggerPxType"] != "last" || secondAttach["slTriggerPxType"] != "last" {
+		t.Fatalf("bad fallback tp/sl order fields: %#v", secondAttach)
+	}
+	if orderReqs[1].ClOrdID != orderReqs[0].ClOrdID || orderReqs[1].Sz != orderReqs[0].Sz {
+		t.Fatalf("fallback should retry same entry details: first=%#v second=%#v", orderReqs[0], orderReqs[1])
 	}
 }
 

@@ -76,6 +76,7 @@ type SymbolConfig struct {
 	Coinpair string  `json:"coinpair"`
 	InstID   string  `json:"inst_id"`
 	CtVal    float64 `json:"ct_val"`
+	TickSz   float64 `json:"tick_sz,omitempty"`
 	LotSz    float64 `json:"lot_sz"`
 	MinSz    float64 `json:"min_sz"`
 }
@@ -622,6 +623,7 @@ func (c Config) SymbolMeta(coinpair string) (trading.SymbolInfo, bool) {
 		Coinpair: sym.Coinpair,
 		InstID:   sym.InstID,
 		CtVal:    sym.CtVal,
+		TickSz:   sym.TickSz,
 		LotSz:    sym.LotSz,
 		MinSz:    sym.MinSz,
 	}, true

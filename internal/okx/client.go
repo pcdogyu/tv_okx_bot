@@ -923,6 +923,13 @@ func (i Instrument) SymbolInfo() (tradingSymbolInfo, error) {
 	if err != nil {
 		return tradingSymbolInfo{}, fmt.Errorf("invalid ctVal %q: %w", i.CtVal, err)
 	}
+	var tickSz float64
+	if strings.TrimSpace(i.TickSz) != "" {
+		tickSz, err = strconv.ParseFloat(i.TickSz, 64)
+		if err != nil {
+			return tradingSymbolInfo{}, fmt.Errorf("invalid tickSz %q: %w", i.TickSz, err)
+		}
+	}
 	lotSz, err := strconv.ParseFloat(i.LotSz, 64)
 	if err != nil {
 		return tradingSymbolInfo{}, fmt.Errorf("invalid lotSz %q: %w", i.LotSz, err)
@@ -931,12 +938,13 @@ func (i Instrument) SymbolInfo() (tradingSymbolInfo, error) {
 	if err != nil {
 		return tradingSymbolInfo{}, fmt.Errorf("invalid minSz %q: %w", i.MinSz, err)
 	}
-	return tradingSymbolInfo{InstID: i.InstID, CtVal: ctVal, LotSz: lotSz, MinSz: minSz}, nil
+	return tradingSymbolInfo{InstID: i.InstID, CtVal: ctVal, TickSz: tickSz, LotSz: lotSz, MinSz: minSz}, nil
 }
 
 type tradingSymbolInfo struct {
 	InstID string
 	CtVal  float64
+	TickSz float64
 	LotSz  float64
 	MinSz  float64
 }

@@ -89,7 +89,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		Sz:             sz,
 		AttachAlgoOrds: attachAlgoOrders(signal, clOrdID),
 	}
-	ack, env, err := t.placeOrderWithTrailingFallback(ctx, client, req, signal, clOrdID, sizingPx)
+	ack, env, err := t.placeOrderWithAlgoFallback(ctx, client, req, signal, clOrdID, sizingPx, sym.TickSz)
 	result := trading.OrderResult{
 		SignalID:       "",
 		APIID:          apiID,
@@ -112,22 +112,21 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	return result, nil
 }
 
-func (t Trader) placeOrderWithTrailingFallback(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx float64) (OrderAck, Envelope, error) {
+func (t Trader) placeOrderWithAlgoFallback(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx, tickSz float64) (OrderAck, Envelope, error) {
 	ack, env, err := client.PlaceOrder(ctx, req)
-	if err == nil || !shouldRetryWithTrailingCallbackSpread(signal, req, err, referencePx) {
+	if err == nil || !isDynamicAlgoUnsupportedError(err) {
 		return ack, env, err
 	}
-	fallbackReq := req
-	fallbackReq.AttachAlgoOrds = trailingCallbackSpreadAttachAlgoOrders(signal.Risk, clOrdID, referencePx)
-	if len(fallbackReq.AttachAlgoOrds) == 0 {
+	fallbackReq, label, ok := dynamicAlgoFallbackRequest(req, signal, clOrdID, referencePx, tickSz)
+	if !ok {
 		return ack, env, err
 	}
 	if t.Logger != nil {
-		t.Logger.Warn("okx trailing callback ratio rejected, retrying with callback spread", "inst_id", req.InstID, "cl_ord_id", req.ClOrdID, "reference_px", trading.NormalizeFloat(referencePx), "error", err)
+		t.Logger.Warn("okx attached algo rejected, retrying with compatible parameters", "inst_id", req.InstID, "cl_ord_id", req.ClOrdID, "fallback", label, "reference_px", trading.NormalizeFloat(referencePx), "error", err)
 	}
 	fallbackAck, fallbackEnv, fallbackErr := client.PlaceOrder(ctx, fallbackReq)
 	if fallbackErr != nil {
-		return fallbackAck, fallbackEnv, fmt.Errorf("okx trailing callback ratio rejected: %v; callback spread fallback failed: %w", err, fallbackErr)
+		return fallbackAck, fallbackEnv, fmt.Errorf("okx %s rejected: %v; fallback failed: %w", label, err, fallbackErr)
 	}
 	return fallbackAck, fallbackEnv, nil
 }
@@ -270,6 +269,7 @@ func (t Trader) resolveSymbol(ctx context.Context, client Client, signal trading
 		Coinpair: coinpair,
 		InstID:   meta.InstID,
 		CtVal:    meta.CtVal,
+		TickSz:   meta.TickSz,
 		LotSz:    meta.LotSz,
 		MinSz:    meta.MinSz,
 	}, nil
@@ -392,10 +392,10 @@ func AttachAlgoOrders(action trading.Side, risk trading.Risk, clOrdID string) []
 			"attachAlgoClOrdId": attachAlgoClOrdID(clOrdID, "A"),
 			"tpTriggerRatio":    signedTPRatio(action, risk.TPPct.Value),
 			"tpOrdPx":           "-1",
-			"tpTriggerPxType":   "mark",
+			"tpTriggerPxType":   "last",
 			"slTriggerRatio":    pctRatio(risk.SLPct.Value),
 			"slOrdPx":           "-1",
-			"slTriggerPxType":   "mark",
+			"slTriggerPxType":   "last",
 		}}
 	case trading.RiskTrailing:
 		if risk.TrailingPct == nil {
@@ -411,13 +411,35 @@ func AttachAlgoOrders(action trading.Side, risk trading.Risk, clOrdID string) []
 	}
 }
 
-func shouldRetryWithTrailingCallbackSpread(signal trading.Signal, req PlaceOrderRequest, err error, referencePx float64) bool {
+func dynamicAlgoFallbackRequest(req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx, tickSz float64) (PlaceOrderRequest, string, bool) {
 	risk := signal.Risk
 	risk.Normalize()
-	return risk.Type == trading.RiskTrailing &&
-		referencePx > 0 &&
-		placeOrderRequestUsesTrailingCallbackRatio(req) &&
-		isDynamicTrailingUnsupportedError(err)
+	switch risk.Type {
+	case trading.RiskTPSL:
+		if referencePx <= 0 || !placeOrderRequestUsesTPSLRatio(req) {
+			return PlaceOrderRequest{}, "", false
+		}
+		attach := fixedTPSLAttachAlgoOrders(signal.Action, risk, clOrdID, referencePx, tickSz)
+		if len(attach) == 0 {
+			return PlaceOrderRequest{}, "", false
+		}
+		fallbackReq := req
+		fallbackReq.AttachAlgoOrds = attach
+		return fallbackReq, "attached TP/SL ratio", true
+	case trading.RiskTrailing:
+		if referencePx <= 0 || !placeOrderRequestUsesTrailingCallbackRatio(req) {
+			return PlaceOrderRequest{}, "", false
+		}
+		attach := trailingCallbackSpreadAttachAlgoOrders(risk, clOrdID, referencePx)
+		if len(attach) == 0 {
+			return PlaceOrderRequest{}, "", false
+		}
+		fallbackReq := req
+		fallbackReq.AttachAlgoOrds = attach
+		return fallbackReq, "trailing callback ratio", true
+	default:
+		return PlaceOrderRequest{}, "", false
+	}
 }
 
 func placeOrderRequestUsesTrailingCallbackRatio(req PlaceOrderRequest) bool {
@@ -430,7 +452,16 @@ func placeOrderRequestUsesTrailingCallbackRatio(req PlaceOrderRequest) bool {
 	return false
 }
 
-func isDynamicTrailingUnsupportedError(err error) bool {
+func placeOrderRequestUsesTPSLRatio(req PlaceOrderRequest) bool {
+	for _, attach := range req.AttachAlgoOrds {
+		if strings.TrimSpace(attach["tpTriggerRatio"]) != "" || strings.TrimSpace(attach["slTriggerRatio"]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func isDynamicAlgoUnsupportedError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -441,6 +472,62 @@ func isDynamicTrailingUnsupportedError(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "54079") ||
 		(strings.Contains(text, "dynamic change") && strings.Contains(text, "futures mode"))
+}
+
+func fixedTPSLAttachAlgoOrders(action trading.Side, risk trading.Risk, clOrdID string, referencePx, tickSz float64) []map[string]string {
+	risk.Normalize()
+	if risk.Type != trading.RiskTPSL || risk.TPPct == nil || risk.SLPct == nil || referencePx <= 0 {
+		return nil
+	}
+	tpTrigger, slTrigger := fixedTPSLTriggerPrices(action, risk.TPPct.Value, risk.SLPct.Value, referencePx, tickSz)
+	if tpTrigger == "" || slTrigger == "" || tpTrigger == "0" || slTrigger == "0" {
+		return nil
+	}
+	return []map[string]string{{
+		"attachAlgoClOrdId": attachAlgoClOrdID(clOrdID, "A"),
+		"tpTriggerPx":       tpTrigger,
+		"tpOrdPx":           "-1",
+		"tpTriggerPxType":   "last",
+		"slTriggerPx":       slTrigger,
+		"slOrdPx":           "-1",
+		"slTriggerPxType":   "last",
+	}}
+}
+
+func fixedTPSLTriggerPrices(action trading.Side, tpPct, slPct, referencePx, tickSz float64) (string, string) {
+	if referencePx <= 0 ||
+		math.IsNaN(tpPct) || math.IsInf(tpPct, 0) || tpPct <= 0 ||
+		math.IsNaN(slPct) || math.IsInf(slPct, 0) || slPct <= 0 {
+		return "", ""
+	}
+	switch action {
+	case trading.ActionLong:
+		return formatOKXTriggerPrice(referencePx*(1+tpPct/100), tickSz, true),
+			formatOKXTriggerPrice(referencePx*(1-slPct/100), tickSz, false)
+	case trading.ActionShort:
+		return formatOKXTriggerPrice(referencePx*(1-tpPct/100), tickSz, false),
+			formatOKXTriggerPrice(referencePx*(1+slPct/100), tickSz, true)
+	default:
+		return "", ""
+	}
+}
+
+func formatOKXTriggerPrice(target, tickSz float64, roundUp bool) string {
+	if target <= 0 || math.IsNaN(target) || math.IsInf(target, 0) {
+		return ""
+	}
+	if tickSz > 0 && !math.IsNaN(tickSz) && !math.IsInf(tickSz, 0) {
+		units := target / tickSz
+		if roundUp {
+			target = math.Ceil(units-1e-12) * tickSz
+		} else {
+			target = math.Floor(units+1e-12) * tickSz
+		}
+	}
+	if target <= 0 || math.IsNaN(target) || math.IsInf(target, 0) {
+		return ""
+	}
+	return trading.NormalizeFloat(target)
 }
 
 func trailingCallbackSpreadAttachAlgoOrders(risk trading.Risk, clOrdID string, referencePx float64) []map[string]string {
