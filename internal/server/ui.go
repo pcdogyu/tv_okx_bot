@@ -2552,6 +2552,14 @@ const tvbotHTML = `<!doctype html>
       box.hidden = tabID !== "orderSettings";
     }
 
+    function parsedHashRoute() {
+      const raw = location.hash ? location.hash.slice(1) : "";
+      const splitAt = raw.indexOf("?");
+      const tab = splitAt >= 0 ? raw.slice(0, splitAt) : raw;
+      const query = splitAt >= 0 ? raw.slice(splitAt + 1) : "";
+      return { tab: tab, params: new URLSearchParams(query) };
+    }
+
     function activateTab(tabID, persist) {
       let target = tabID || "dashboard";
       let button = tabButton(target);
@@ -2601,7 +2609,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     function initialTab() {
-      const fromHash = location.hash ? location.hash.slice(1) : "";
+      const fromHash = parsedHashRoute().tab;
       const hashButton = tabButton(fromHash);
       if (fromHash && hashButton && !hashButton.hidden && $(fromHash)) return fromHash;
       return effectiveDefaultTab();
@@ -3527,6 +3535,18 @@ const tvbotHTML = `<!doctype html>
 
     function templateWebhookURL() {
       return new URL("/tvorder", window.location.origin).toString();
+    }
+
+    function templatePageURLFromButton(button) {
+      const params = new URLSearchParams();
+      params.set("target_exchange", normalizeExchange(button.dataset.templateExchange || "okx"));
+      params.set("trade_env", button.dataset.templateEnv === "live" ? "live" : "demo");
+      params.set("coinpair", String(button.dataset.templateSymbol || "").trim());
+      params.set("direction", "both");
+      params.set("price_source", "close");
+      const url = new URL("/tvbot/", window.location.origin);
+      url.hash = "template?" + params.toString();
+      return url.toString();
     }
 
     function renderTemplateWebhookURL() {
@@ -4804,15 +4824,38 @@ const tvbotHTML = `<!doctype html>
       toast("模板已生成");
     }
 
-    async function generateTemplateFromSymbolButton(button) {
+    function openTemplateFromSymbolButton(button) {
       const symbol = String(button.dataset.templateSymbol || "").trim();
       if (!symbol) return;
-      $("tpl-target-exchange").value = normalizeExchange(button.dataset.templateExchange || "okx");
-      $("tpl-trade-env").value = button.dataset.templateEnv === "live" ? "live" : "demo";
+      const opened = window.open(templatePageURLFromButton(button), "_blank");
+      if (opened) {
+        try {
+          opened.opener = null;
+          opened.focus();
+        } catch (err) {}
+      } else {
+        toast("浏览器拦截了弹出页面");
+      }
+    }
+
+    async function applyTemplateHashParams() {
+      const route = parsedHashRoute();
+      if (route.tab !== "template") return;
+      const params = route.params;
+      const symbol = String(params.get("coinpair") || "").trim();
+      if (!symbol) return;
+      $("tpl-target-exchange").value = normalizeExchange(params.get("target_exchange") || "okx");
+      $("tpl-trade-env").value = params.get("trade_env") === "live" ? "live" : "demo";
+      $("tpl-direction").value = ["both", "long", "short"].includes(params.get("direction")) ? params.get("direction") : "both";
+      $("tpl-price-source").value = ["close", "high", "low"].includes(params.get("price_source")) ? params.get("price_source") : "close";
       renderTemplateAPIs();
+      const apiID = String(params.get("api_id") || "").trim();
+      if (apiID) $("tpl-api-id").value = apiID;
+      if (!state.symbols) {
+        await loadSymbols(false);
+      }
       renderTemplateCoinpairs();
       $("tpl-coinpair").value = symbol;
-      activateTab("template", true);
       await makeTemplate();
     }
 
@@ -5208,7 +5251,7 @@ const tvbotHTML = `<!doctype html>
     $("symbol-rows").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-symbol-template]");
       if (!button) return;
-      generateTemplateFromSymbolButton(button).catch((err) => toast(err.message));
+      openTemplateFromSymbolButton(button);
     });
     $("copy-webhook-url").addEventListener("click", async () => {
       renderTemplateWebhookURL();
@@ -5281,7 +5324,7 @@ const tvbotHTML = `<!doctype html>
     renderPositions();
     renderPendingOrders();
     activateTab(initialTab(), false);
-    loadAll().catch((err) => toast(err.message));
+    loadAll().then(() => applyTemplateHashParams()).catch((err) => toast(err.message));
   </script>
 </body>
 </html>`
