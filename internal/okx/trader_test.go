@@ -21,15 +21,23 @@ func (f credentialProviderFunc) OKXCredentials(apiID string) (Credentials, strin
 func TestAttachAlgoOrdersBuildsTPSLAndTrailing(t *testing.T) {
 	tp := trading.NewFlexibleFloat(2)
 	sl := trading.NewFlexibleFloat(1)
-	tpsl := AttachAlgoOrders(trading.ActionShort, trading.Risk{Type: trading.RiskTPSL, TPPct: &tp, SLPct: &sl}, "CLIENT100")
-	if len(tpsl) != 1 {
-		t.Fatalf("tp/sl attach length = %d", len(tpsl))
+	shortTPSL := AttachAlgoOrders(trading.ActionShort, trading.Risk{Type: trading.RiskTPSL, TPPct: &tp, SLPct: &sl}, "CLIENT100")
+	if len(shortTPSL) != 1 {
+		t.Fatalf("short tp/sl attach length = %d", len(shortTPSL))
 	}
-	if tpsl[0]["attachAlgoClOrdId"] != "CLIENT100A" || tpsl[0]["tpTriggerRatio"] != "-0.02" || tpsl[0]["slTriggerRatio"] != "0.01" || tpsl[0]["tpOrdPx"] != "-1" || tpsl[0]["slOrdPx"] != "-1" {
-		t.Fatalf("bad tp/sl attach: %#v", tpsl[0])
+	if shortTPSL[0]["attachAlgoClOrdId"] != "CLIENT100A" || shortTPSL[0]["tpTriggerRatio"] != "-0.02" || shortTPSL[0]["slTriggerRatio"] != "0.01" || shortTPSL[0]["tpOrdPx"] != "-1" || shortTPSL[0]["slOrdPx"] != "-1" {
+		t.Fatalf("bad short tp/sl attach: %#v", shortTPSL[0])
 	}
-	if tpsl[0]["tpTriggerPxType"] != "last" || tpsl[0]["slTriggerPxType"] != "last" {
-		t.Fatalf("dynamic tp/sl should use last price triggers: %#v", tpsl[0])
+
+	longTPSL := AttachAlgoOrders(trading.ActionLong, trading.Risk{Type: trading.RiskTPSL, TPPct: &tp, SLPct: &sl}, "CLIENT101")
+	if len(longTPSL) != 1 {
+		t.Fatalf("long tp/sl attach length = %d", len(longTPSL))
+	}
+	if longTPSL[0]["attachAlgoClOrdId"] != "CLIENT101A" || longTPSL[0]["tpTriggerRatio"] != "0.02" || longTPSL[0]["slTriggerRatio"] != "-0.01" || longTPSL[0]["tpOrdPx"] != "-1" || longTPSL[0]["slOrdPx"] != "-1" {
+		t.Fatalf("bad long tp/sl attach: %#v", longTPSL[0])
+	}
+	if longTPSL[0]["tpTriggerPxType"] != "last" || longTPSL[0]["slTriggerPxType"] != "last" {
+		t.Fatalf("dynamic tp/sl should use last price triggers: %#v", longTPSL[0])
 	}
 
 	trailingPct := trading.NewFlexibleFloat(1.5)
@@ -39,6 +47,18 @@ func TestAttachAlgoOrdersBuildsTPSLAndTrailing(t *testing.T) {
 	}
 	if trailing[0]["attachAlgoClOrdId"] != "CLIENT200T" || trailing[0]["ordType"] != "move_order_stop" || trailing[0]["callbackRatio"] != "0.015" {
 		t.Fatalf("bad trailing attach: %#v", trailing[0])
+	}
+}
+
+func TestAttachAlgoOrdersQuantizesRatiosToOKXStep(t *testing.T) {
+	tp := trading.NewFlexibleFloat(1.23456)
+	sl := trading.NewFlexibleFloat(0.005)
+	tpsl := AttachAlgoOrders(trading.ActionLong, trading.Risk{Type: trading.RiskTPSL, TPPct: &tp, SLPct: &sl}, "CLIENT300")
+	if len(tpsl) != 1 {
+		t.Fatalf("tp/sl attach length = %d", len(tpsl))
+	}
+	if tpsl[0]["tpTriggerRatio"] != "0.0123" || tpsl[0]["slTriggerRatio"] != "-0.0001" {
+		t.Fatalf("bad quantized tp/sl attach: %#v", tpsl[0])
 	}
 }
 
@@ -114,7 +134,7 @@ func TestTraderExecuteSignalPlacesDefaultMarketOrderWithTPSL(t *testing.T) {
 		t.Fatalf("attach algo length = %d", len(orderReq.AttachAlgoOrds))
 	}
 	attach := orderReq.AttachAlgoOrds[0]
-	if attach["tpTriggerRatio"] != "0.02" || attach["slTriggerRatio"] != "0.01" || attach["tpOrdPx"] != "-1" || attach["slOrdPx"] != "-1" {
+	if attach["tpTriggerRatio"] != "0.02" || attach["slTriggerRatio"] != "-0.01" || attach["tpOrdPx"] != "-1" || attach["slOrdPx"] != "-1" {
 		t.Fatalf("bad attach algo: %#v", attach)
 	}
 	if attach["tpTriggerPxType"] != "last" || attach["slTriggerPxType"] != "last" {

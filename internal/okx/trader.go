@@ -393,7 +393,7 @@ func AttachAlgoOrders(action trading.Side, risk trading.Risk, clOrdID string) []
 			"tpTriggerRatio":    signedTPRatio(action, risk.TPPct.Value),
 			"tpOrdPx":           "-1",
 			"tpTriggerPxType":   "last",
-			"slTriggerRatio":    pctRatio(risk.SLPct.Value),
+			"slTriggerRatio":    signedSLRatio(action, risk.SLPct.Value),
 			"slOrdPx":           "-1",
 			"slTriggerPxType":   "last",
 		}}
@@ -567,11 +567,36 @@ func signedTPRatio(action trading.Side, pct float64) string {
 	if action == trading.ActionShort {
 		ratio = -ratio
 	}
-	return trading.NormalizeFloat(ratio)
+	return okxRatio(ratio)
+}
+
+func signedSLRatio(action trading.Side, pct float64) string {
+	ratio := pct / 100
+	if action != trading.ActionShort {
+		ratio = -ratio
+	}
+	return okxRatio(ratio)
 }
 
 func pctRatio(pct float64) string {
-	return trading.NormalizeFloat(pct / 100)
+	return okxRatio(pct / 100)
+}
+
+func okxRatio(ratio float64) string {
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		return "0"
+	}
+	const step = 0.0001
+	sign := 1.0
+	if ratio < 0 {
+		sign = -1
+	}
+	absRatio := math.Abs(ratio)
+	rounded := math.Round(absRatio/step) * step
+	if rounded == 0 && absRatio > 0 {
+		rounded = step
+	}
+	return trading.NormalizeFloat(sign * rounded)
 }
 
 func clientOrderID(signal trading.Signal) string {

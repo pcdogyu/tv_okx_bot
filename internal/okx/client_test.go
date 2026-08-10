@@ -532,7 +532,7 @@ func TestClientAmendOrderSignsPrivateRequest(t *testing.T) {
 			"tpTriggerRatio":    "0.02",
 			"tpOrdPx":           "-1",
 			"tpTriggerPxType":   "mark",
-			"slTriggerRatio":    "0.01",
+			"slTriggerRatio":    "-0.01",
 			"slOrdPx":           "-1",
 			"slTriggerPxType":   "mark",
 		}},
@@ -559,7 +559,7 @@ func TestClientAmendOrderSignsPrivateRequest(t *testing.T) {
 			t.Fatalf("bad attach algo body: %#v", body)
 		}
 		first, ok := attach[0].(map[string]any)
-		if !ok || first["tpTriggerRatio"] != "0.02" || first["slTriggerRatio"] != "0.01" || first["tpOrdPx"] != "-1" || first["slOrdPx"] != "-1" {
+		if !ok || first["tpTriggerRatio"] != "0.02" || first["slTriggerRatio"] != "-0.01" || first["tpOrdPx"] != "-1" || first["slOrdPx"] != "-1" {
 			t.Fatalf("bad attach algo fields: %#v", attach)
 		}
 		w.Header().Set("Content-Type", "application/json")
