@@ -291,6 +291,7 @@ func TestTraderExecuteSignalRetriesTrailingWithCallbackSpreadOnOKX54079(t *testi
 func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *testing.T) {
 	var orderReq PlaceOrderRequest
 	var instrumentSeen bool
+	var tickerSeen bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -300,6 +301,12 @@ func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *
 				t.Fatalf("instId query = %q", r.URL.Query().Get("instId"))
 			}
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"ETH-USDT-SWAP","ctVal":"0.1","lotSz":"0.01","minSz":"0.01"}]}`))
+		case "/api/v5/market/ticker":
+			tickerSeen = true
+			if r.URL.Query().Get("instId") != "ETH-USDT-SWAP" {
+				t.Fatalf("ticker instId query = %q", r.URL.Query().Get("instId"))
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"ETH-USDT-SWAP","bidPx":"2499","askPx":"2501","last":"2500"}]}`))
 		case "/api/v5/account/positions":
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 		case "/api/v5/trade/orders-pending":
@@ -324,7 +331,7 @@ func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *
 	signal := trading.Signal{
 		Action:   trading.ActionShort,
 		Coinpair: "OKX:ETHUSDT.P",
-		Price:    trading.NewFlexibleFloat(2500),
+		Price:    trading.NewFlexibleFloat(2000),
 		SentAt:   "2026-07-24T03:00:00Z",
 		Ticker:   "OKX:ETHUSDT.P",
 		Leverage: 3,
@@ -340,8 +347,73 @@ func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *
 	if !instrumentSeen {
 		t.Fatal("expected public instrument lookup")
 	}
+	if !tickerSeen {
+		t.Fatal("expected public ticker lookup")
+	}
 	if orderReq.InstID != "ETH-USDT-SWAP" || orderReq.Side != "sell" || orderReq.OrdType != "limit" || orderReq.Px != "2507.5" || orderReq.Sz != "0.39" {
 		t.Fatalf("bad dynamic order request: %#v", orderReq)
+	}
+}
+
+func TestTraderExecuteSignalRefreshesStaleShortLimitPriceFromOKXTicker(t *testing.T) {
+	var orderReq PlaceOrderRequest
+	var tickerSeen bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instId") != "STRK-USDT-SWAP" {
+				t.Fatalf("instId query = %q", r.URL.Query().Get("instId"))
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"STRK-USDT-SWAP","ctVal":"1","tickSz":"0.0001","lotSz":"1","minSz":"1"}]}`))
+		case "/api/v5/market/ticker":
+			tickerSeen = true
+			if r.URL.Query().Get("instId") != "STRK-USDT-SWAP" {
+				t.Fatalf("ticker instId query = %q", r.URL.Query().Get("instId"))
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"STRK-USDT-SWAP","bidPx":"239.3","askPx":"239.5","last":"200"}]}`))
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			if err := json.NewDecoder(r.Body).Decode(&orderReq); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"x","ordId":"123","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Symbols = map[string]config.SymbolConfig{}
+	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.OrderType = string(trading.OrderTypeLimit)
+	signal := trading.Signal{
+		Action:   trading.ActionShort,
+		Coinpair: "STRKUSDT.P",
+		Price:    trading.NewFlexibleFloat(200),
+		SentAt:   "2026-08-10T07:00:05Z",
+		Ticker:   "OKX:STRKUSDT.P",
+		Leverage: 1,
+		Amount:   trading.NewFlexibleFloat(500),
+	}
+	trader := Trader{
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	if _, err := trader.ExecuteSignal(context.Background(), signal, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !tickerSeen {
+		t.Fatal("expected public ticker lookup")
+	}
+	if orderReq.InstID != "STRK-USDT-SWAP" || orderReq.Side != "sell" || orderReq.OrdType != "limit" || orderReq.Px != "240.1182" || orderReq.Sz != "2" {
+		t.Fatalf("bad refreshed limit order request: %#v", orderReq)
 	}
 }
 

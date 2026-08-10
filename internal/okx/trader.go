@@ -56,8 +56,10 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 	sizingPx := signal.Price.Value
 	orderPx := ""
 	if orderSettings.OrderType == trading.OrderTypeLimit {
-		sizingPx = orderSettings.LimitPrice(signal.Action, signal.Price.Value)
-		orderPx = trading.NormalizeFloat(sizingPx)
+		sizingPx, orderPx, err = refreshedOKXLimitOrderPrice(ctx, client, signal.Action, orderSettings, sym)
+		if err != nil {
+			return trading.OrderResult{}, err
+		}
 	}
 	sz, err := trading.SizeFromUSDTNotional(signal.Amount.Value, sizingPx, sym.CtVal, sym.LotSz, sym.MinSz)
 	if err != nil {
@@ -512,7 +514,54 @@ func fixedTPSLTriggerPrices(action trading.Side, tpPct, slPct, referencePx, tick
 	}
 }
 
+func refreshedOKXLimitOrderPrice(ctx context.Context, client Client, action trading.Side, orderSettings trading.OrderSettings, sym trading.SymbolInfo) (float64, string, error) {
+	ticker, _, err := client.MarketTicker(ctx, sym.InstID)
+	if err != nil {
+		return 0, "", fmt.Errorf("refresh OKX limit price for %s: %w", sym.InstID, err)
+	}
+	marketPx, err := okxTickerMidPrice(ticker)
+	if err != nil {
+		return 0, "", fmt.Errorf("refresh OKX limit price for %s: %w", sym.InstID, err)
+	}
+	limitPx := orderSettings.LimitPrice(action, marketPx)
+	roundUp := false
+	switch action {
+	case trading.ActionLong:
+		roundUp = false
+	case trading.ActionShort:
+		roundUp = true
+	default:
+		return 0, "", fmt.Errorf("unsupported OKX limit action %q", action)
+	}
+	orderPx := formatOKXPrice(limitPx, sym.TickSz, roundUp)
+	if orderPx == "" || orderPx == "0" {
+		return 0, "", fmt.Errorf("invalid OKX limit price for %s", sym.InstID)
+	}
+	sizingPx, err := strconv.ParseFloat(orderPx, 64)
+	if err != nil || sizingPx <= 0 {
+		return 0, "", fmt.Errorf("invalid OKX limit price %q for %s", orderPx, sym.InstID)
+	}
+	return sizingPx, orderPx, nil
+}
+
+func okxTickerMidPrice(ticker Ticker) (float64, error) {
+	bid, bidErr := strconv.ParseFloat(strings.TrimSpace(ticker.BidPx), 64)
+	ask, askErr := strconv.ParseFloat(strings.TrimSpace(ticker.AskPx), 64)
+	if bidErr == nil && askErr == nil && bid > 0 && ask > 0 {
+		return (bid + ask) / 2, nil
+	}
+	last, lastErr := strconv.ParseFloat(strings.TrimSpace(ticker.Last), 64)
+	if lastErr != nil || last <= 0 {
+		return 0, fmt.Errorf("invalid OKX ticker bid/ask for %s", ticker.InstID)
+	}
+	return last, nil
+}
+
 func formatOKXTriggerPrice(target, tickSz float64, roundUp bool) string {
+	return formatOKXPrice(target, tickSz, roundUp)
+}
+
+func formatOKXPrice(target, tickSz float64, roundUp bool) string {
 	if target <= 0 || math.IsNaN(target) || math.IsInf(target, 0) {
 		return ""
 	}
