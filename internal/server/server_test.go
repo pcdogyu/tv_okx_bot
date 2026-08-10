@@ -3440,7 +3440,7 @@ func TestTVBotPendingOrderChaseRebuildsNakedOrderWithRiskControls(t *testing.T) 
 	}
 }
 
-func TestTVBotPendingOrderChaseAmendsExistingRiskControls(t *testing.T) {
+func TestTVBotPendingOrderChasePreservesExistingRiskControlsWhileAmendingPrice(t *testing.T) {
 	oldInterval := pendingOrderChaseInterval
 	oldTimeout := pendingOrderChaseTimeout
 	oldJobs := pendingOrderChaseJobs
@@ -3513,13 +3513,8 @@ func TestTVBotPendingOrderChaseAmendsExistingRiskControls(t *testing.T) {
 	if amend["instId"] != "BTC-USDT-SWAP" || amend["ordId"] != "100" || amend["newPx"] != "64000.1" {
 		t.Fatalf("bad amend body: %#v", amend)
 	}
-	attach, ok := amend["attachAlgoOrds"].([]any)
-	if !ok || len(attach) != 1 {
-		t.Fatalf("missing attach algo on amend: %#v", amend)
-	}
-	first, ok := attach[0].(map[string]any)
-	if !ok || first["tpTriggerRatio"] != "-0.03" || first["slTriggerRatio"] != "0.015" || first["tpOrdPx"] != "-1" || first["slOrdPx"] != "-1" {
-		t.Fatalf("bad amend attach algo: %#v", attach)
+	if _, ok := amend["attachAlgoOrds"]; ok {
+		t.Fatalf("chase amend should only change price and preserve existing TP/SL on OKX: %#v", amend)
 	}
 }
 

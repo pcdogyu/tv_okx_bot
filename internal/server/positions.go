@@ -2488,16 +2488,14 @@ func chasePendingOrderFromOrder(ctx context.Context, cfg config.Config, client o
 	}
 	resp.MidPx = midPx
 	resp.Px = chasePx
-	attachAlgoOrds := pendingOrderAmendAttachAlgoOrders(cfg, order, req)
-	if pendingOrderPriceEquivalent(order.Px, chasePx) && !(forceAttach && len(attachAlgoOrds) > 0) {
+	if pendingOrderPriceEquivalent(order.Px, chasePx) {
 		resp.Status = "unchanged"
 		resp.Message = "pending order price is already at chase price"
 		return resp, false, nil
 	}
 	amendReq := okx.AmendOrderRequest{
-		InstID:         order.InstID,
-		NewPx:          chasePx,
-		AttachAlgoOrds: attachAlgoOrds,
+		InstID: order.InstID,
+		NewPx:  chasePx,
 	}
 	if strings.TrimSpace(order.OrdID) != "" {
 		amendReq.OrdID = order.OrdID
@@ -3283,20 +3281,6 @@ func shouldRebuildPendingOrderWithProtection(cfg config.Config, order okx.Pendin
 	risk := cfg.OrderSettings().Risk
 	risk.Normalize()
 	return risk.Type == trading.RiskTrailing
-}
-
-func pendingOrderAmendAttachAlgoOrders(cfg config.Config, order okx.PendingOrder, req pendingOrderChaseRequest) []map[string]string {
-	if len(order.AttachAlgoOrds) == 0 {
-		return nil
-	}
-	clOrdID := strings.TrimSpace(order.ClOrdID)
-	if clOrdID == "" {
-		clOrdID = strings.TrimSpace(req.ClOrdID)
-	}
-	if clOrdID == "" {
-		clOrdID = nextPendingOrderLimitClOrdID()
-	}
-	return pendingOrderAttachAlgoOrders(cfg, order, clOrdID)
 }
 
 func pendingOrderAttachAlgoOrders(cfg config.Config, order okx.PendingOrder, clOrdID string) []map[string]string {
