@@ -2189,10 +2189,12 @@ func (s *Server) pendingOrderViews(ctx context.Context, cfg config.Config, clien
 	tickers := map[string]okx.Ticker{}
 	instruments := map[string]okx.Instrument{}
 	for _, order := range orders {
+		unavailableReason := pendingOrderChaseUnavailableReason(order)
 		view := pendingOrderView{
-			PendingOrder: order,
-			OrderGroup:   "normal",
-			Chaseable:    true,
+			PendingOrder:           order,
+			OrderGroup:             "normal",
+			Chaseable:              unavailableReason == "",
+			ChaseUnavailableReason: unavailableReason,
 			Chasing: pendingOrderChaseJobs.activeKey(pendingOrderChaseKey(pendingOrderChaseRequest{
 				APIID:   apiID,
 				InstID:  order.InstID,
@@ -2200,12 +2202,15 @@ func (s *Server) pendingOrderViews(ctx context.Context, cfg config.Config, clien
 				ClOrdID: order.ClOrdID,
 			})),
 		}
-		midPx, chasePx, err := pendingOrderMidAndChasePrice(ctx, client, order, tickers, instruments)
-		if err != nil {
-			view.PriceError = err.Error()
-		} else {
-			view.MidPx = midPx
-			view.ChasePx = chasePx
+		if unavailableReason == "" {
+			midPx, chasePx, err := pendingOrderMidAndChasePrice(ctx, client, order, tickers, instruments)
+			if err != nil {
+				view.PriceError = err.Error()
+				view.Chaseable = false
+			} else {
+				view.MidPx = midPx
+				view.ChasePx = chasePx
+			}
 		}
 		if inst, ok := instruments[strings.ToUpper(strings.TrimSpace(order.InstID))]; ok {
 			applyPendingOrderViewPrecision(&view, precisionFromOKXInstrument(inst))
@@ -2388,8 +2393,14 @@ func preparePendingOrderChase(ctx context.Context, cfg config.Config, client okx
 	}
 	resp.OrdID = order.OrdID
 	resp.ClOrdID = order.ClOrdID
+	if reason := pendingOrderChaseUnavailableReason(order); reason != "" {
+		return req, resp, false, errors.New(reason)
+	}
 	midPx, chasePx, err := pendingOrderMidAndChasePrice(ctx, client, order, nil, nil)
 	if err != nil {
+		return req, resp, false, err
+	}
+	if err := validatePendingOrderChasePx(chasePx); err != nil {
 		return req, resp, false, err
 	}
 	resp.MidPx = midPx
@@ -2465,14 +2476,20 @@ func chasePendingOrderFromOrder(ctx context.Context, cfg config.Config, client o
 	}
 	resp.OrdID = order.OrdID
 	resp.ClOrdID = order.ClOrdID
+	if reason := pendingOrderChaseUnavailableReason(order); reason != "" {
+		return resp, false, errors.New(reason)
+	}
 	midPx, chasePx, err := pendingOrderMidAndChasePrice(ctx, client, order, nil, nil)
 	if err != nil {
+		return resp, false, err
+	}
+	if err := validatePendingOrderChasePx(chasePx); err != nil {
 		return resp, false, err
 	}
 	resp.MidPx = midPx
 	resp.Px = chasePx
 	attachAlgoOrds := pendingOrderAmendAttachAlgoOrders(cfg, order, req)
-	if strings.TrimSpace(order.Px) == chasePx && !(forceAttach && len(attachAlgoOrds) > 0) {
+	if pendingOrderPriceEquivalent(order.Px, chasePx) && !(forceAttach && len(attachAlgoOrds) > 0) {
 		resp.Status = "unchanged"
 		resp.Message = "pending order price is already at chase price"
 		return resp, false, nil
@@ -3423,6 +3440,9 @@ func pendingOrderMidAndChasePrice(ctx context.Context, client okx.Client, order 
 	if instID == "" {
 		return "", "", errors.New("inst_id is required")
 	}
+	if reason := pendingOrderChaseUnavailableReason(order); reason != "" {
+		return "", "", errors.New(reason)
+	}
 	var inst okx.Instrument
 	var ok bool
 	if instruments != nil {
@@ -3663,6 +3683,66 @@ func passivePendingOrderPrice(mid float64, tickRaw, side string) (string, error)
 	default:
 		return "", fmt.Errorf("unsupported order side %q", side)
 	}
+}
+
+func pendingOrderChaseUnavailableReason(order okx.PendingOrder) string {
+	if strings.TrimSpace(order.InstID) == "" {
+		return "缺少币对，刷新挂单后重试"
+	}
+	if strings.TrimSpace(order.OrdID) == "" && strings.TrimSpace(order.ClOrdID) == "" {
+		return "缺少订单ID，刷新挂单后重试"
+	}
+	if !strings.EqualFold(strings.TrimSpace(order.OrdType), "limit") {
+		return "普通追单只支持限价单"
+	}
+	switch strings.ToLower(strings.TrimSpace(order.Side)) {
+	case "buy", "sell":
+		return ""
+	default:
+		return fmt.Sprintf("不支持的订单方向 %q", order.Side)
+	}
+}
+
+func validatePendingOrderChasePx(raw string) error {
+	px, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || px <= 0 || math.IsNaN(px) || math.IsInf(px, 0) {
+		return fmt.Errorf("invalid chase price %q", raw)
+	}
+	return nil
+}
+
+func pendingOrderPriceEquivalent(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if trimDecimalZeros(a) == trimDecimalZeros(b) {
+		return true
+	}
+	ar, aOK := decimalRat(a)
+	br, bOK := decimalRat(b)
+	if aOK && bOK {
+		return ar.Cmp(br) == 0
+	}
+	af, aErr := strconv.ParseFloat(a, 64)
+	bf, bErr := strconv.ParseFloat(b, 64)
+	if aErr != nil || bErr != nil {
+		return false
+	}
+	tolerance := math.Max(math.Abs(af), math.Abs(bf)) * 1e-12
+	if tolerance < 1e-12 {
+		tolerance = 1e-12
+	}
+	return math.Abs(af-bf) <= tolerance
+}
+
+func decimalRat(raw string) (*big.Rat, bool) {
+	rat := new(big.Rat)
+	if _, ok := rat.SetString(strings.TrimSpace(raw)); ok {
+		return rat, true
+	}
+	return nil, false
 }
 
 func activePendingAlgoOrderPrice(bidRaw, askRaw, fallbackRaw, tickRaw, side string) (string, error) {

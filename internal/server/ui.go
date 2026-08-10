@@ -3863,8 +3863,9 @@ const tvbotHTML = `<!doctype html>
 
     function pendingOrderChaseUnavailable(row) {
       if (!row) return "";
-      if (pendingOrderGroup(row) === "algo" && !isTrueValue(row.chaseable)) {
-        return row.chase_unavailable_reason || "该算法订单不支持追单";
+      if (!isTrueValue(row.chaseable)) {
+        if (pendingOrderGroup(row) === "algo") return row.chase_unavailable_reason || row.price_error || "该算法订单不支持追单";
+        return row.chase_unavailable_reason || row.price_error || "该挂单不支持追单";
       }
       return row.price_error || "";
     }
