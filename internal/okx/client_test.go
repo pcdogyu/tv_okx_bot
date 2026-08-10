@@ -7,9 +7,34 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
+
+func withFastOKXRateLimitTest(t *testing.T, attempts int) {
+	t.Helper()
+	oldAttempts := okxRateLimitMaxAttempts
+	oldBaseDelay := okxRateLimitRetryBaseDelay
+	oldMaxDelay := okxRateLimitRetryMaxDelay
+	oldSpacing := okxPrivateRequestSpacing
+	okxRateLimitMaxAttempts = attempts
+	okxRateLimitRetryBaseDelay = 0
+	okxRateLimitRetryMaxDelay = 0
+	okxPrivateRequestSpacing = 0
+	okxPrivateRequestMu.Lock()
+	okxNextPrivateRequestAt = time.Time{}
+	okxPrivateRequestMu.Unlock()
+	t.Cleanup(func() {
+		okxRateLimitMaxAttempts = oldAttempts
+		okxRateLimitRetryBaseDelay = oldBaseDelay
+		okxRateLimitRetryMaxDelay = oldMaxDelay
+		okxPrivateRequestSpacing = oldSpacing
+		okxPrivateRequestMu.Lock()
+		okxNextPrivateRequestAt = time.Time{}
+		okxPrivateRequestMu.Unlock()
+	})
+}
 
 func TestClientSetLeverageSignsPrivateDemoRequest(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
@@ -93,6 +118,87 @@ func TestClientAPIErrorKeepsDetailCodes(t *testing.T) {
 	}
 	if got := apiErr.Error(); got != "okx code 1: All operations failed: 59102: Leverage exceeds the maximum limit. Please lower the leverage." {
 		t.Fatalf("bad error text: %q", got)
+	}
+}
+
+func TestClientRetriesHTTPRateLimit(t *testing.T) {
+	withFastOKXRateLimitTest(t, 3)
+	var calls int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"code":"50011","msg":"Too Many Requests"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posId":"1","posSide":"long","pos":"0.5"}]}`))
+	}))
+	defer ts.Close()
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	positions, _, err := client.Positions(context.Background(), "SWAP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(positions) != 1 {
+		t.Fatalf("expected retry success calls=2 positions=1, calls=%d positions=%#v", calls, positions)
+	}
+}
+
+func TestClientRetriesOKXRateLimitEnvelope(t *testing.T) {
+	withFastOKXRateLimitTest(t, 3)
+	var calls int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"code":"50011","msg":"Too Many Requests","data":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+	}))
+	defer ts.Close()
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	orders, _, err := client.PendingOrders(context.Background(), "SWAP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(orders) != 0 {
+		t.Fatalf("expected retry success calls=2 orders=0, calls=%d orders=%#v", calls, orders)
+	}
+}
+
+func TestClientStopsAfterRateLimitRetries(t *testing.T) {
+	withFastOKXRateLimitTest(t, 2)
+	var calls int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"code":"50011","msg":"Too Many Requests"}`))
+	}))
+	defer ts.Close()
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	_, _, err := client.PendingOrders(context.Background(), "SWAP")
+	if err == nil {
+		t.Fatal("expected rate limit error")
+	}
+	if calls != 2 || !strings.Contains(err.Error(), "okx http status 429") {
+		t.Fatalf("bad retry stop calls=%d err=%v", calls, err)
 	}
 }
 

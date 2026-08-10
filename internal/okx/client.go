@@ -14,7 +14,17 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+)
+
+var (
+	okxRateLimitMaxAttempts    = 4
+	okxRateLimitRetryBaseDelay = 500 * time.Millisecond
+	okxRateLimitRetryMaxDelay  = 5 * time.Second
+	okxPrivateRequestSpacing   = 250 * time.Millisecond
+	okxPrivateRequestMu        sync.Mutex
+	okxNextPrivateRequestAt    time.Time
 )
 
 type Credentials struct {
@@ -151,47 +161,193 @@ func (c Client) Do(ctx context.Context, method, path string, query url.Values, b
 			return Envelope{}, err
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, base+requestPath, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return Envelope{}, err
-	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if c.Demo {
-		req.Header.Set("x-simulated-trading", "1")
-	}
-	if private {
-		if err := c.Credentials.Validate(); err != nil {
+
+	attempts := okxRequestAttempts()
+	var lastErr error
+	var lastEnv Envelope
+	for attempt := 0; attempt < attempts; attempt++ {
+		if private {
+			if err := waitOKXPrivateRequestTurn(ctx, base); err != nil {
+				return lastEnv, err
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, base+requestPath, bytes.NewReader(bodyBytes))
+		if err != nil {
 			return Envelope{}, err
 		}
-		ts := c.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-		req.Header.Set("OK-ACCESS-KEY", c.Credentials.APIKey)
-		req.Header.Set("OK-ACCESS-PASSPHRASE", c.Credentials.Passphrase)
-		req.Header.Set("OK-ACCESS-TIMESTAMP", ts)
-		req.Header.Set("OK-ACCESS-SIGN", sign(ts, method, requestPath, string(bodyBytes), c.Credentials.SecretKey))
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if c.Demo {
+			req.Header.Set("x-simulated-trading", "1")
+		}
+		if private {
+			if err := c.Credentials.Validate(); err != nil {
+				return Envelope{}, err
+			}
+			ts := c.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+			req.Header.Set("OK-ACCESS-KEY", c.Credentials.APIKey)
+			req.Header.Set("OK-ACCESS-PASSPHRASE", c.Credentials.Passphrase)
+			req.Header.Set("OK-ACCESS-TIMESTAMP", ts)
+			req.Header.Set("OK-ACCESS-SIGN", sign(ts, method, requestPath, string(bodyBytes), c.Credentials.SecretKey))
+		}
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return lastEnv, err
+		}
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			return lastEnv, readErr
+		}
+		if closeErr != nil {
+			return lastEnv, closeErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = okxHTTPStatusError(resp.StatusCode, respBody)
+			if okxHTTPRateLimited(resp.StatusCode, respBody) && attempt+1 < attempts {
+				delay := okxRetryDelay(attempt, resp.Header.Get("Retry-After"))
+				if err := sleepContext(ctx, delay); err != nil {
+					return lastEnv, err
+				}
+				continue
+			}
+			return Envelope{}, lastErr
+		}
+		var env Envelope
+		if err := json.Unmarshal(respBody, &env); err != nil {
+			return lastEnv, fmt.Errorf("decode okx response: %w", err)
+		}
+		lastEnv = env
+		if !env.OK() {
+			lastErr = APIError{Code: env.Code, Msg: env.Msg, Data: env.Data}
+			if okxEnvelopeRateLimited(env) && attempt+1 < attempts {
+				delay := okxRetryDelay(attempt, "")
+				if err := sleepContext(ctx, delay); err != nil {
+					return lastEnv, err
+				}
+				continue
+			}
+			return env, lastErr
+		}
+		return env, nil
 	}
-	resp, err := c.HTTPClient.Do(req)
+	if lastErr != nil {
+		return lastEnv, lastErr
+	}
+	return lastEnv, errors.New("okx request failed without response")
+}
+
+func okxRequestAttempts() int {
+	if okxRateLimitMaxAttempts < 1 {
+		return 1
+	}
+	return okxRateLimitMaxAttempts
+}
+
+func waitOKXPrivateRequestTurn(ctx context.Context, base string) error {
+	if okxPrivateRequestSpacing <= 0 || okxLocalBaseURL(base) {
+		return nil
+	}
+	okxPrivateRequestMu.Lock()
+	now := time.Now()
+	wait := okxNextPrivateRequestAt.Sub(now)
+	if wait <= 0 {
+		okxNextPrivateRequestAt = now.Add(okxPrivateRequestSpacing)
+		okxPrivateRequestMu.Unlock()
+		return nil
+	}
+	okxNextPrivateRequestAt = okxNextPrivateRequestAt.Add(okxPrivateRequestSpacing)
+	okxPrivateRequestMu.Unlock()
+	return sleepContext(ctx, wait)
+}
+
+func okxLocalBaseURL(base string) bool {
+	u, err := url.Parse(base)
 	if err != nil {
-		return Envelope{}, err
+		return false
 	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return Envelope{}, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Envelope{}, fmt.Errorf("okx http status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	host := strings.ToLower(u.Hostname())
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func okxHTTPStatusError(status int, body []byte) error {
+	return fmt.Errorf("okx http status %d: %s", status, strings.TrimSpace(string(body)))
+}
+
+func okxHTTPRateLimited(status int, body []byte) bool {
+	if status == http.StatusTooManyRequests {
+		return true
 	}
 	var env Envelope
-	if err := json.Unmarshal(respBody, &env); err != nil {
-		return Envelope{}, fmt.Errorf("decode okx response: %w", err)
+	if len(body) == 0 || json.Unmarshal(body, &env) != nil {
+		return false
 	}
-	if !env.OK() {
-		return env, APIError{Code: env.Code, Msg: env.Msg, Data: env.Data}
+	return okxEnvelopeRateLimited(env)
+}
+
+func okxEnvelopeRateLimited(env Envelope) bool {
+	if env.Code == "50011" {
+		return true
 	}
-	return env, nil
+	return strings.Contains(strings.ToLower(env.Msg), "too many requests")
+}
+
+func okxRetryDelay(attempt int, retryAfter string) time.Duration {
+	if parsed, ok := parseRetryAfter(retryAfter); ok {
+		return parsed
+	}
+	delay := okxRateLimitRetryBaseDelay
+	if delay <= 0 {
+		return 0
+	}
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+		if okxRateLimitRetryMaxDelay > 0 && delay >= okxRateLimitRetryMaxDelay {
+			return okxRateLimitRetryMaxDelay
+		}
+	}
+	if okxRateLimitRetryMaxDelay > 0 && delay > okxRateLimitRetryMaxDelay {
+		return okxRateLimitRetryMaxDelay
+	}
+	return delay
+}
+
+func parseRetryAfter(raw string) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
+		if seconds <= 0 {
+			return 0, true
+		}
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+	if when, err := http.ParseTime(raw); err == nil {
+		delay := time.Until(when)
+		if delay < 0 {
+			delay = 0
+		}
+		return delay, true
+	}
+	return 0, false
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func sign(timestamp, method, requestPath, body, secret string) string {

@@ -2615,9 +2615,25 @@ const tvbotHTML = `<!doctype html>
       return effectiveDefaultTab();
     }
 
+    function activeTabID() {
+      const section = document.querySelector("main section.active");
+      return section ? section.id : initialTab();
+    }
+
     async function loadAll() {
-      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadTradeMonitor(), loadUpgrade(), loadBalanceOverview()]);
-      await loadAnalysis(false);
+      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadUpgrade()]);
+      const target = activeTabID();
+      const tabLoads = [];
+      if (target === "dashboard") {
+        tabLoads.push(loadBalanceOverview(false));
+      } else if (target === "analysis") {
+        tabLoads.push(loadAnalysis(false));
+      } else if (target === "positions") {
+        tabLoads.push(loadPositionView(false));
+      } else if (target === "tradeMonitor") {
+        tabLoads.push(loadTradeMonitor());
+      }
+      await Promise.allSettled(tabLoads);
       renderDashboard();
     }
 
