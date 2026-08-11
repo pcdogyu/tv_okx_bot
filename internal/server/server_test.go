@@ -188,12 +188,6 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("交易所持仓时间")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("upl / Math.abs(margin)")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`{ label: "10%", ratio: "0.1" }`)) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("data-position-protection")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("position-protection-btn")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("止盈")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("止损")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("移动")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/positions/protection")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`data-position-ratio`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-percent-close-btn")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("width: 36px")) ||
@@ -512,6 +506,31 @@ func TestRoutes(t *testing.T) {
 	if !bytes.Contains(ui.Body.Bytes(), []byte("data-retry-id")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/retry")) {
 		t.Fatalf("tvbot ui should include retry controls")
+	}
+}
+
+func TestPositionActionsExcludeProtectionButtons(t *testing.T) {
+	start := strings.Index(tvbotHTML, "function positionActionCell(row)")
+	end := strings.Index(tvbotHTML, "function positionEntryTimeTitle(row)")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatal("position action cell boundaries are missing")
+	}
+	actions := tvbotHTML[start:end]
+	for _, removed := range []string{
+		"data-position-protection",
+		"position-protection-btn",
+		">止盈</button>",
+		">止损</button>",
+		">移动</button>",
+	} {
+		if strings.Contains(actions, removed) {
+			t.Fatalf("position action cell should not include %q", removed)
+		}
+	}
+	for _, kept := range []string{"data-position-ratio", "data-position-close=\"market\"", "data-position-close=\"limit\""} {
+		if !strings.Contains(actions, kept) {
+			t.Fatalf("position action cell should retain %q", kept)
+		}
 	}
 }
 
