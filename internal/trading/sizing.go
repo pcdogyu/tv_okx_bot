@@ -18,6 +18,16 @@ func SizeFromUSDTNotional(amountUSDT, price, ctVal, lotSz, minSz float64) (strin
 		return "", fmt.Errorf("contract metadata must be positive")
 	}
 	raw := amountUSDT / (ctVal * price)
+	return SizeFromContracts(raw, lotSz, minSz)
+}
+
+func SizeFromContracts(raw, lotSz, minSz float64) (string, error) {
+	if raw <= 0 {
+		return "", fmt.Errorf("contract size must be positive")
+	}
+	if lotSz <= 0 || minSz <= 0 {
+		return "", fmt.Errorf("contract metadata must be positive")
+	}
 	steps := math.Floor(raw/lotSz + 1e-12)
 	size := steps * lotSz
 	if size+1e-12 < minSz {
@@ -29,8 +39,10 @@ func SizeFromUSDTNotional(amountUSDT, price, ctVal, lotSz, minSz float64) (strin
 func formatStepDecimal(v, step float64) string {
 	decimals := decimalsForStep(step)
 	s := strconv.FormatFloat(v, 'f', decimals, 64)
-	s = strings.TrimRight(s, "0")
-	s = strings.TrimRight(s, ".")
+	if strings.Contains(s, ".") {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimRight(s, ".")
+	}
 	if s == "" {
 		return "0"
 	}

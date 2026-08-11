@@ -18,3 +18,23 @@ func TestSizeFromUSDTNotionalBelowMinimum(t *testing.T) {
 		t.Fatal("expected below minimum error")
 	}
 }
+
+func TestSizeFromContractsFloorsToLotSize(t *testing.T) {
+	got, err := SizeFromContracts(20.09, 0.1, 0.1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "20" {
+		t.Fatalf("size = %q, want 20", got)
+	}
+}
+
+func TestSizeFromContractsKeepsIntegerTrailingZero(t *testing.T) {
+	got, err := SizeFromContracts(20, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "20" {
+		t.Fatalf("size = %q, want 20", got)
+	}
+}

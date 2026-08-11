@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
@@ -527,6 +528,106 @@ func TestTraderExecuteSignalFallsBackWhenLeverageExceedsMaximum(t *testing.T) {
 	}
 	if orderReq.InstID != "BTC-USDT-SWAP" || orderReq.Side != "sell" {
 		t.Fatalf("bad order request after leverage fallback: %#v", orderReq)
+	}
+}
+
+func TestTraderExecuteSignalRetriesWithOKXMaxPositionSizeLimit(t *testing.T) {
+	var orderReqs []PlaceOrderRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instId") != "ZAMA-USDT-SWAP" {
+				t.Fatalf("bad instruments query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"ZAMA-USDT-SWAP","ctVal":"1","tickSz":"0.0001","lotSz":"1","minSz":"1"}]}`))
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/trade/order":
+			var req PlaceOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			orderReqs = append(orderReqs, req)
+			if len(orderReqs) == 1 {
+				_, _ = w.Write([]byte(`{"code":"1","msg":"All operations failed","data":[{"sCode":"51004","sMsg":"Order failed. For buy/sell mode of ZAMA-USDT-SWAP, the sum of current buy order size, position quantity, and pending buy orders can't be more than 20(contracts) which is the maximum position amount under current leverage. Please lower the leverage or use a new sub-account to place the order again (current leverage: 5x, current buy order size: 216 contracts, position quantity: 0 contracts, pending buy orders: 0 contracts)."}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"x","ordId":"zama-20","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Symbols = map[string]config.SymbolConfig{}
+	cfg.Trading.BaseURL = ts.URL
+	signal := trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "ZAMAUSDT.P",
+		Price:    trading.NewFlexibleFloat(4.62),
+		SentAt:   "2026-08-12T06:15:03Z",
+		Ticker:   "OKX:ZAMAUSDT.P",
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(1000),
+	}
+	trader := Trader{
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	result, err := trader.ExecuteSignal(context.Background(), signal, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OrdID != "zama-20" {
+		t.Fatalf("ord id = %q", result.OrdID)
+	}
+	if len(orderReqs) != 2 {
+		t.Fatalf("expected max position retry, got %#v", orderReqs)
+	}
+	if orderReqs[0].Sz != "216" || orderReqs[1].Sz != "20" {
+		t.Fatalf("bad retry sizes: %#v", orderReqs)
+	}
+	if orderReqs[1].ClOrdID != orderReqs[0].ClOrdID || orderReqs[1].Side != "buy" {
+		t.Fatalf("retry should preserve order identity and side: first=%#v second=%#v", orderReqs[0], orderReqs[1])
+	}
+}
+
+func TestParseOKXMaxPositionLimit(t *testing.T) {
+	msg := "Order failed. For buy/sell mode of ZAMA-USDT-SWAP, the sum of current buy order size, position quantity, and pending buy orders can't be more than 20(contracts) which is the maximum position amount under current leverage. Please lower the leverage or use a new sub-account to place the order again (current leverage: 5x, current buy order size: 216 contracts, position quantity: 0 contracts, pending buy orders: 0 contracts)."
+	limit, ok := parseOKXMaxPositionLimit(msg)
+	if !ok {
+		t.Fatal("expected max position limit")
+	}
+	if limit.Max != 20 || limit.CurrentOrder != 216 || limit.Position != 0 || limit.Pending != 0 {
+		t.Fatalf("bad limit: %#v", limit)
+	}
+	apiErr := APIError{Code: "1", Msg: "All operations failed", Data: json.RawMessage(`[{"sCode":"51004","sMsg":` + strconv.Quote(msg) + `}]`)}
+	limitFromErr, ok := okxMaxPositionLimitFromError(apiErr)
+	if !ok {
+		t.Fatal("expected max position limit from error")
+	}
+	if limitFromErr.Max != 20 || limitFromErr.CurrentOrder != 216 || limitFromErr.Position != 0 || limitFromErr.Pending != 0 {
+		t.Fatalf("bad error limit: %#v", limitFromErr)
+	}
+	nextSize, err := trading.SizeFromContracts(limitFromErr.Max-limitFromErr.Position-limitFromErr.Pending, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nextSize != "20" {
+		t.Fatalf("direct fallback size = %q, want 20", nextSize)
+	}
+	fallbackReq, ok := maxPositionFallbackRequest(PlaceOrderRequest{Sz: "216"}, apiErr, 1, 1)
+	if !ok {
+		t.Fatal("expected max position fallback request")
+	}
+	if fallbackReq.Sz != "20" {
+		t.Fatalf("fallback size = %q, want 20", fallbackReq.Sz)
 	}
 }
 

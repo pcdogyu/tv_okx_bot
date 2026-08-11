@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -91,7 +93,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		Sz:             sz,
 		AttachAlgoOrds: attachAlgoOrders(signal, clOrdID),
 	}
-	ack, env, err := t.placeOrderWithAlgoFallback(ctx, client, req, signal, clOrdID, sizingPx, sym.TickSz)
+	ack, env, err := t.placeOrderWithFallback(ctx, client, req, signal, clOrdID, sizingPx, sym)
 	result := trading.OrderResult{
 		SignalID:       "",
 		APIID:          apiID,
@@ -112,6 +114,25 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		t.Logger.Info("okx order submitted", "api_id", apiID, "inst_id", sym.InstID, "action", signal.Action, "cl_ord_id", clOrdID, "okx_code", env.Code)
 	}
 	return result, nil
+}
+
+func (t Trader) placeOrderWithFallback(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx float64, sym trading.SymbolInfo) (OrderAck, Envelope, error) {
+	ack, env, err := t.placeOrderWithAlgoFallback(ctx, client, req, signal, clOrdID, referencePx, sym.TickSz)
+	if err == nil {
+		return ack, env, nil
+	}
+	fallbackReq, ok := maxPositionFallbackRequest(req, err, sym.LotSz, sym.MinSz)
+	if !ok {
+		return ack, env, err
+	}
+	if t.Logger != nil {
+		t.Logger.Warn("okx order exceeds max position amount, retrying with remaining size", "inst_id", req.InstID, "cl_ord_id", req.ClOrdID, "requested_sz", req.Sz, "retry_sz", fallbackReq.Sz, "error", err)
+	}
+	fallbackAck, fallbackEnv, fallbackErr := t.placeOrderWithAlgoFallback(ctx, client, fallbackReq, signal, clOrdID, referencePx, sym.TickSz)
+	if fallbackErr != nil {
+		return fallbackAck, fallbackEnv, fmt.Errorf("okx max position size retry from %s to %s after rejection: %v; retry failed: %w", req.Sz, fallbackReq.Sz, err, fallbackErr)
+	}
+	return fallbackAck, fallbackEnv, nil
 }
 
 func (t Trader) placeOrderWithAlgoFallback(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx, tickSz float64) (OrderAck, Envelope, error) {
@@ -474,6 +495,121 @@ func isDynamicAlgoUnsupportedError(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "54079") ||
 		(strings.Contains(text, "dynamic change") && strings.Contains(text, "futures mode"))
+}
+
+var (
+	okxMaxPositionLimitRE          = regexp.MustCompile(`(?i)more than\s+([0-9]+(?:\.[0-9]+)?)(?:\s*\(contracts?\)|\s+contracts?)`)
+	okxMaxPositionCurrentOrderRE   = regexp.MustCompile(`(?i)current\s+(?:buy|sell)\s+order\s+size:\s*([0-9]+(?:\.[0-9]+)?)\s*contracts?`)
+	okxMaxPositionQuantityRE       = regexp.MustCompile(`(?i)position\s+quantity:\s*([0-9]+(?:\.[0-9]+)?)\s*contracts?`)
+	okxMaxPositionPendingOrdersRE  = regexp.MustCompile(`(?i)pending\s+(?:buy|sell)\s+orders:\s*([0-9]+(?:\.[0-9]+)?)\s*contracts?`)
+	okxMaxPositionFallbackEpsilon  = 1e-12
+	okxMaxPositionFallbackErrorMsg = "maximum position amount"
+)
+
+type okxMaxPositionLimit struct {
+	Max          float64
+	CurrentOrder float64
+	Position     float64
+	Pending      float64
+}
+
+func maxPositionFallbackRequest(req PlaceOrderRequest, err error, lotSz, minSz float64) (PlaceOrderRequest, bool) {
+	limit, ok := okxMaxPositionLimitFromError(err)
+	if !ok {
+		return PlaceOrderRequest{}, false
+	}
+	currentSize, parseErr := strconv.ParseFloat(strings.TrimSpace(req.Sz), 64)
+	if parseErr != nil || currentSize <= 0 {
+		return PlaceOrderRequest{}, false
+	}
+	remaining := limit.Max - limit.Position - limit.Pending
+	if remaining <= 0 {
+		return PlaceOrderRequest{}, false
+	}
+	nextSize, sizeErr := trading.SizeFromContracts(remaining, lotSz, minSz)
+	if sizeErr != nil {
+		return PlaceOrderRequest{}, false
+	}
+	nextFloat, parseErr := strconv.ParseFloat(nextSize, 64)
+	if parseErr != nil || nextFloat <= 0 || nextFloat+okxMaxPositionFallbackEpsilon >= currentSize {
+		return PlaceOrderRequest{}, false
+	}
+	if limit.CurrentOrder > 0 && currentSize+okxMaxPositionFallbackEpsilon < limit.CurrentOrder {
+		return PlaceOrderRequest{}, false
+	}
+	fallbackReq := req
+	fallbackReq.Sz = nextSize
+	return fallbackReq, true
+}
+
+func okxMaxPositionLimitFromError(err error) (okxMaxPositionLimit, bool) {
+	if err == nil {
+		return okxMaxPositionLimit{}, false
+	}
+	var apiErr APIError
+	hasCode := errors.As(err, &apiErr) && apiErr.HasCode("51004")
+	for _, text := range okxErrorTexts(err, apiErr) {
+		normalized := strings.ToLower(text)
+		if !hasCode && (!strings.Contains(normalized, "51004") || !strings.Contains(normalized, okxMaxPositionFallbackErrorMsg)) {
+			continue
+		}
+		limit, ok := parseOKXMaxPositionLimit(text)
+		if ok {
+			return limit, true
+		}
+	}
+	return okxMaxPositionLimit{}, false
+}
+
+func okxErrorTexts(err error, apiErr APIError) []string {
+	texts := []string{}
+	if len(apiErr.Data) > 0 {
+		var details []struct {
+			SMsg string `json:"sMsg"`
+		}
+		if jsonErr := json.Unmarshal(apiErr.Data, &details); jsonErr == nil {
+			for _, detail := range details {
+				if text := strings.TrimSpace(detail.SMsg); text != "" {
+					texts = append(texts, text)
+				}
+			}
+		}
+	}
+	if text := strings.TrimSpace(apiErr.Msg); text != "" {
+		texts = append(texts, text)
+	}
+	if err != nil {
+		texts = append(texts, err.Error())
+	}
+	return texts
+}
+
+func parseOKXMaxPositionLimit(text string) (okxMaxPositionLimit, bool) {
+	max, ok := firstRegexFloat(okxMaxPositionLimitRE, text)
+	if !ok || max <= 0 {
+		return okxMaxPositionLimit{}, false
+	}
+	current, _ := firstRegexFloat(okxMaxPositionCurrentOrderRE, text)
+	position, _ := firstRegexFloat(okxMaxPositionQuantityRE, text)
+	pending, _ := firstRegexFloat(okxMaxPositionPendingOrdersRE, text)
+	return okxMaxPositionLimit{
+		Max:          max,
+		CurrentOrder: current,
+		Position:     position,
+		Pending:      pending,
+	}, true
+}
+
+func firstRegexFloat(re *regexp.Regexp, text string) (float64, bool) {
+	matches := re.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(matches[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 func fixedTPSLAttachAlgoOrders(action trading.Side, risk trading.Risk, clOrdID string, referencePx, tickSz float64) []map[string]string {
