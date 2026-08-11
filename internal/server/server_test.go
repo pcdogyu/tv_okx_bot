@@ -181,6 +181,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "持仓时间"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionAmount(row)")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionReturnRatio")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("const uplRatio = positionNumber(row ? row.uplRatio : null);")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("if (uplRatio !== null) return uplRatio;")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("formatHoldingSeconds")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionEntryTimeCell")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("交易所持仓时间")) ||

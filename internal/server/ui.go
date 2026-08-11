@@ -3964,10 +3964,12 @@ const tvbotHTML = `<!doctype html>
     }
 
     function positionReturnRatio(row) {
+      const uplRatio = positionNumber(row ? row.uplRatio : null);
+      if (uplRatio !== null) return uplRatio;
       const upl = positionNumber(row ? row.upl : null);
       const margin = positionNumber(row ? row.margin : null);
       if (upl !== null && margin !== null && margin !== 0) return upl / Math.abs(margin);
-      return positionNumber(row ? row.uplRatio : null);
+      return null;
     }
 
     function positionReturnPercent(row) {
