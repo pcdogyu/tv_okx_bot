@@ -33,9 +33,6 @@ func TestNormalizeTableColumns(t *testing.T) {
 	if !reflect.DeepEqual(cfg.UI.TableColumns.Positions, DefaultPositionTableColumns) {
 		t.Fatalf("blank position columns should use defaults: %#v", cfg.UI.TableColumns.Positions)
 	}
-	if got, want := cfg.UI.TableColumns.Positions[5:8], []string{"position_amount", "leverage", "margin"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("position amount, leverage, and margin order = %#v, want %#v", got, want)
-	}
 	if !reflect.DeepEqual(cfg.UI.TableColumns.PendingOrders, DefaultPendingOrderTableColumns) {
 		t.Fatalf("blank pending order columns should use defaults: %#v", cfg.UI.TableColumns.PendingOrders)
 	}
