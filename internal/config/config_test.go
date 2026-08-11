@@ -56,6 +56,11 @@ func TestNormalizeTableColumns(t *testing.T) {
 		cfg.UI.TableColumns.PendingOrders[1] != "symbol" {
 		t.Fatalf("pending order columns should keep known unique order then append defaults: %#v", cfg.UI.TableColumns.PendingOrders)
 	}
+	if pendingAgeIndex := indexString(cfg.UI.TableColumns.PendingOrders, "pending_age"); pendingAgeIndex < 0 ||
+		pendingAgeIndex+1 >= len(cfg.UI.TableColumns.PendingOrders) ||
+		cfg.UI.TableColumns.PendingOrders[pendingAgeIndex+1] != "state" {
+		t.Fatalf("missing pending_age should be inserted before state: %#v", cfg.UI.TableColumns.PendingOrders)
+	}
 	if len(cfg.UI.TableColumns.Symbols) != len(DefaultSymbolTableColumns) ||
 		cfg.UI.TableColumns.Symbols[0] != "turnover" ||
 		cfg.UI.TableColumns.Symbols[1] != "symbol" {
@@ -66,6 +71,12 @@ func TestNormalizeTableColumns(t *testing.T) {
 	}
 	if countString(cfg.UI.TableColumns.Positions, "upl") != 1 || countString(cfg.UI.TableColumns.PendingOrders, "actions") != 1 || countString(cfg.UI.TableColumns.Symbols, "turnover") != 1 {
 		t.Fatalf("duplicate columns should be removed: %#v", cfg.UI.TableColumns)
+	}
+
+	cfg.UI.TableColumns.PendingOrders = []string{"pending_age", "actions", "state"}
+	cfg.Normalize()
+	if cfg.UI.TableColumns.PendingOrders[0] != "pending_age" || cfg.UI.TableColumns.PendingOrders[1] != "actions" {
+		t.Fatalf("explicit pending_age order should be preserved: %#v", cfg.UI.TableColumns.PendingOrders)
 	}
 }
 
@@ -124,4 +135,13 @@ func countString(values []string, want string) int {
 		}
 	}
 	return count
+}
+
+func indexString(values []string, want string) int {
+	for i, value := range values {
+		if value == want {
+			return i
+		}
+	}
+	return -1
 }

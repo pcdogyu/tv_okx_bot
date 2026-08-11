@@ -157,6 +157,7 @@ var DefaultPendingOrderTableColumns = []string{
 	"size",
 	"margin",
 	"filled",
+	"pending_age",
 	"state",
 	"actions",
 }
@@ -606,9 +607,17 @@ func defaultTableColumns() TableColumnsConfig {
 func normalizeTableColumns(columns TableColumnsConfig) TableColumnsConfig {
 	return TableColumnsConfig{
 		Positions:     normalizeColumnOrder(columns.Positions, DefaultPositionTableColumns),
-		PendingOrders: normalizeColumnOrder(columns.PendingOrders, DefaultPendingOrderTableColumns),
+		PendingOrders: normalizePendingOrderColumnOrder(columns.PendingOrders),
 		Symbols:       normalizeColumnOrder(columns.Symbols, DefaultSymbolTableColumns),
 	}
+}
+
+func normalizePendingOrderColumnOrder(columns []string) []string {
+	normalized := normalizeColumnOrder(columns, DefaultPendingOrderTableColumns)
+	if columnOrderContains(columns, "pending_age") {
+		return normalized
+	}
+	return moveColumnBefore(normalized, "pending_age", "state")
 }
 
 func normalizeColumnOrder(columns, defaults []string) []string {
@@ -631,6 +640,49 @@ func normalizeColumnOrder(columns, defaults []string) []string {
 			out = append(out, col)
 		}
 	}
+	return out
+}
+
+func columnOrderContains(columns []string, want string) bool {
+	for _, col := range columns {
+		if strings.TrimSpace(col) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func moveColumnBefore(columns []string, col, before string) []string {
+	colIdx := -1
+	beforeIdx := -1
+	for i, item := range columns {
+		switch item {
+		case col:
+			colIdx = i
+		case before:
+			beforeIdx = i
+		}
+	}
+	if colIdx < 0 || beforeIdx < 0 || colIdx == beforeIdx-1 {
+		return columns
+	}
+	out := make([]string, 0, len(columns))
+	for i, item := range columns {
+		if i != colIdx {
+			out = append(out, item)
+		}
+	}
+	beforeIdx = -1
+	for i, item := range out {
+		if item == before {
+			beforeIdx = i
+			break
+		}
+	}
+	if beforeIdx < 0 {
+		return out
+	}
+	out = append(out[:beforeIdx], append([]string{col}, out[beforeIdx:]...)...)
 	return out
 }
 

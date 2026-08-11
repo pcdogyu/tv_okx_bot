@@ -206,6 +206,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(`tableColumnCount("positions")`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-margin-col")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pending-age-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-actions-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pendingOrderTableColumnDefs")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`tableColumnCount("pending_orders")`)) ||
@@ -234,6 +235,9 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("委托价格")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("中间价")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("保证金")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("挂单计时")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pendingOrderAgeCell")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("formatPendingOrderAgeSeconds")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("追单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("停止追单")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("取消")) ||

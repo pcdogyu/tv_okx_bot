@@ -975,21 +975,22 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-holding-time-col { width: 5.6%; }
     .positions-table .pos-actions-col { width: 25.9%; }
     .pending-order-table {
-      min-width: 1280px;
+      min-width: 1360px;
     }
-    .pending-order-table .pending-exchange-col { width: 6%; }
-    .pending-order-table .pending-time-col { width: 10%; }
-    .pending-order-table .pending-symbol-col { width: 10.5%; }
-    .pending-order-table .pending-side-col { width: 7.4%; }
-    .pending-order-table .pending-pos-side-col { width: 5.8%; }
-    .pending-order-table .pending-type-col { width: 6.5%; }
-    .pending-order-table .pending-price-col { width: 8.5%; }
-    .pending-order-table .pending-mid-col { width: 8.5%; }
-    .pending-order-table .pending-size-col { width: 8%; }
-    .pending-order-table .pending-margin-col { width: 8%; }
-    .pending-order-table .pending-filled-col { width: 7%; }
-    .pending-order-table .pending-state-col { width: 6.5%; }
-    .pending-order-table .pending-actions-col { width: 7.3%; }
+    .pending-order-table .pending-exchange-col { width: 5.6%; }
+    .pending-order-table .pending-time-col { width: 9.2%; }
+    .pending-order-table .pending-symbol-col { width: 9.6%; }
+    .pending-order-table .pending-side-col { width: 6.8%; }
+    .pending-order-table .pending-pos-side-col { width: 5.4%; }
+    .pending-order-table .pending-type-col { width: 6%; }
+    .pending-order-table .pending-price-col { width: 7.8%; }
+    .pending-order-table .pending-mid-col { width: 7.8%; }
+    .pending-order-table .pending-size-col { width: 7.4%; }
+    .pending-order-table .pending-margin-col { width: 7.4%; }
+    .pending-order-table .pending-filled-col { width: 6.4%; }
+    .pending-order-table .pending-age-col { width: 7%; }
+    .pending-order-table .pending-state-col { width: 6%; }
+    .pending-order-table .pending-actions-col { width: 7.6%; }
     pre {
       margin: 0;
       white-space: pre-wrap;
@@ -1708,6 +1709,7 @@ const tvbotHTML = `<!doctype html>
       { id: "size", title: "委托量", colClass: "pending-size-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.sz)) },
       { id: "margin", title: "保证金", colClass: "pending-margin-col", cell: (row) => textTableCell(formatNumber(row.margin)) },
       { id: "filled", title: "已成交", colClass: "pending-filled-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.accFillSz)) },
+      { id: "pending_age", title: "挂单计时", colClass: "pending-age-col", cell: (row) => pendingOrderAgeCell(row) },
       { id: "state", title: "状态", colClass: "pending-state-col", cell: (row) => textTableCell(pendingOrderStateText(row.state)) },
       { id: "actions", title: "操作", colClass: "pending-actions-col", cell: (row) => pendingOrderActionCell(row) }
     ];
@@ -1742,6 +1744,7 @@ const tvbotHTML = `<!doctype html>
       const known = {};
       const seen = {};
       const out = [];
+      const hadPendingAge = Array.isArray(order) && order.some((raw) => String(raw || "").trim() === "pending_age");
       defs.forEach((def) => { known[def.id] = true; });
       (Array.isArray(order) ? order : []).forEach((raw) => {
         const id = String(raw || "").trim();
@@ -1752,7 +1755,20 @@ const tvbotHTML = `<!doctype html>
       defs.forEach((def) => {
         if (!seen[def.id]) out.push(def.id);
       });
+      if (tableID === "pending_orders" && !hadPendingAge) {
+        moveColumnBefore(out, "pending_age", "state");
+      }
       return out;
+    }
+
+    function moveColumnBefore(order, columnID, beforeID) {
+      const from = order.indexOf(columnID);
+      const to = order.indexOf(beforeID);
+      if (from < 0 || to < 0 || from === to - 1) return order;
+      order.splice(from, 1);
+      const nextTo = order.indexOf(beforeID);
+      if (nextTo >= 0) order.splice(nextTo, 0, columnID);
+      return order;
     }
 
     function currentTableColumnOrder(tableID) {
@@ -2187,6 +2203,39 @@ const tvbotHTML = `<!doctype html>
       const hh = String(hours).padStart(2, "0");
       const mm = String(minutes).padStart(2, "0");
       return days > 0 ? (days + "天 " + hh + ":" + mm) : (hh + ":" + mm);
+    }
+
+    function exchangeTimestampMs(value) {
+      if (!value) return null;
+      const raw = String(value).trim();
+      if (!raw) return null;
+      if (/^\d+$/.test(raw)) {
+        const ms = Number(raw);
+        return Number.isFinite(ms) && ms > 0 ? ms : null;
+      }
+      const parsed = Date.parse(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function formatPendingOrderAgeSeconds(value) {
+      const seconds = Number(value);
+      if (!Number.isFinite(seconds) || seconds < 0) return "-";
+      const wholeSeconds = Math.floor(seconds);
+      const days = Math.floor(wholeSeconds / 86400);
+      const hours = Math.floor((wholeSeconds % 86400) / 3600);
+      const minutes = Math.floor((wholeSeconds % 3600) / 60);
+      const secs = wholeSeconds % 60;
+      const hh = String(hours).padStart(2, "0");
+      const mm = String(minutes).padStart(2, "0");
+      const ss = String(secs).padStart(2, "0");
+      return days > 0 ? (days + "天 " + hh + ":" + mm + ":" + ss) : (hh + ":" + mm + ":" + ss);
+    }
+
+    function pendingOrderAgeCell(row) {
+      const ms = exchangeTimestampMs(row && (row.cTime || row.uTime));
+      if (ms === null) return textTableCell("-");
+      const ageSeconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+      return textTableCell(formatPendingOrderAgeSeconds(ageSeconds));
     }
 
     function entryTimeSourceText(value) {

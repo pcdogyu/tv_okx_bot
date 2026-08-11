@@ -36,6 +36,8 @@ var (
 	autoProfitCloseLimitTimeout       = 5 * time.Minute
 	positionMonitorDefaultInterval    = 300 * time.Second
 	positionMonitorScanTimeout        = 20 * time.Second
+	stalePendingOrderCancelInterval   = 5 * time.Minute
+	stalePendingOrderCancelAfter      = 2 * time.Hour
 	positionCloseJobs                 = newPositionCloseRegistry()
 	pendingOrderChaseInterval         = 5 * time.Second
 	pendingOrderChaseTimeout          = 60 * time.Second
@@ -1056,6 +1058,212 @@ func (s *Server) scanBinancePositionMonitorForAPI(ctx context.Context, cfg confi
 		}
 	}
 	return nil
+}
+
+func (s *Server) StartStalePendingOrderCancelMonitor(ctx context.Context) {
+	if s.ConfigStore == nil {
+		return
+	}
+	go s.runStalePendingOrderCancelMonitor(ctx, stalePendingOrderCancelInterval)
+}
+
+func (s *Server) runStalePendingOrderCancelMonitor(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = stalePendingOrderCancelInterval
+	}
+	s.cancelStalePendingOrders(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.cancelStalePendingOrders(ctx)
+		}
+	}
+}
+
+func (s *Server) cancelStalePendingOrders(ctx context.Context) {
+	cfg := s.ConfigStore.Get()
+	now := s.now()
+	s.scanStaleOKXPendingOrders(ctx, cfg, now)
+	s.scanStaleBinancePendingOrders(ctx, cfg, now)
+}
+
+func (s *Server) scanStaleOKXPendingOrders(ctx context.Context, cfg config.Config, now time.Time) {
+	if s.OKXCredentials == nil {
+		return
+	}
+	for _, requestedAPIID := range configuredAPIIDs(s.OKXCredentials.Status()) {
+		scanCtx, cancel := context.WithTimeout(ctx, positionMonitorScanTimeout)
+		err := s.cancelStaleOKXPendingOrdersForAPI(scanCtx, cfg, requestedAPIID, now)
+		cancel()
+		if err != nil && s.Logger != nil {
+			s.Logger.Warn("failed to scan OKX stale pending orders", "api_id", requestedAPIID, "error", err)
+		}
+	}
+}
+
+func (s *Server) cancelStaleOKXPendingOrdersForAPI(ctx context.Context, cfg config.Config, requestedAPIID string, now time.Time) error {
+	client, apiID, err := s.okxClientForCredentials(cfg, requestedAPIID)
+	if err != nil {
+		return err
+	}
+	orders, _, err := client.PendingOrders(ctx, "SWAP")
+	if err != nil {
+		return err
+	}
+	for _, order := range orders {
+		age, stale := staleUnfilledPendingOrderAge(order, now, stalePendingOrderCancelAfter)
+		if !stale {
+			continue
+		}
+		req := pendingOrderChaseRequest{
+			Exchange:   trading.ExchangeOKX,
+			APIID:      apiID,
+			OrderGroup: "normal",
+			InstID:     order.InstID,
+			OrdID:      order.OrdID,
+			ClOrdID:    order.ClOrdID,
+		}
+		if err := cancelPendingOrder(ctx, client, order); err != nil {
+			if _, stillOpen, checkErr := currentPendingOrder(ctx, client, req); checkErr == nil && !stillOpen {
+				pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+				if s.Logger != nil {
+					s.Logger.Info("OKX stale pending order already closed", "api_id", apiID, "inst_id", order.InstID, "ord_id", order.OrdID, "cl_ord_id", order.ClOrdID, "age", age.String())
+				}
+				continue
+			}
+			if s.Logger != nil {
+				s.Logger.Warn("failed to cancel OKX stale pending order", "api_id", apiID, "inst_id", order.InstID, "ord_id", order.OrdID, "cl_ord_id", order.ClOrdID, "age", age.String(), "error", err)
+			}
+			continue
+		}
+		pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+		if s.Logger != nil {
+			s.Logger.Info("OKX stale pending order canceled", "api_id", apiID, "inst_id", order.InstID, "ord_id", order.OrdID, "cl_ord_id", order.ClOrdID, "age", age.String())
+		}
+	}
+	return nil
+}
+
+func (s *Server) scanStaleBinancePendingOrders(ctx context.Context, cfg config.Config, now time.Time) {
+	if s.BinanceCredentials == nil {
+		return
+	}
+	ids := configuredBinanceAPIIDs(s.BinanceCredentials.Status())
+	if len(ids) == 0 {
+		return
+	}
+	if !cfg.BinanceLiveTradingAllowedByEnvironment() {
+		if s.Logger != nil {
+			s.Logger.Warn("Binance stale pending order cancel skipped: live trading is not allowed by environment")
+		}
+		return
+	}
+	for _, requestedAPIID := range ids {
+		scanCtx, cancel := context.WithTimeout(ctx, positionMonitorScanTimeout)
+		err := s.cancelStaleBinancePendingOrdersForAPI(scanCtx, cfg, requestedAPIID, now)
+		cancel()
+		if err != nil && s.Logger != nil {
+			s.Logger.Warn("failed to scan Binance stale pending orders", "api_id", requestedAPIID, "error", err)
+		}
+	}
+}
+
+func (s *Server) cancelStaleBinancePendingOrdersForAPI(ctx context.Context, cfg config.Config, requestedAPIID string, now time.Time) error {
+	client, apiID, err := s.binanceClientForCredentials(cfg, requestedAPIID)
+	if err != nil {
+		return err
+	}
+	orders, err := client.OpenOrders(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, rawOrder := range orders {
+		order := binanceOpenOrderToOKX(rawOrder)
+		age, stale := staleUnfilledPendingOrderAge(order, now, stalePendingOrderCancelAfter)
+		if !stale {
+			continue
+		}
+		req := pendingOrderChaseRequest{
+			Exchange:   trading.ExchangeBinance,
+			APIID:      apiID,
+			OrderGroup: "normal",
+			InstID:     order.InstID,
+			OrdID:      order.OrdID,
+			ClOrdID:    order.ClOrdID,
+		}
+		if err := cancelBinancePendingOrder(ctx, client, order); err != nil {
+			if binancePendingOrderNoLongerOpen(err) {
+				pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+				if s.Logger != nil {
+					s.Logger.Info("Binance stale pending order already closed", "api_id", apiID, "symbol", order.InstID, "ord_id", order.OrdID, "cl_ord_id", order.ClOrdID, "age", age.String())
+				}
+				continue
+			}
+			if s.Logger != nil {
+				s.Logger.Warn("failed to cancel Binance stale pending order", "api_id", apiID, "symbol", order.InstID, "ord_id", order.OrdID, "cl_ord_id", order.ClOrdID, "age", age.String(), "error", err)
+			}
+			continue
+		}
+		pendingOrderChaseJobs.stop(pendingOrderChaseKey(req))
+		if s.Logger != nil {
+			s.Logger.Info("Binance stale pending order canceled", "api_id", apiID, "symbol", order.InstID, "ord_id", order.OrdID, "cl_ord_id", order.ClOrdID, "age", age.String())
+		}
+	}
+	return nil
+}
+
+func staleUnfilledPendingOrderAge(order okx.PendingOrder, now time.Time, maxAge time.Duration) (time.Duration, bool) {
+	if maxAge <= 0 || !pendingOrderUnfilled(order) {
+		return 0, false
+	}
+	createdAt, ok := pendingOrderCreatedAt(order)
+	if !ok {
+		return 0, false
+	}
+	age := now.UTC().Sub(createdAt)
+	if age < maxAge || age < 0 {
+		return age, false
+	}
+	return age, true
+}
+
+func pendingOrderCreatedAt(order okx.PendingOrder) (time.Time, bool) {
+	if createdAt, ok := exchangeMillisTime(strings.TrimSpace(order.CTime)); ok {
+		return createdAt, true
+	}
+	return exchangeMillisTime(strings.TrimSpace(order.UTime))
+}
+
+func exchangeMillisTime(raw string) (time.Time, bool) {
+	if raw == "" {
+		return time.Time{}, false
+	}
+	if ms, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if ms <= 0 {
+			return time.Time{}, false
+		}
+		return time.UnixMilli(ms).UTC(), true
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return parsed.UTC(), true
+	}
+	return time.Time{}, false
+}
+
+func pendingOrderUnfilled(order okx.PendingOrder) bool {
+	raw := strings.TrimSpace(order.AccFillSz)
+	if raw == "" {
+		return false
+	}
+	filled, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(filled) || math.IsInf(filled, 0) {
+		return false
+	}
+	return math.Abs(filled) <= 1e-12
 }
 
 func positionMonitorUPLRatio(position okx.Position) (float64, bool) {
