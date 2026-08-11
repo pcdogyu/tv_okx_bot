@@ -448,6 +448,10 @@ const tvbotHTML = `<!doctype html>
       white-space: nowrap;
       overflow-wrap: normal;
     }
+    th.order-status,
+    td.order-status {
+      width: 8.6%;
+    }
     th.order-okx,
     td.order-okx {
       width: 37.5%;
@@ -1420,7 +1424,7 @@ const tvbotHTML = `<!doctype html>
       </div>
       <table>
         <thead>
-          <tr><th>时间</th><th>状态</th><th>信号来源</th><th>下单去向</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th class="order-okx">交易所 / 返回</th></tr>
+          <tr><th>时间</th><th class="order-status">状态</th><th>信号来源</th><th>下单去向</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th class="order-okx">交易所 / 返回</th></tr>
         </thead>
         <tbody id="order-rows"></tbody>
       </table>
@@ -4480,7 +4484,7 @@ const tvbotHTML = `<!doctype html>
         const statusCell = '<div class="status-cell">' + pill(order.status, tone) + rawJSONButton + "</div>";
         return "<tr>" +
           '<td class="time">' + escapeHTML(shanghaiTime(order.accepted_at)) + "</td>" +
-          "<td>" + statusCell + "</td>" +
+          '<td class="order-status">' + statusCell + "</td>" +
           "<td>" + escapeHTML(sourceExchange) + "</td>" +
           "<td>" + escapeHTML(targetText) + "</td>" +
           "<td>" + escapeHTML(orderHistoryDirectionText(order)) + "</td>" +
