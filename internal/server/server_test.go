@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -513,6 +514,34 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("position-monitor-okx-enabled")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("position_monitor")) {
 		t.Fatalf("tvbot ui should render position monitor controls and config payload")
+	}
+}
+
+func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	resp := httptest.NewRecorder()
+	srv.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("tvbot ui code=%d body=%s", resp.Code, resp.Body.String())
+	}
+	body := resp.Body.Bytes()
+	for _, marker := range [][]byte{
+		[]byte(`class="order-history-actions"`),
+		[]byte(`id="order-search"`),
+		[]byte(`placeholder="币对 / 金额 / 订单号"`),
+		[]byte(`id="search-orders"`),
+		[]byte(`id="clear-order-search"`),
+		[]byte(`class="order-target">下单去向`),
+		[]byte(`td class="order-target"`),
+		[]byte(`ordersSearch: ""`),
+		[]byte(`qs.set("q", state.ordersSearch)`),
+		[]byte(`function applyOrderSearch()`),
+	} {
+		if !bytes.Contains(body, marker) {
+			t.Fatalf("tvbot ui missing order search marker %q", marker)
+		}
 	}
 }
 
@@ -1305,6 +1334,102 @@ func TestHandleOrdersReturnsPaginatedMetadata(t *testing.T) {
 	}
 	if len(resp.Orders) != 2 || resp.Orders[0].Coinpair != "COIN2" || resp.Orders[1].Coinpair != "COIN1" {
 		t.Fatalf("bad page orders: %#v", resp.Orders)
+	}
+}
+
+func TestHandleOrdersSearchesHistoryWithPagination(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Date(2026, 7, 24, 4, 0, 0, 0, time.UTC)
+	btcSignal := validSignal(t, srv)
+	btcSignal.TargetExchange = trading.ExchangeOKX
+	btcSignal.APIID = "main"
+	btcSignal.Exchange = "OKX"
+	btcSignal.Coinpair = "BTCUSDT.P"
+	btcSignal.Ticker = "OKX:BTCUSDT.P"
+	btcSignal.Price = trading.NewFlexibleFloat(61000)
+	btcSignal.Amount = trading.NewFlexibleFloat(500)
+	btc, _, err := srv.Orders.RecordAccepted(btcSignal, "search-http-btc", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orders.MarkSubmitted(btc.SignalID, trading.OrderResult{TargetExchange: trading.ExchangeOKX, InstID: "BTC-USDT-SWAP", ClOrdID: "client-btc", OrdID: "okx-999"}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	ethSignal := validSignal(t, srv)
+	ethSignal.TargetExchange = trading.ExchangeBinance
+	ethSignal.APIID = "binance-main"
+	ethSignal.Exchange = "BINANCE"
+	ethSignal.Coinpair = "ETHUSDT.P"
+	ethSignal.Ticker = "BINANCE:ETHUSDT.P"
+	ethSignal.Price = trading.NewFlexibleFloat(3400)
+	ethSignal.Amount = trading.NewFlexibleFloat(750)
+	eth, _, err := srv.Orders.RecordAccepted(ethSignal, "search-http-eth", now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orders.MarkSubmitted(eth.SignalID, trading.OrderResult{TargetExchange: trading.ExchangeBinance, InstID: "ETHUSDT", ClOrdID: "client-eth", OrdID: "bn-321"}, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	solSignal := validSignal(t, srv)
+	solSignal.TargetExchange = trading.ExchangeOKX
+	solSignal.Exchange = "OKX"
+	solSignal.Coinpair = "SOLUSDT.P"
+	solSignal.Ticker = "OKX:SOLUSDT.P"
+	solSignal.Price = trading.NewFlexibleFloat(120)
+	solSignal.Amount = trading.NewFlexibleFloat(250)
+	sol, _, err := srv.Orders.RecordAccepted(solSignal, "search-http-sol", now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orders.MarkFailedCode(sol.SignalID, "51001", errors.New("Instrument ID does not exist"), now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	fetch := func(target string) struct {
+		Orders     []storage.OrderRecord `json:"orders"`
+		Total      int                   `json:"total"`
+		Limit      int                   `json:"limit"`
+		Offset     int                   `json:"offset"`
+		Page       int                   `json:"page"`
+		TotalPages int                   `json:"total_pages"`
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", target, rr.Code, rr.Body.String())
+		}
+		var resp struct {
+			Orders     []storage.OrderRecord `json:"orders"`
+			Total      int                   `json:"total"`
+			Limit      int                   `json:"limit"`
+			Offset     int                   `json:"offset"`
+			Page       int                   `json:"page"`
+			TotalPages int                   `json:"total_pages"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	if resp := fetch("/tvbot/orders?limit=10&q=btcusdt"); resp.Total != 1 || len(resp.Orders) != 1 || resp.Orders[0].Coinpair != "BTCUSDT.P" {
+		t.Fatalf("bad symbol search response: %#v", resp)
+	}
+	if resp := fetch("/tvbot/orders?limit=10&q=500"); resp.Total != 1 || len(resp.Orders) != 1 || resp.Orders[0].Amount != "500" {
+		t.Fatalf("bad amount search response: %#v", resp)
+	}
+	if resp := fetch("/tvbot/orders?limit=10&q=okx-999"); resp.Total != 1 || len(resp.Orders) != 1 || resp.Orders[0].Result.OrdID != "okx-999" {
+		t.Fatalf("bad order id search response: %#v", resp)
+	}
+	if resp := fetch("/tvbot/orders?limit=10&q=usdt.p&exchange=okx"); resp.Total != 2 || len(resp.Orders) != 2 {
+		t.Fatalf("bad OKX scoped search response: %#v", resp)
+	}
+	if resp := fetch("/tvbot/orders?limit=10&q=btc&exchange=binance"); resp.Total != 0 || len(resp.Orders) != 0 {
+		t.Fatalf("bad Binance scoped search response: %#v", resp)
+	}
+	if resp := fetch("/tvbot/orders?limit=1&offset=1&q=usdt.p"); resp.Total != 3 || resp.Limit != 1 || resp.Offset != 1 || resp.Page != 2 || resp.TotalPages != 3 || len(resp.Orders) != 1 {
+		t.Fatalf("bad search pagination response: %#v", resp)
 	}
 }
 

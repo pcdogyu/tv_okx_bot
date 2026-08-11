@@ -1370,6 +1370,7 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	exchange := strings.TrimSpace(r.URL.Query().Get("exchange"))
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	var orders []storage.OrderRecord
 	var total int
 	if exchange != "" {
@@ -1377,8 +1378,16 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_exchange", "exchange must be okx or binance")
 			return
 		}
-		orders = s.Orders.ListByTargetExchangePage(exchange, limit, offset)
-		total = s.Orders.CountByTargetExchange(exchange)
+		if query != "" {
+			orders = s.Orders.ListSearchByTargetExchangePage(exchange, query, limit, offset)
+			total = s.Orders.CountSearchByTargetExchange(exchange, query)
+		} else {
+			orders = s.Orders.ListByTargetExchangePage(exchange, limit, offset)
+			total = s.Orders.CountByTargetExchange(exchange)
+		}
+	} else if query != "" {
+		orders = s.Orders.ListSearchPage(query, limit, offset)
+		total = s.Orders.CountSearch(query)
 	} else {
 		orders = s.Orders.ListPage(limit, offset)
 		total = s.Orders.Count()

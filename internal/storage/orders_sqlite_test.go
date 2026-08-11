@@ -220,6 +220,110 @@ func TestOrderStoreListPageAndCountMemoryAndSQLite(t *testing.T) {
 	})
 }
 
+func TestOrderStoreSearchPageAndCountMemoryAndSQLite(t *testing.T) {
+	run := func(t *testing.T, store *OrderStore) {
+		t.Helper()
+		now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+		btcSignal := trading.Signal{
+			Action:         trading.ActionLong,
+			APIID:          "main",
+			Exchange:       "OKX",
+			TargetExchange: trading.ExchangeOKX,
+			Coinpair:       "BTCUSDT.P",
+			Ticker:         "OKX:BTCUSDT.P",
+			Price:          trading.NewFlexibleFloat(61000),
+			Amount:         trading.NewFlexibleFloat(500),
+		}
+		btc, _, err := store.RecordAccepted(btcSignal, "search-btc", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkSubmitted(btc.SignalID, trading.OrderResult{TargetExchange: trading.ExchangeOKX, InstID: "BTC-USDT-SWAP", ClOrdID: "client-btc", OrdID: "okx-999"}, now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		ethSignal := trading.Signal{
+			Action:         trading.ActionShort,
+			APIID:          "binance-main",
+			Exchange:       "BINANCE",
+			TargetExchange: trading.ExchangeBinance,
+			Coinpair:       "ETHUSDT.P",
+			Ticker:         "BINANCE:ETHUSDT.P",
+			Price:          trading.NewFlexibleFloat(3400),
+			Amount:         trading.NewFlexibleFloat(750),
+		}
+		eth, _, err := store.RecordAccepted(ethSignal, "search-eth", now.Add(2*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkSubmitted(eth.SignalID, trading.OrderResult{TargetExchange: trading.ExchangeBinance, InstID: "ETHUSDT", ClOrdID: "client-eth", OrdID: "bn-321"}, now.Add(3*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		solSignal := trading.Signal{
+			Action:         trading.ActionLong,
+			APIID:          "backup",
+			Exchange:       "OKX",
+			TargetExchange: trading.ExchangeOKX,
+			Coinpair:       "SOLUSDT.P",
+			Ticker:         "OKX:SOLUSDT.P",
+			Amount:         trading.NewFlexibleFloat(250),
+		}
+		sol, _, err := store.RecordAccepted(solSignal, "search-sol", now.Add(4*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkFailedCode(sol.SignalID, "51001", errors.New("Instrument ID does not exist"), now.Add(5*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+
+		if page := store.ListSearchPage("eth", 10, 0); len(page) != 1 || page[0].Coinpair != "ETHUSDT.P" {
+			t.Fatalf("search by symbol failed: %#v", page)
+		}
+		if page := store.ListSearchPage("500", 10, 0); len(page) != 1 || page[0].Coinpair != "BTCUSDT.P" {
+			t.Fatalf("search by amount failed: %#v", page)
+		}
+		if page := store.ListSearchPage("okx-999", 10, 0); len(page) != 1 || page[0].Coinpair != "BTCUSDT.P" {
+			t.Fatalf("search by order id failed: %#v", page)
+		}
+		if page := store.ListSearchPage("okx instrument", 10, 0); len(page) != 1 || page[0].Coinpair != "SOLUSDT.P" {
+			t.Fatalf("multi-key search should match error text and exchange: %#v", page)
+		}
+		if page := store.ListSearchByTargetExchangePage(trading.ExchangeOKX, "usdt.p", 10, 0); len(page) != 2 {
+			t.Fatalf("exchange-scoped search count failed: %#v", page)
+		}
+		if page := store.ListSearchByTargetExchangePage(trading.ExchangeBinance, "btc", 10, 0); len(page) != 0 {
+			t.Fatalf("exchange-scoped search should exclude OKX result: %#v", page)
+		}
+		if got := store.CountSearch("usdt.p"); got != 3 {
+			t.Fatalf("search count = %d", got)
+		}
+		if got := store.CountSearchByTargetExchange(trading.ExchangeOKX, "usdt.p"); got != 2 {
+			t.Fatalf("exchange search count = %d", got)
+		}
+		if page := store.ListSearchPage("missing", 10, 0); len(page) != 0 || store.CountSearch("missing") != 0 {
+			t.Fatalf("missing search should be empty: page=%#v count=%d", page, store.CountSearch("missing"))
+		}
+		empty := store.ListSearchPage("   ", 2, 1)
+		if len(empty) != 2 || empty[0].Coinpair != "ETHUSDT.P" || empty[1].Coinpair != "BTCUSDT.P" {
+			t.Fatalf("empty search should preserve pagination: %#v", empty)
+		}
+	}
+	t.Run("memory", func(t *testing.T) {
+		store, err := NewOrderStore("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run(t, store)
+	})
+	t.Run("sqlite", func(t *testing.T) {
+		store, err := NewSQLiteOrderStore(filepath.Join(t.TempDir(), "tvbot.db"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		run(t, store)
+	})
+}
+
 func TestSQLiteOrderStoreReadsLegacyRowsWithNullExchangeColumns(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "tvbot.db")
 	db, err := sql.Open("sqlite", dbPath)

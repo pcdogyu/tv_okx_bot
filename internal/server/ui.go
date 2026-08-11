@@ -454,7 +454,11 @@ const tvbotHTML = `<!doctype html>
     }
     th.order-okx,
     td.order-okx {
-      width: 37.5%;
+      width: 36.7%;
+    }
+    th.order-target,
+    td.order-target {
+      width: 8.6%;
     }
     th {
       color: var(--muted);
@@ -690,6 +694,21 @@ const tvbotHTML = `<!doctype html>
       gap: 8px;
       align-items: end;
       flex-wrap: wrap;
+    }
+    #orders .section-head {
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .order-history-actions {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .order-search-input {
+      width: min(270px, 55vw);
+      min-width: 190px;
     }
     .menu-hidden-check {
       display: flex;
@@ -1456,11 +1475,16 @@ const tvbotHTML = `<!doctype html>
           <h2>订单 / 信号历史</h2>
           <span class="muted" id="order-history-status">-</span>
         </div>
-        <button class="btn" type="button" id="refresh-orders">刷新历史</button>
+        <div class="order-history-actions">
+          <input class="order-search-input" id="order-search" autocomplete="off" spellcheck="false" placeholder="币对 / 金额 / 订单号" aria-label="搜索订单历史">
+          <button class="btn" type="button" id="search-orders">搜索</button>
+          <button class="btn" type="button" id="clear-order-search" disabled>清除</button>
+          <button class="btn" type="button" id="refresh-orders">刷新历史</button>
+        </div>
       </div>
       <table>
         <thead>
-          <tr><th>时间</th><th class="order-status">状态</th><th>信号来源</th><th>下单去向</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th class="order-okx">交易所 / 返回</th></tr>
+          <tr><th>时间</th><th class="order-status">状态</th><th>信号来源</th><th class="order-target">下单去向</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th class="order-okx">交易所 / 返回</th></tr>
         </thead>
         <tbody id="order-rows"></tbody>
       </table>
@@ -1565,6 +1589,7 @@ const tvbotHTML = `<!doctype html>
       orders: [],
       ordersTotal: 0,
       ordersPage: 1,
+      ordersSearch: "",
       retrying: {},
       positionClosing: {},
       pendingOrderActions: {},
@@ -2722,6 +2747,8 @@ const tvbotHTML = `<!doctype html>
       state.ordersPage = Math.max(1, Number(state.ordersPage || 1));
       const offset = (state.ordersPage - 1) * ordersPageSize;
       const qs = new URLSearchParams({ limit: String(ordersPageSize), offset: String(offset), exchange: activeExchange() });
+      state.ordersSearch = String(state.ordersSearch || "").trim();
+      if (state.ordersSearch) qs.set("q", state.ordersSearch);
       const data = await api("/tvbot/orders?" + qs.toString());
       state.orders = data.orders || [];
       state.ordersTotal = Number(data.total || 0);
@@ -4534,10 +4561,35 @@ const tvbotHTML = `<!doctype html>
         '<circle cx="' + x(last).toFixed(2) + '" cy="' + y(last.value).toFixed(2) + '" r="4" fill="' + lineColor + '"/>';
     }
 
+    function currentOrderSearchInput() {
+      return $("order-search") ? $("order-search").value.trim() : "";
+    }
+
+    function syncOrderSearchControls() {
+      const clearButton = $("clear-order-search");
+      if (!clearButton) return;
+      clearButton.disabled = !currentOrderSearchInput() && !state.ordersSearch;
+    }
+
+    async function applyOrderSearch() {
+      state.ordersSearch = currentOrderSearchInput();
+      syncOrderSearchControls();
+      await loadOrders(true);
+    }
+
+    async function clearOrderSearch() {
+      state.ordersSearch = "";
+      const input = $("order-search");
+      if (input) input.value = "";
+      syncOrderSearchControls();
+      await loadOrders(true);
+    }
+
     function renderOrders() {
       const total = Number(state.ordersTotal || 0);
       const totalPages = ordersTotalPages();
       state.ordersPage = Math.min(Math.max(1, Number(state.ordersPage || 1)), totalPages);
+      const search = String(state.ordersSearch || "").trim();
       const rows = (state.orders || []).map((order, index) => {
         const targetExchange = normalizeExchange(order.target_exchange || (order.result && order.result.target_exchange));
         const precisionInstID = order.result && order.result.inst_id ? order.result.inst_id : order.coinpair;
@@ -4559,7 +4611,7 @@ const tvbotHTML = `<!doctype html>
           '<td class="time">' + escapeHTML(shanghaiTime(order.accepted_at)) + "</td>" +
           '<td class="order-status">' + statusCell + "</td>" +
           "<td>" + escapeHTML(sourceExchange) + "</td>" +
-          "<td>" + escapeHTML(targetText) + "</td>" +
+          '<td class="order-target">' + escapeHTML(targetText) + "</td>" +
           "<td>" + escapeHTML(orderHistoryDirectionText(order)) + "</td>" +
           "<td>" + escapeHTML(asText(order.coinpair)) + "</td>" +
           "<td>" + escapeHTML(formatCachedSymbolPrice(targetExchange, precisionInstID, order.price)) + "</td>" +
@@ -4567,15 +4619,16 @@ const tvbotHTML = `<!doctype html>
           '<td class="order-okx"><div class="okx-cell"><span class="okx-text">' + escapeHTML(exchangeResult) + "</span>" + retryButton + "</div></td>" +
           "</tr>";
       });
-      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">-</td></tr>';
+      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">' + (search ? "无匹配订单" : "-") + '</td></tr>';
       const status = $("order-history-status");
       const pageInfo = $("order-page-info");
       const prev = $("order-prev");
       const next = $("order-next");
-      if (status) status.textContent = total ? ("共 " + total + " 条") : "-";
+      if (status) status.textContent = total ? ("共 " + total + " 条" + (search ? " / 搜索: " + search : "")) : (search ? "无匹配 / 搜索: " + search : "-");
       if (pageInfo) pageInfo.textContent = total ? ("第 " + state.ordersPage + " / " + totalPages + " 页") : "-";
       if (prev) prev.disabled = state.ordersPage <= 1;
       if (next) next.disabled = state.ordersPage >= totalPages;
+      syncOrderSearchControls();
     }
 
     function changeOrdersPage(delta) {
@@ -5354,6 +5407,14 @@ const tvbotHTML = `<!doctype html>
     });
     $("order-prev").addEventListener("click", () => changeOrdersPage(-1));
     $("order-next").addEventListener("click", () => changeOrdersPage(1));
+    $("order-search").addEventListener("input", () => syncOrderSearchControls());
+    $("order-search").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      applyOrderSearch().catch((err) => toast(err.message));
+    });
+    $("search-orders").addEventListener("click", () => applyOrderSearch().catch((err) => toast(err.message)));
+    $("clear-order-search").addEventListener("click", () => clearOrderSearch().catch((err) => toast(err.message)));
     $("refresh-trade-monitor").addEventListener("click", () => loadTradeMonitor().then(() => toast("成交监听已刷新")).catch((err) => toast(err.message)));
     $("position-rows").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-position-close]");
