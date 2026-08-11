@@ -82,6 +82,36 @@ func TestNormalizeBinanceBaseURLs(t *testing.T) {
 	}
 }
 
+func TestNormalizePositionMonitorDefaultsAndValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Trading.PositionMonitor = PositionMonitorConfig{}
+	cfg.Normalize()
+	if cfg.Trading.PositionMonitor.OKXEnabled || cfg.Trading.PositionMonitor.BinanceEnabled {
+		t.Fatalf("position monitor should default disabled: %#v", cfg.Trading.PositionMonitor)
+	}
+	if cfg.Trading.PositionMonitor.PollIntervalSeconds != 300 || cfg.Trading.PositionMonitor.TakeProfitPct != 5 || cfg.Trading.PositionMonitor.StopLossPct != 8 {
+		t.Fatalf("bad position monitor defaults: %#v", cfg.Trading.PositionMonitor)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("defaulted position monitor should validate: %v", err)
+	}
+
+	cfg.Trading.PositionMonitor.PollIntervalSeconds = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("zero position monitor interval should be rejected")
+	}
+	cfg.Trading.PositionMonitor.PollIntervalSeconds = 300
+	cfg.Trading.PositionMonitor.TakeProfitPct = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("negative position monitor take profit should be rejected")
+	}
+	cfg.Trading.PositionMonitor.TakeProfitPct = 5
+	cfg.Trading.PositionMonitor.StopLossPct = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("negative position monitor stop loss should be rejected")
+	}
+}
+
 func containsString(values []string, want string) bool {
 	return countString(values, want) > 0
 }

@@ -36,25 +36,26 @@ type ServerConfig struct {
 }
 
 type TradingConfig struct {
-	Env                       string            `json:"env"`
-	AllowLiveTrading          bool              `json:"allow_live_trading"`
-	BaseURL                   string            `json:"base_url"`
-	BinanceBaseURL            string            `json:"binance_base_url"`
-	BinanceDemoBaseURL        string            `json:"binance_demo_base_url"`
-	DefaultMarginMode         string            `json:"default_margin_mode"`
-	PositionMode              string            `json:"position_mode"`
-	SignalTTLSeconds          int               `json:"signal_ttl_seconds"`
-	OrderAmountUSDT           float64           `json:"order_amount_usdt"`
-	Leverage                  int               `json:"leverage"`
-	OrderType                 string            `json:"order_type"`
-	RiskType                  string            `json:"risk_type"`
-	TakeProfitPct             float64           `json:"take_profit_pct"`
-	StopLossPct               float64           `json:"stop_loss_pct"`
-	TrailingPct               float64           `json:"trailing_pct"`
-	LongLimitPriceMultiplier  float64           `json:"long_limit_price_multiplier"`
-	ShortLimitPriceMultiplier float64           `json:"short_limit_price_multiplier"`
-	FillMonitor               FillMonitorConfig `json:"fill_monitor"`
-	AutoReentry               AutoReentryConfig `json:"auto_reentry"`
+	Env                       string                `json:"env"`
+	AllowLiveTrading          bool                  `json:"allow_live_trading"`
+	BaseURL                   string                `json:"base_url"`
+	BinanceBaseURL            string                `json:"binance_base_url"`
+	BinanceDemoBaseURL        string                `json:"binance_demo_base_url"`
+	DefaultMarginMode         string                `json:"default_margin_mode"`
+	PositionMode              string                `json:"position_mode"`
+	SignalTTLSeconds          int                   `json:"signal_ttl_seconds"`
+	OrderAmountUSDT           float64               `json:"order_amount_usdt"`
+	Leverage                  int                   `json:"leverage"`
+	OrderType                 string                `json:"order_type"`
+	RiskType                  string                `json:"risk_type"`
+	TakeProfitPct             float64               `json:"take_profit_pct"`
+	StopLossPct               float64               `json:"stop_loss_pct"`
+	TrailingPct               float64               `json:"trailing_pct"`
+	LongLimitPriceMultiplier  float64               `json:"long_limit_price_multiplier"`
+	ShortLimitPriceMultiplier float64               `json:"short_limit_price_multiplier"`
+	FillMonitor               FillMonitorConfig     `json:"fill_monitor"`
+	AutoReentry               AutoReentryConfig     `json:"auto_reentry"`
+	PositionMonitor           PositionMonitorConfig `json:"position_monitor"`
 }
 
 type FillMonitorConfig struct {
@@ -70,6 +71,14 @@ type AutoReentryConfig struct {
 	ReentryAmountPct       float64 `json:"reentry_amount_pct"`
 	CooldownAfterStopHours int     `json:"cooldown_after_stop_hours"`
 	OnlyBotOrders          bool    `json:"only_bot_orders"`
+}
+
+type PositionMonitorConfig struct {
+	OKXEnabled          bool    `json:"okx_enabled"`
+	BinanceEnabled      bool    `json:"binance_enabled"`
+	PollIntervalSeconds int     `json:"poll_interval_seconds"`
+	TakeProfitPct       float64 `json:"take_profit_pct"`
+	StopLossPct         float64 `json:"stop_loss_pct"`
 }
 
 type SymbolConfig struct {
@@ -217,6 +226,13 @@ func Default() Config {
 				CooldownAfterStopHours: 24,
 				OnlyBotOrders:          true,
 			},
+			PositionMonitor: PositionMonitorConfig{
+				OKXEnabled:          false,
+				BinanceEnabled:      false,
+				PollIntervalSeconds: 300,
+				TakeProfitPct:       5,
+				StopLossPct:         8,
+			},
 		},
 		Symbols: map[string]SymbolConfig{
 			"BTC": {
@@ -363,6 +379,15 @@ func (c *Config) Normalize() {
 	if !c.Trading.AutoReentry.OnlyBotOrders {
 		c.Trading.AutoReentry.OnlyBotOrders = true
 	}
+	if c.Trading.PositionMonitor.PollIntervalSeconds <= 0 {
+		c.Trading.PositionMonitor.PollIntervalSeconds = 300
+	}
+	if c.Trading.PositionMonitor.TakeProfitPct <= 0 {
+		c.Trading.PositionMonitor.TakeProfitPct = 5
+	}
+	if c.Trading.PositionMonitor.StopLossPct <= 0 {
+		c.Trading.PositionMonitor.StopLossPct = 8
+	}
 	if c.Symbols == nil {
 		c.Symbols = map[string]SymbolConfig{}
 	}
@@ -442,6 +467,15 @@ func (c Config) Validate() error {
 	}
 	if c.Trading.AutoReentry.CooldownAfterStopHours <= 0 {
 		return errors.New("auto_reentry.cooldown_after_stop_hours must be positive")
+	}
+	if c.Trading.PositionMonitor.PollIntervalSeconds <= 0 {
+		return errors.New("position_monitor.poll_interval_seconds must be positive")
+	}
+	if c.Trading.PositionMonitor.TakeProfitPct <= 0 {
+		return errors.New("position_monitor.take_profit_pct must be positive")
+	}
+	if c.Trading.PositionMonitor.StopLossPct <= 0 {
+		return errors.New("position_monitor.stop_loss_pct must be positive")
 	}
 	for key, sym := range c.Symbols {
 		if sym.Coinpair == "" || sym.InstID == "" {

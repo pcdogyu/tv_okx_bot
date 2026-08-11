@@ -509,6 +509,11 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("/retry")) {
 		t.Fatalf("tvbot ui should include retry controls")
 	}
+	if !bytes.Contains(ui.Body.Bytes(), []byte("自动扫描持仓")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("position-monitor-okx-enabled")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("position_monitor")) {
+		t.Fatalf("tvbot ui should render position monitor controls and config payload")
+	}
 }
 
 func TestPositionActionsExcludeProtectionButtons(t *testing.T) {
@@ -559,6 +564,33 @@ func TestTVBotConfigSavesOrderType(t *testing.T) {
 	srv.ServeHTTP(bad, badReq)
 	if bad.Code != http.StatusBadRequest || !bytes.Contains(bad.Body.Bytes(), []byte("unsupported order_type")) {
 		t.Fatalf("bad order type status=%d body=%s", bad.Code, bad.Body.String())
+	}
+}
+
+func TestTVBotConfigSavesPositionMonitor(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{"trading":{"position_monitor":{"okx_enabled":true,"binance_enabled":true,"poll_interval_seconds":300,"take_profit_pct":5,"stop_loss_pct":8}}}`)))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(rr.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	monitor := cfg.Trading.PositionMonitor
+	if !monitor.OKXEnabled || !monitor.BinanceEnabled || monitor.PollIntervalSeconds != 300 || monitor.TakeProfitPct != 5 || monitor.StopLossPct != 8 {
+		t.Fatalf("position monitor not saved: %#v", monitor)
+	}
+
+	badReq := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{"trading":{"position_monitor":{"okx_enabled":true,"poll_interval_seconds":0,"take_profit_pct":5,"stop_loss_pct":8}}}`)))
+	badReq.SetBasicAuth("admin", "Admin123")
+	bad := httptest.NewRecorder()
+	srv.ServeHTTP(bad, badReq)
+	if bad.Code != http.StatusBadRequest || !bytes.Contains(bad.Body.Bytes(), []byte("position_monitor.poll_interval_seconds")) {
+		t.Fatalf("bad position monitor status=%d body=%s", bad.Code, bad.Body.String())
 	}
 }
 

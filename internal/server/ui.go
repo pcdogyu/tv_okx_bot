@@ -594,6 +594,26 @@ const tvbotHTML = `<!doctype html>
       line-height: 1;
       flex: 0 0 36px;
     }
+    .position-monitor-panel {
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 12px 0;
+      margin: 14px 0 8px;
+    }
+    .position-monitor-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(140px, 1fr));
+      gap: 10px;
+      align-items: end;
+      margin-top: 10px;
+    }
+    .position-monitor-grid label {
+      margin: 0;
+    }
+    .position-monitor-status {
+      font-size: 12px;
+      color: var(--muted);
+    }
     .btn:disabled, .btn.is-disabled {
       opacity: 0.58;
       cursor: not-allowed;
@@ -1024,7 +1044,7 @@ const tvbotHTML = `<!doctype html>
       .bar { align-items: flex-start; flex-direction: column; }
       .header-controls { justify-content: flex-start; }
       nav { justify-content: flex-start; }
-      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics, .dashboard-balance-grid, .analysis-balance-grid { grid-template-columns: 1fr; }
+      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics, .dashboard-balance-grid, .analysis-balance-grid, .position-monitor-grid { grid-template-columns: 1fr; }
       .template-title-row { grid-template-columns: 1fr; }
       .analysis-period-row { flex-direction: column; }
       .analysis-time-status { min-width: 0; }
@@ -1144,6 +1164,22 @@ const tvbotHTML = `<!doctype html>
           <thead id="position-head"></thead>
           <tbody id="position-rows"></tbody>
         </table>
+      </div>
+      <div class="position-monitor-panel">
+        <div class="section-head">
+          <div>
+            <h3>自动扫描持仓</h3>
+            <div class="position-monitor-status" id="position-monitor-status">-</div>
+          </div>
+          <button class="btn primary" type="button" id="save-position-monitor">保存自动扫描</button>
+        </div>
+        <div class="position-monitor-grid">
+          <label class="check"><input id="position-monitor-okx-enabled" type="checkbox">OKX 自动扫描/平仓</label>
+          <label class="check"><input id="position-monitor-binance-enabled" type="checkbox">Binance 自动扫描/平仓</label>
+          <label>扫描间隔秒<input id="position-monitor-interval" type="number" min="1" step="1"></label>
+          <label>止盈 %<input id="position-monitor-tp" type="number" min="0.01" step="0.01"></label>
+          <label>止损 %<input id="position-monitor-sl" type="number" min="0.01" step="0.01"></label>
+        </div>
       </div>
       <div class="section-head" style="margin:18px 0 10px">
         <h3>当前挂单</h3>
@@ -2643,6 +2679,7 @@ const tvbotHTML = `<!doctype html>
       syncActiveTabAfterMenuSettings();
       renderConfig();
       renderOrderSettings();
+      renderPositionMonitor();
       renderMenuSettings();
       renderTemplateCoinpairs();
       renderPositions();
@@ -2970,6 +3007,36 @@ const tvbotHTML = `<!doctype html>
       $("metric-orders").textContent = Number.isFinite(Number(state.ordersTotal)) ? String(Number(state.ordersTotal || 0)) : (state.orders ? state.orders.length : "-");
     }
 
+    function positionMonitorConfig() {
+      const trading = state.config && state.config.trading ? state.config.trading : {};
+      const monitor = trading.position_monitor || {};
+      return {
+        okx_enabled: !!monitor.okx_enabled,
+        binance_enabled: !!monitor.binance_enabled,
+        poll_interval_seconds: Number(monitor.poll_interval_seconds || 300),
+        take_profit_pct: Number(monitor.take_profit_pct || 5),
+        stop_loss_pct: Number(monitor.stop_loss_pct || 8)
+      };
+    }
+
+    function renderPositionMonitor() {
+      if (!$("position-monitor-interval")) return;
+      const monitor = positionMonitorConfig();
+      $("position-monitor-okx-enabled").checked = !!monitor.okx_enabled;
+      $("position-monitor-binance-enabled").checked = !!monitor.binance_enabled;
+      $("position-monitor-interval").value = monitor.poll_interval_seconds || 300;
+      $("position-monitor-tp").value = monitor.take_profit_pct || 5;
+      $("position-monitor-sl").value = monitor.stop_loss_pct || 8;
+      const active = [
+        monitor.okx_enabled ? "OKX" : "",
+        monitor.binance_enabled ? "Binance" : ""
+      ].filter(Boolean).join(" + ");
+      $("position-monitor-status").textContent = (active || "已关闭") +
+        " / " + asText(monitor.poll_interval_seconds || 300) + "s" +
+        " / +" + asText(monitor.take_profit_pct || 5) + "%" +
+        " / -" + asText(monitor.stop_loss_pct || 8) + "%";
+    }
+
     function renderDashboard() {
       if (!state.config) return;
       renderGlobalExchangeSwitch();
@@ -2977,6 +3044,11 @@ const tvbotHTML = `<!doctype html>
       const fillMonitor = t.fill_monitor || {};
       const fillMonitorExchanges = Array.isArray(fillMonitor.exchange) ? fillMonitor.exchange.join(", ") : "binance";
       const autoReentry = t.auto_reentry || {};
+      const positionMonitor = positionMonitorConfig();
+      const positionMonitorExchanges = [
+        positionMonitor.okx_enabled ? "OKX" : "",
+        positionMonitor.binance_enabled ? "Binance" : ""
+      ].filter(Boolean).join(", ");
       const rows = [
         ["服务地址", state.config.server ? state.config.server.addr : "-"],
         ["数据文件", state.config.data_file],
@@ -2996,7 +3068,8 @@ const tvbotHTML = `<!doctype html>
         ["多单限价", "当前价格 x " + asText(t.long_limit_price_multiplier)],
         ["空单限价", "当前价格 x " + asText(t.short_limit_price_multiplier)],
         ["成交监听", fillMonitor.enabled ? ("enabled / " + fillMonitorExchanges + " / " + asText(fillMonitor.poll_interval_seconds) + "s") : "disabled"],
-        ["自动补回", autoReentry.enabled ? ("enabled / " + asText(autoReentry.reentry_amount_pct) + "%") : "disabled"]
+        ["自动补回", autoReentry.enabled ? ("enabled / " + asText(autoReentry.reentry_amount_pct) + "%") : "disabled"],
+        ["持仓扫描", positionMonitorExchanges ? (positionMonitorExchanges + " / " + asText(positionMonitor.poll_interval_seconds) + "s / +" + asText(positionMonitor.take_profit_pct) + "% / -" + asText(positionMonitor.stop_loss_pct) + "%") : "disabled"]
       ];
       $("dashboard-config").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(asText(row[1])) + "</td></tr>").join("");
       renderBalanceOverview();
@@ -4706,6 +4779,25 @@ const tvbotHTML = `<!doctype html>
       toast("下单设置已保存");
     }
 
+    async function savePositionMonitor() {
+      const patch = {
+        trading: {
+          position_monitor: {
+            okx_enabled: $("position-monitor-okx-enabled").checked,
+            binance_enabled: $("position-monitor-binance-enabled").checked,
+            poll_interval_seconds: Number($("position-monitor-interval").value),
+            take_profit_pct: Number($("position-monitor-tp").value),
+            stop_loss_pct: Number($("position-monitor-sl").value)
+          }
+        }
+      };
+      state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+      renderPositionMonitor();
+      renderDashboard();
+      updateMetrics();
+      toast("自动扫描持仓已保存");
+    }
+
     async function saveMenuSettings() {
       const patch = { ui: { default_tab: configuredDefaultTab(), menu_items: currentMenuItems() } };
       state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
@@ -5117,6 +5209,7 @@ const tvbotHTML = `<!doctype html>
       $(id).addEventListener("input", () => renderOrderSettingsPreview());
       $(id).addEventListener("change", () => renderOrderSettingsPreview());
     });
+    $("save-position-monitor").addEventListener("click", () => savePositionMonitor().catch((err) => toast(err.message)));
     $("save-menu-settings").addEventListener("click", () => saveMenuSettings().catch((err) => toast(err.message)));
     $("menu-settings-rows").addEventListener("input", (event) => {
       const input = event.target.closest("input[data-menu-label]");

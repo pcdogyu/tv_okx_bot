@@ -34,6 +34,8 @@ var (
 	autoProfitPositionReturnThreshold = 0.05
 	autoProfitClosePollInterval       = 10 * time.Second
 	autoProfitCloseLimitTimeout       = 5 * time.Minute
+	positionMonitorDefaultInterval    = 300 * time.Second
+	positionMonitorScanTimeout        = 20 * time.Second
 	positionCloseJobs                 = newPositionCloseRegistry()
 	pendingOrderChaseInterval         = 5 * time.Second
 	pendingOrderChaseTimeout          = 60 * time.Second
@@ -902,6 +904,176 @@ func (s *Server) StartLowMarginPositionMonitor(ctx context.Context) {
 		return
 	}
 	go s.runLowMarginPositionMonitor(ctx, lowMarginPositionCheckInterval)
+}
+
+func (s *Server) StartPositionMonitor(ctx context.Context) {
+	if s.ConfigStore == nil {
+		return
+	}
+	go s.runPositionMonitor(ctx)
+}
+
+func (s *Server) runPositionMonitor(ctx context.Context) {
+	s.scanPositionMonitor(ctx)
+	ticker := time.NewTicker(positionMonitorInterval(s.ConfigStore.Get()))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.scanPositionMonitor(ctx)
+			ticker.Reset(positionMonitorInterval(s.ConfigStore.Get()))
+		}
+	}
+}
+
+func positionMonitorInterval(cfg config.Config) time.Duration {
+	interval := time.Duration(cfg.Trading.PositionMonitor.PollIntervalSeconds) * time.Second
+	if interval <= 0 {
+		return positionMonitorDefaultInterval
+	}
+	return interval
+}
+
+func (s *Server) scanPositionMonitor(ctx context.Context) {
+	cfg := s.ConfigStore.Get()
+	monitor := cfg.Trading.PositionMonitor
+	if !monitor.OKXEnabled && !monitor.BinanceEnabled {
+		return
+	}
+	if monitor.OKXEnabled {
+		s.scanOKXPositionMonitor(ctx, cfg, monitor)
+	}
+	if monitor.BinanceEnabled {
+		s.scanBinancePositionMonitor(ctx, cfg, monitor)
+	}
+}
+
+func (s *Server) scanOKXPositionMonitor(ctx context.Context, cfg config.Config, monitor config.PositionMonitorConfig) {
+	if s.OKXCredentials == nil {
+		if s.Logger != nil {
+			s.Logger.Warn("OKX position monitor skipped: credential store is not configured")
+		}
+		return
+	}
+	for _, requestedAPIID := range configuredAPIIDs(s.OKXCredentials.Status()) {
+		scanCtx, cancel := context.WithTimeout(ctx, positionMonitorScanTimeout)
+		err := s.scanOKXPositionMonitorForAPI(scanCtx, cfg, monitor, requestedAPIID)
+		cancel()
+		if err != nil && s.Logger != nil {
+			s.Logger.Warn("failed to scan OKX positions for auto close", "api_id", requestedAPIID, "error", err)
+		}
+	}
+}
+
+func (s *Server) scanOKXPositionMonitorForAPI(ctx context.Context, cfg config.Config, monitor config.PositionMonitorConfig, requestedAPIID string) error {
+	client, apiID, err := s.okxClientForCredentials(cfg, requestedAPIID)
+	if err != nil {
+		return err
+	}
+	positions, _, err := client.Positions(ctx, "SWAP")
+	if err != nil {
+		return err
+	}
+	for _, position := range openPositions(positions) {
+		ratio, ok := positionMonitorUPLRatio(position)
+		if !ok {
+			continue
+		}
+		trigger, hit := positionMonitorTrigger(ratio, monitor)
+		if !hit {
+			continue
+		}
+		order, started, err := s.startLimitPositionClose(ctx, apiID, cfg, client, position, "")
+		if err != nil {
+			if s.Logger != nil {
+				s.Logger.Warn("failed to start OKX auto position close", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "trigger", trigger, "upl_ratio", ratio, "error", err)
+			}
+			continue
+		}
+		if started && s.Logger != nil {
+			s.Logger.Info("OKX auto position close started", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "trigger", trigger, "upl_ratio", ratio, "px", order.Px, "ord_id", order.Ack.OrdID)
+		}
+	}
+	return nil
+}
+
+func (s *Server) scanBinancePositionMonitor(ctx context.Context, cfg config.Config, monitor config.PositionMonitorConfig) {
+	if s.BinanceCredentials == nil {
+		if s.Logger != nil {
+			s.Logger.Warn("Binance position monitor skipped: credential store is not configured")
+		}
+		return
+	}
+	if !cfg.BinanceLiveTradingAllowedByEnvironment() {
+		if s.Logger != nil {
+			s.Logger.Warn("Binance position monitor skipped: live trading is not allowed by environment")
+		}
+		return
+	}
+	for _, requestedAPIID := range configuredBinanceAPIIDs(s.BinanceCredentials.Status()) {
+		scanCtx, cancel := context.WithTimeout(ctx, positionMonitorScanTimeout)
+		err := s.scanBinancePositionMonitorForAPI(scanCtx, cfg, monitor, requestedAPIID)
+		cancel()
+		if err != nil && s.Logger != nil {
+			s.Logger.Warn("failed to scan Binance positions for auto close", "api_id", requestedAPIID, "error", err)
+		}
+	}
+}
+
+func (s *Server) scanBinancePositionMonitorForAPI(ctx context.Context, cfg config.Config, monitor config.PositionMonitorConfig, requestedAPIID string) error {
+	client, apiID, err := s.binanceClientForCredentials(cfg, requestedAPIID)
+	if err != nil {
+		return err
+	}
+	positions, err := client.Positions(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, raw := range positions {
+		position := binancePositionToOKX(raw)
+		if !isOpenPosition(position.Pos) {
+			continue
+		}
+		ratio, ok := positionMonitorUPLRatio(position)
+		if !ok {
+			continue
+		}
+		trigger, hit := positionMonitorTrigger(ratio, monitor)
+		if !hit {
+			continue
+		}
+		order, started, err := s.startBinanceLimitPositionClose(ctx, apiID, client, position, "")
+		if err != nil {
+			if s.Logger != nil {
+				s.Logger.Warn("failed to start Binance auto position close", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "trigger", trigger, "upl_ratio", ratio, "error", err)
+			}
+			continue
+		}
+		if started && s.Logger != nil {
+			s.Logger.Info("Binance auto position close started", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "trigger", trigger, "upl_ratio", ratio, "px", order.Px, "ord_id", order.Ack.OrdID)
+		}
+	}
+	return nil
+}
+
+func positionMonitorUPLRatio(position okx.Position) (float64, bool) {
+	ratio, err := strconv.ParseFloat(strings.TrimSpace(position.UplRatio), 64)
+	if err != nil || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		return 0, false
+	}
+	return ratio, true
+}
+
+func positionMonitorTrigger(ratio float64, monitor config.PositionMonitorConfig) (string, bool) {
+	if monitor.TakeProfitPct > 0 && ratio >= monitor.TakeProfitPct/100 {
+		return "take_profit", true
+	}
+	if monitor.StopLossPct > 0 && ratio <= -monitor.StopLossPct/100 {
+		return "stop_loss", true
+	}
+	return "", false
 }
 
 func (s *Server) runLowMarginPositionMonitor(ctx context.Context, interval time.Duration) {
