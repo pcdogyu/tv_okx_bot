@@ -158,6 +158,7 @@ func runServe(args []string) error {
 	}
 	handler.StartUSDTBalanceSampler(context.Background())
 	handler.StartLowMarginPositionMonitor(context.Background())
+	handler.StartAutoProfitPositionCloseMonitor(context.Background())
 	handler.StartTradeFillMonitor(context.Background())
 	handler.StartSymbolCatalogSyncer(context.Background())
 	logger.Info("tv okx bot listening", "addr", cfg.Server.Addr, "env", cfg.Trading.Env, "commit", buildInfo.CommitHash, "branch", buildInfo.CommitBranch)

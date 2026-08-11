@@ -30,6 +30,10 @@ var (
 	binanceUnknownOrderLookupDelay    = 500 * time.Millisecond
 	lowMarginPositionCheckInterval    = time.Minute
 	lowMarginPositionThresholdUSDT    = 10.0
+	autoProfitPositionCheckInterval   = 5 * time.Minute
+	autoProfitPositionReturnThreshold = 0.05
+	autoProfitClosePollInterval       = 10 * time.Second
+	autoProfitCloseLimitTimeout       = 5 * time.Minute
 	positionCloseJobs                 = newPositionCloseRegistry()
 	pendingOrderChaseInterval         = 5 * time.Second
 	pendingOrderChaseTimeout          = 60 * time.Second
@@ -963,6 +967,90 @@ func (s *Server) closeLowMarginPositionsForAPI(ctx context.Context, cfg config.C
 	return nil
 }
 
+// StartAutoProfitPositionCloseMonitor closes profitable OKX positions with a
+// repriced limit order before falling back to a market order.
+func (s *Server) StartAutoProfitPositionCloseMonitor(ctx context.Context) {
+	if s.ConfigStore == nil || s.OKXCredentials == nil {
+		return
+	}
+	go s.runAutoProfitPositionCloseMonitor(ctx, autoProfitPositionCheckInterval)
+}
+
+func (s *Server) runAutoProfitPositionCloseMonitor(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = autoProfitPositionCheckInterval
+	}
+	s.closeProfitablePositions(ctx)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.closeProfitablePositions(ctx)
+		}
+	}
+}
+
+func (s *Server) closeProfitablePositions(ctx context.Context) {
+	ids := configuredAPIIDs(s.OKXCredentials.Status())
+	if len(ids) == 0 {
+		return
+	}
+	cfg := s.ConfigStore.Get()
+	for _, requestedAPIID := range ids {
+		scanCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err := s.closeProfitablePositionsForAPI(scanCtx, cfg, requestedAPIID)
+		cancel()
+		if err != nil && s.Logger != nil {
+			s.Logger.Warn("failed to scan profitable positions", "api_id", requestedAPIID, "error", err)
+		}
+	}
+}
+
+func (s *Server) closeProfitablePositionsForAPI(ctx context.Context, cfg config.Config, requestedAPIID string) error {
+	client, apiID, err := s.okxClientForCredentials(cfg, requestedAPIID)
+	if err != nil {
+		return err
+	}
+	positions, _, err := client.Positions(ctx, "SWAP")
+	if err != nil {
+		return err
+	}
+	for _, position := range openPositions(positions) {
+		returnRatio, ok := positionReturnRatio(position)
+		if !ok || returnRatio <= autoProfitPositionReturnThreshold {
+			continue
+		}
+		orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		order, started, err := s.startAutoProfitLimitPositionClose(orderCtx, apiID, cfg, client, position)
+		cancel()
+		if err != nil {
+			if s.Logger != nil {
+				s.Logger.Warn("failed to start profitable position close", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "return_ratio", returnRatio, "error", err)
+			}
+			continue
+		}
+		if started && s.Logger != nil {
+			s.Logger.Info("profitable position limit close started", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "return_ratio", returnRatio, "px", order.Px, "ord_id", order.Ack.OrdID)
+		}
+	}
+	return nil
+}
+
+func positionReturnRatio(position okx.Position) (float64, bool) {
+	if ratio, err := strconv.ParseFloat(strings.TrimSpace(position.UplRatio), 64); err == nil && !math.IsNaN(ratio) && !math.IsInf(ratio, 0) {
+		return ratio, true
+	}
+	upl, uplErr := strconv.ParseFloat(strings.TrimSpace(position.Upl), 64)
+	margin, marginErr := strconv.ParseFloat(strings.TrimSpace(position.Margin), 64)
+	if uplErr != nil || marginErr != nil || margin == 0 || math.IsNaN(upl) || math.IsNaN(margin) || math.IsInf(upl, 0) || math.IsInf(margin, 0) {
+		return 0, false
+	}
+	return upl / math.Abs(margin), true
+}
+
 func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
@@ -1263,6 +1351,20 @@ func (s *Server) startLimitPositionClose(ctx context.Context, apiID string, cfg 
 		return positionCloseOrder{}, false, err
 	}
 	go s.watchLimitPositionClose(apiID, cfg, client, order)
+	return order, true, nil
+}
+
+func (s *Server) startAutoProfitLimitPositionClose(ctx context.Context, apiID string, cfg config.Config, client okx.Client, position okx.Position) (positionCloseOrder, bool, error) {
+	key := positionCloseKey(trading.ExchangeOKX, apiID, position.InstID, position.PosSide)
+	if !positionCloseJobs.start(key) {
+		return positionCloseOrder{}, false, nil
+	}
+	order, err := placeLimitPositionClose(ctx, cfg, client, position, "")
+	if err != nil {
+		positionCloseJobs.done(key)
+		return positionCloseOrder{}, false, err
+	}
+	go s.watchAutoProfitLimitPositionClose(apiID, cfg, client, order)
 	return order, true, nil
 }
 
@@ -4531,12 +4633,26 @@ func binanceLimitClosePrice(ctx context.Context, client binance.Client, position
 }
 
 func (s *Server) watchLimitPositionClose(apiID string, cfg config.Config, client okx.Client, active positionCloseOrder) {
+	s.watchLimitPositionCloseWithOptions(apiID, cfg, client, active, positionClosePollInterval, positionCloseLimitTimeout, false)
+}
+
+func (s *Server) watchAutoProfitLimitPositionClose(apiID string, cfg config.Config, client okx.Client, active positionCloseOrder) {
+	s.watchLimitPositionCloseWithOptions(apiID, cfg, client, active, autoProfitClosePollInterval, autoProfitCloseLimitTimeout, true)
+}
+
+func (s *Server) watchLimitPositionCloseWithOptions(apiID string, cfg config.Config, client okx.Client, active positionCloseOrder, pollInterval, timeoutDuration time.Duration, cancelProtectionOrders bool) {
 	key := positionCloseKey(trading.ExchangeOKX, apiID, active.Position.InstID, active.Position.PosSide)
 	defer positionCloseJobs.done(key)
 
-	poll := time.NewTicker(positionClosePollInterval)
+	if pollInterval <= 0 {
+		pollInterval = positionClosePollInterval
+	}
+	if timeoutDuration <= 0 {
+		timeoutDuration = positionCloseLimitTimeout
+	}
+	poll := time.NewTicker(pollInterval)
 	defer poll.Stop()
-	timeout := time.NewTimer(positionCloseLimitTimeout)
+	timeout := time.NewTimer(timeoutDuration)
 	defer timeout.Stop()
 
 	for {
@@ -4557,6 +4673,9 @@ func (s *Server) watchLimitPositionClose(apiID string, cfg config.Config, client
 				continue
 			}
 			if closed {
+				if cancelProtectionOrders && !active.Partial {
+					s.cancelClosedPositionProtectionOrders(client, active.Position)
+				}
 				return
 			}
 			active = next
@@ -4569,10 +4688,88 @@ func (s *Server) watchLimitPositionClose(apiID string, cfg config.Config, client
 			}
 			if err != nil {
 				s.logPositionCloseError("limit position close fallback failed", err, active.Position)
+			} else if cancelProtectionOrders && !active.Partial {
+				s.cancelClosedPositionProtectionOrders(client, active.Position)
 			}
 			return
 		}
 	}
+}
+
+func (s *Server) cancelClosedPositionProtectionOrders(client okx.Client, position okx.Position) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for {
+		closed, err := positionClosed(ctx, client, position)
+		if err != nil {
+			s.logPositionCloseError("failed to confirm auto-profit position close", err, position)
+			return
+		}
+		if closed {
+			break
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			s.logPositionCloseError("auto-profit position close not confirmed before protection cancellation", ctx.Err(), position)
+			return
+		case <-timer.C:
+		}
+	}
+	if err := cancelOKXPositionProtectionOrders(ctx, client, position); err != nil {
+		s.logPositionCloseError("failed to cancel closed position protection orders", err, position)
+	}
+}
+
+func cancelOKXPositionProtectionOrders(ctx context.Context, client okx.Client, position okx.Position) error {
+	orders, _, err := client.PendingAlgoOrders(ctx, "SWAP", position.InstID)
+	if err != nil {
+		return err
+	}
+	reqs := make([]okx.CancelAlgoOrderRequest, 0, len(orders))
+	for _, order := range orders {
+		if !okxPositionProtectionOrderMatches(order, position) {
+			continue
+		}
+		req := okx.CancelAlgoOrderRequest{InstID: strings.ToUpper(strings.TrimSpace(order.InstID))}
+		if strings.TrimSpace(order.AlgoID) != "" {
+			req.AlgoID = strings.TrimSpace(order.AlgoID)
+		} else if strings.TrimSpace(order.AlgoClOrdID) != "" {
+			req.AlgoClOrdID = strings.TrimSpace(order.AlgoClOrdID)
+		} else {
+			continue
+		}
+		reqs = append(reqs, req)
+	}
+	for len(reqs) > 0 {
+		n := min(len(reqs), 10)
+		if _, _, err := client.CancelAlgoOrders(ctx, reqs[:n]); err != nil {
+			return err
+		}
+		reqs = reqs[n:]
+	}
+	return nil
+}
+
+func okxPositionProtectionOrderMatches(order okx.AlgoOrder, position okx.Position) bool {
+	if !strings.EqualFold(strings.TrimSpace(order.InstID), strings.TrimSpace(position.InstID)) {
+		return false
+	}
+	if !okxProtectionPriceSet(order.TPTriggerPx) && !okxProtectionPriceSet(order.SLTriggerPx) {
+		return false
+	}
+	posSide := normalizePosSide(position.PosSide)
+	if posSide != "" && posSide != "net" {
+		return normalizePosSide(order.PosSide) == posSide
+	}
+	side, err := closeOrderSide(position)
+	return err == nil && strings.EqualFold(strings.TrimSpace(order.Side), side)
+}
+
+func okxProtectionPriceSet(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && value != "-1"
 }
 
 func refreshLimitPositionClose(cfg config.Config, client okx.Client, active positionCloseOrder) (positionCloseOrder, bool, error) {

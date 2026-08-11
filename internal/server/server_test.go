@@ -4289,6 +4289,118 @@ func TestLowMarginPositionMonitorStartsLimitClose(t *testing.T) {
 	}
 }
 
+func TestAutoProfitPositionMonitorStartsLimitClose(t *testing.T) {
+	oldPoll := autoProfitClosePollInterval
+	oldTimeout := autoProfitCloseLimitTimeout
+	oldJobs := positionCloseJobs
+	autoProfitClosePollInterval = time.Hour
+	autoProfitCloseLimitTimeout = time.Hour
+	positionCloseJobs = newPositionCloseRegistry()
+	t.Cleanup(func() {
+		autoProfitClosePollInterval = oldPoll
+		autoProfitCloseLimitTimeout = oldTimeout
+		positionCloseJobs = oldJobs
+	})
+
+	srv := newTestServer(t)
+	var orders []map[string]any
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posSide":"long","pos":"0.5","avgPx":"100","markPx":"101","upl":"1","uplRatio":"0.051","lever":"5","margin":"100"},
+				{"instType":"SWAP","instId":"ETH-USDT-SWAP","mgnMode":"isolated","posSide":"long","pos":"1","avgPx":"100","markPx":"101","upl":"10","uplRatio":"0.05","lever":"5","margin":"100"}
+			]}`))
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instId") != "BTC-USDT-SWAP" {
+				t.Fatalf("auto-profit monitor should only query BTC instrument, got %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","tickSz":"0.1","lotSz":"0.1","minSz":"0.1","ctVal":"0.01","state":"live"}]}`))
+		case "/api/v5/market/ticker":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","bidPx":"99.9","askPx":"100.1","last":"100","ts":"1784880000000"}]}`))
+		case "/api/v5/trade/order":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			orders = append(orders, body)
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"profit-close-1","clOrdId":"close","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.closeProfitablePositions(context.Background())
+	if len(orders) != 1 {
+		t.Fatalf("expected one profitable position close order, got %#v", orders)
+	}
+	got := orders[0]
+	if got["instId"] != "BTC-USDT-SWAP" || got["ordType"] != "limit" || got["side"] != "sell" || got["px"] != "99.9" || got["sz"] != "0.5" || got["posSide"] != "long" {
+		t.Fatalf("unexpected profitable position close order: %#v", got)
+	}
+}
+
+func TestPositionReturnRatioPrefersExchangeUPLRatio(t *testing.T) {
+	if got, ok := positionReturnRatio(okx.Position{UplRatio: "0.06", Upl: "1", Margin: "100"}); !ok || got != 0.06 {
+		t.Fatalf("exchange upl ratio = %v, %v; want 0.06, true", got, ok)
+	}
+	if got, ok := positionReturnRatio(okx.Position{UplRatio: "bad", Upl: "10", Margin: "200"}); !ok || got != 0.05 {
+		t.Fatalf("fallback return ratio = %v, %v; want 0.05, true", got, ok)
+	}
+}
+
+func TestCancelOKXPositionProtectionOrdersMatchesPositionSide(t *testing.T) {
+	var canceled []okx.CancelAlgoOrderRequest
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-algo-pending":
+			if r.URL.Query().Get("ordType") == "conditional" {
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+					{"instId":"BTC-USDT-SWAP","algoId":"tp-long","posSide":"long","side":"sell","ordType":"conditional","tpTriggerPx":"110"},
+					{"instId":"BTC-USDT-SWAP","algoId":"sl-long","posSide":"long","side":"sell","ordType":"conditional","slTriggerPx":"90"},
+					{"instId":"BTC-USDT-SWAP","algoId":"tp-short","posSide":"short","side":"buy","ordType":"conditional","tpTriggerPx":"90"},
+					{"instId":"ETH-USDT-SWAP","algoId":"tp-other","posSide":"long","side":"sell","ordType":"conditional","tpTriggerPx":"110"}
+				]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/cancel-algos":
+			if err := json.NewDecoder(r.Body).Decode(&canceled); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"algoId":"tp-long","sCode":"0"},{"algoId":"sl-long","sCode":"0"}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	client := okx.Client{BaseURL: okxServer.URL, Credentials: okx.Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: okxServer.Client()}
+	if err := cancelOKXPositionProtectionOrders(context.Background(), client, okx.Position{InstID: "BTC-USDT-SWAP", PosSide: "long", Pos: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(canceled) != 2 || canceled[0].AlgoID != "tp-long" || canceled[1].AlgoID != "sl-long" {
+		t.Fatalf("canceled protection orders = %#v", canceled)
+	}
+}
+
 func TestTVBotAPIKeysTestUsesSelectedStoredAccount(t *testing.T) {
 	var seenAPIKey string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
