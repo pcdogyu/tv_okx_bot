@@ -384,7 +384,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-head")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-page-info")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisTradePageSize = 20")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v2"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v3"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`window.localStorage.getItem(analysisTradeColumnStorageKey)`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`window.localStorage.setItem(analysisTradeColumnStorageKey`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`data-analysis-trade-column`)) ||
@@ -393,8 +393,12 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "杠杆"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "开仓价"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "平仓价"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "盈亏比"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "成交额"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "净盈亏"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysisInstIDText")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPnLRatioText")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPositionSideToneClass")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("renderAnalysisTradeHistory")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("exchange: activeExchange()")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("loadPositionExchange(activeExchange()")) ||

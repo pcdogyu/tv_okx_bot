@@ -1663,17 +1663,18 @@ const tvbotHTML = `<!doctype html>
     const globalExchangeStorageKey = "tvbot.selectedExchange";
     const ordersPageSize = 20;
     const analysisTradePageSize = 20;
-    const analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v2";
+    const analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v3";
     const analysisTradeColumnDefs = [
       { id: "exit_time", title: "平仓时间", tdClass: "time", render: (row) => shanghaiTime(row.exit_time) },
-      { id: "inst_id", title: "币对", render: (row) => asText(row.inst_id) },
-      { id: "side", title: "方向", render: (row) => analysisPositionSideText(row.side) },
+      { id: "inst_id", title: "币对", render: (row) => analysisInstIDText(row.inst_id) },
+      { id: "side", title: "方向", toneClass: (row) => analysisPositionSideToneClass(row.side), render: (row) => analysisPositionSideText(row.side) },
       { id: "entry_px", title: "开仓价", render: (row) => formattedTradeNumber(row.entry_px, "") },
       { id: "exit_px", title: "平仓价", render: (row) => formattedTradeNumber(row.exit_px, "") },
       { id: "qty", title: "数量", render: (row) => formattedTradeNumber(row.qty, "") },
       { id: "margin", title: "保证金", render: (row) => formattedTradeNumber(row.margin, " USDT") },
       { id: "leverage", title: "杠杆", render: (row) => row.leverage ? asText(row.leverage) + "x" : "-" },
       { id: "realized_pnl", title: "盈亏", signedField: "realized_pnl", render: (row) => formattedTradeNumber(row.realized_pnl, " USDT") },
+      { id: "pnl_ratio", title: "盈亏比", toneClass: (row) => signedToneClass(analysisPnLRatioValue(row)), render: (row) => analysisPnLRatioText(row) },
       { id: "fee", title: "手续费", render: (row) => tradeFeeText(row) },
       { id: "net_pnl", title: "净盈亏", signedField: "net_pnl", render: (row) => formattedTradeNumber(row.net_pnl, " USDT") },
       { id: "turnover", title: "成交额", render: (row) => formattedTradeNumber(row.turnover, " USDT") },
@@ -4448,8 +4449,42 @@ const tvbotHTML = `<!doctype html>
       return ccy ? fee + " " + ccy : fee;
     }
 
+    function analysisInstIDText(instID) {
+      const original = String(instID || "").trim();
+      if (!original) return "-";
+      let value = original.toUpperCase();
+      const colon = value.lastIndexOf(":");
+      if (colon >= 0) value = value.slice(colon + 1);
+      value = value.replace(/\.P$/, "").replace(/\.PERP$/, "").replace(/PERP$/, "");
+      if (value.endsWith("-USDT-SWAP") || value.endsWith("-USDC-SWAP")) {
+        return value.split("-")[0] || original;
+      }
+      if (value.endsWith("USDT") && value.length > 4) return value.slice(0, -4);
+      if (value.endsWith("USDC") && value.length > 4) return value.slice(0, -4);
+      return original;
+    }
+
     function analysisPositionSideText(side) {
       return positionDirectionText(side);
+    }
+
+    function analysisPositionSideToneClass(side) {
+      const value = String(side || "").toLowerCase();
+      if (value === "long") return "signed-profit";
+      if (value === "short") return "signed-loss";
+      return "";
+    }
+
+    function analysisPnLRatioValue(row) {
+      const pnl = Number(row && row.net_pnl);
+      const margin = Number(row && row.margin);
+      if (!Number.isFinite(pnl) || !Number.isFinite(margin) || margin === 0) return null;
+      return pnl / margin;
+    }
+
+    function analysisPnLRatioText(row) {
+      const ratio = analysisPnLRatioValue(row);
+      return ratio === null ? "-" : formatPct(ratio);
     }
 
     function renderAnalysisTradeHead() {
@@ -4465,6 +4500,10 @@ const tvbotHTML = `<!doctype html>
       if (col.tdClass) classes.push(col.tdClass);
       if (col.signedField) {
         const tone = signedToneClass(row && row[col.signedField]);
+        if (tone) classes.push(tone);
+      }
+      if (col.toneClass) {
+        const tone = col.toneClass(row || {});
         if (tone) classes.push(tone);
       }
       const classAttr = classes.length ? ' class="' + classes.map(escapeHTML).join(" ") + '"' : "";
