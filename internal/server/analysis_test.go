@@ -267,3 +267,133 @@ func TestDeriveBinanceAnalysisSymbolSupportsUSDCContracts(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildAnalysisPositionTradesCountsClosedPositionsOnly(t *testing.T) {
+	cfg := config.Config{Symbols: map[string]config.SymbolConfig{
+		"TEST": {InstID: "TEST-USDT-SWAP", CtVal: 0.01},
+	}}
+	periodSince := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	trades := []analysisTrade{
+		{
+			Exchange:  trading.ExchangeOKX,
+			APIID:     "default",
+			InstID:    "TEST-USDT-SWAP",
+			TradeID:   "long-open",
+			OrdID:     "long-open-order",
+			Side:      "buy",
+			PosSide:   "long",
+			FillPx:    "100",
+			FillSz:    "10",
+			Fee:       "-0.1",
+			FeeCcy:    "USDT",
+			FillTime:  periodSince.Add(-time.Hour),
+			FillTS:    periodSince.Add(-time.Hour).UnixMilli(),
+			FillCount: 1,
+		},
+		{
+			Exchange:  trading.ExchangeOKX,
+			APIID:     "default",
+			InstID:    "TEST-USDT-SWAP",
+			TradeID:   "long-close",
+			OrdID:     "long-close-order",
+			Side:      "sell",
+			PosSide:   "long",
+			FillPx:    "110",
+			FillSz:    "10",
+			FillPnl:   "10",
+			Fee:       "-0.2",
+			FeeCcy:    "USDT",
+			FillTime:  periodSince.Add(time.Hour),
+			FillTS:    periodSince.Add(time.Hour).UnixMilli(),
+			FillCount: 1,
+		},
+		{
+			Exchange:  trading.ExchangeOKX,
+			APIID:     "default",
+			InstID:    "TEST-USDT-SWAP",
+			TradeID:   "short-open",
+			OrdID:     "short-open-order",
+			Side:      "sell",
+			PosSide:   "short",
+			FillPx:    "200",
+			FillSz:    "5",
+			Fee:       "-0.05",
+			FeeCcy:    "USDT",
+			FillTime:  periodSince.Add(2 * time.Hour),
+			FillTS:    periodSince.Add(2 * time.Hour).UnixMilli(),
+			FillCount: 1,
+		},
+		{
+			Exchange:  trading.ExchangeOKX,
+			APIID:     "default",
+			InstID:    "TEST-USDT-SWAP",
+			TradeID:   "short-close",
+			OrdID:     "short-close-order",
+			Side:      "buy",
+			PosSide:   "short",
+			FillPx:    "210",
+			FillSz:    "5",
+			FillPnl:   "-5",
+			Fee:       "-0.07",
+			FeeCcy:    "USDT",
+			FillTime:  periodSince.Add(3 * time.Hour),
+			FillTS:    periodSince.Add(3 * time.Hour).UnixMilli(),
+			FillCount: 1,
+		},
+		{
+			Exchange:  trading.ExchangeOKX,
+			APIID:     "default",
+			InstID:    "TEST-USDT-SWAP",
+			TradeID:   "unclosed-open",
+			OrdID:     "unclosed-open-order",
+			Side:      "buy",
+			PosSide:   "long",
+			FillPx:    "300",
+			FillSz:    "1",
+			Fee:       "-0.01",
+			FeeCcy:    "USDT",
+			FillTime:  periodSince.Add(4 * time.Hour),
+			FillTS:    periodSince.Add(4 * time.Hour).UnixMilli(),
+			FillCount: 1,
+		},
+	}
+	positions := buildAnalysisPositionTrades(cfg, trades, periodSince)
+	if len(positions) != 2 {
+		t.Fatalf("positions len=%d positions=%#v", len(positions), positions)
+	}
+	if positions[0].Side != "short" || positions[0].NetPnL != "-5.12" {
+		t.Fatalf("bad short position: %#v", positions[0])
+	}
+	if positions[1].Side != "long" || positions[1].NetPnL != "9.7" {
+		t.Fatalf("bad long position: %#v", positions[1])
+	}
+	summary, exchanges, _ := computeStats(cfg, positions, trades, periodSince)
+	if summary.TradeCount != 2 || summary.Wins != 1 || summary.Losses != 1 || math.Abs(summary.WinRate-0.5) > 0.0000001 {
+		t.Fatalf("bad summary counts: %#v", summary)
+	}
+	if math.Abs(summary.NetPnL-4.58) > 0.0000001 {
+		t.Fatalf("bad summary net pnl: %#v", summary)
+	}
+	if math.Abs(summary.Fees-(-0.33)) > 0.0000001 || math.Abs(summary.Turnover-34.5) > 0.0000001 {
+		t.Fatalf("period fees/turnover should only use in-window fills: %#v", summary)
+	}
+	if len(exchanges) != 1 || exchanges[0].TradeCount != 2 {
+		t.Fatalf("bad exchange stats: %#v", exchanges)
+	}
+}
+
+func TestBalanceWindowStatsComputesChangeAndMaxDrawdown(t *testing.T) {
+	base := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	got := balanceWindowStats([]analysisBalancePoint{
+		{Time: base, TS: base.UnixMilli(), Value: 100},
+		{Time: base.Add(time.Hour), TS: base.Add(time.Hour).UnixMilli(), Value: 120},
+		{Time: base.Add(2 * time.Hour), TS: base.Add(2 * time.Hour).UnixMilli(), Value: 90},
+		{Time: base.Add(3 * time.Hour), TS: base.Add(3 * time.Hour).UnixMilli(), Value: 110},
+	}, analysisBalance{})
+	if got.StartValue != 100 || got.CurrentValue != 110 || got.Change != 10 || math.Abs(got.ChangePct-0.1) > 0.0000001 {
+		t.Fatalf("bad window change: %#v", got)
+	}
+	if got.MaxDrawdown != 30 || math.Abs(got.MaxDrawdownPct-0.25) > 0.0000001 {
+		t.Fatalf("bad max drawdown: %#v", got)
+	}
+}

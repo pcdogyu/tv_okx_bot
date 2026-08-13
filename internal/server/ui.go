@@ -834,7 +834,7 @@ const tvbotHTML = `<!doctype html>
       gap: 10px;
     }
     .exchange-balance-metrics {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(88px, 1fr));
       min-height: 0;
       align-content: start;
       margin: 0;
@@ -1257,7 +1257,10 @@ const tvbotHTML = `<!doctype html>
               <h3>USDT 估值表</h3>
             </div>
             <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
-              <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-usdt-eq">-</div></div>
+              <div class="analysis-card"><div class="label">周期起始</div><div class="value" id="analysis-okx-window-start">-</div></div>
+              <div class="analysis-card"><div class="label">当前USDT</div><div class="value" id="analysis-usdt-eq">-</div></div>
+              <div class="analysis-card"><div class="label">周期变化</div><div class="value" id="analysis-okx-window-change">-</div></div>
+              <div class="analysis-card"><div class="label">最大回撤</div><div class="value" id="analysis-okx-max-drawdown">-</div></div>
               <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-balance-updated">-</div></div>
             </div>
           </div>
@@ -1267,7 +1270,11 @@ const tvbotHTML = `<!doctype html>
               <div class="analysis-card"><div class="label">胜率</div><div class="value" id="analysis-okx-win-rate">-</div></div>
               <div class="analysis-card"><div class="label">盈利因子</div><div class="value" id="analysis-okx-profit-factor">-</div></div>
               <div class="analysis-card"><div class="label">盈亏比</div><div class="value" id="analysis-okx-payoff-ratio">-</div></div>
-              <div class="analysis-card"><div class="label">成交数</div><div class="value" id="analysis-okx-trades">-</div></div>
+              <div class="analysis-card"><div class="label">仓位数</div><div class="value" id="analysis-okx-trades">-</div></div>
+              <div class="analysis-card"><div class="label">周期成交额</div><div class="value" id="analysis-okx-turnover">-</div></div>
+              <div class="analysis-card"><div class="label">周期手续费</div><div class="value" id="analysis-okx-fees">-</div></div>
+              <div class="analysis-card"><div class="label">当前持仓</div><div class="value" id="analysis-okx-position-count">-</div></div>
+              <div class="analysis-card"><div class="label">持仓浮盈</div><div class="value" id="analysis-okx-position-upl">-</div></div>
             </div>
           </div>
           <div class="analysis-usdt-chart-card">
@@ -1287,7 +1294,10 @@ const tvbotHTML = `<!doctype html>
               <h3>USDT 估值表</h3>
             </div>
             <div class="analysis-metrics symbol-metrics exchange-balance-metrics">
-              <div class="analysis-card"><div class="label">USDT估值</div><div class="value" id="analysis-binance-usdt-eq">-</div></div>
+              <div class="analysis-card"><div class="label">周期起始</div><div class="value" id="analysis-binance-window-start">-</div></div>
+              <div class="analysis-card"><div class="label">当前USDT</div><div class="value" id="analysis-binance-usdt-eq">-</div></div>
+              <div class="analysis-card"><div class="label">周期变化</div><div class="value" id="analysis-binance-window-change">-</div></div>
+              <div class="analysis-card"><div class="label">最大回撤</div><div class="value" id="analysis-binance-max-drawdown">-</div></div>
               <div class="analysis-card"><div class="label">更新时间</div><div class="value" id="analysis-binance-balance-updated">-</div></div>
             </div>
           </div>
@@ -1297,7 +1307,11 @@ const tvbotHTML = `<!doctype html>
               <div class="analysis-card"><div class="label">胜率</div><div class="value" id="analysis-binance-win-rate">-</div></div>
               <div class="analysis-card"><div class="label">盈利因子</div><div class="value" id="analysis-binance-profit-factor">-</div></div>
               <div class="analysis-card"><div class="label">盈亏比</div><div class="value" id="analysis-binance-payoff-ratio">-</div></div>
-              <div class="analysis-card"><div class="label">成交数</div><div class="value" id="analysis-binance-trades">-</div></div>
+              <div class="analysis-card"><div class="label">仓位数</div><div class="value" id="analysis-binance-trades">-</div></div>
+              <div class="analysis-card"><div class="label">周期成交额</div><div class="value" id="analysis-binance-turnover">-</div></div>
+              <div class="analysis-card"><div class="label">周期手续费</div><div class="value" id="analysis-binance-fees">-</div></div>
+              <div class="analysis-card"><div class="label">当前持仓</div><div class="value" id="analysis-binance-position-count">-</div></div>
+              <div class="analysis-card"><div class="label">持仓浮盈</div><div class="value" id="analysis-binance-position-upl">-</div></div>
             </div>
           </div>
           <div class="analysis-usdt-chart-card">
@@ -1310,7 +1324,7 @@ const tvbotHTML = `<!doctype html>
       </div>
       <div class="analysis-trade-history-card">
         <div class="section-head" style="margin-bottom:10px">
-          <h3 id="analysis-trade-history-title">历史成交明细</h3>
+          <h3 id="analysis-trade-history-title">下单盈亏分析</h3>
           <span class="muted" id="analysis-trade-history-status">-</span>
         </div>
         <div class="symbol-table-wrap">
@@ -1602,6 +1616,8 @@ const tvbotHTML = `<!doctype html>
       balanceOverview: null,
       balanceOverviewError: "",
       balanceWindowMinutes: 720,
+      analysisPositions: null,
+      analysisPositionsError: "",
       positions: null,
       positionsError: "",
       pendingOrders: null,
@@ -1647,19 +1663,20 @@ const tvbotHTML = `<!doctype html>
     const globalExchangeStorageKey = "tvbot.selectedExchange";
     const ordersPageSize = 20;
     const analysisTradePageSize = 20;
-    const analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v1";
+    const analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v2";
     const analysisTradeColumnDefs = [
-      { id: "time", title: "时间", tdClass: "time", render: (row) => shanghaiTime(row.fill_time) },
+      { id: "exit_time", title: "平仓时间", tdClass: "time", render: (row) => shanghaiTime(row.exit_time) },
       { id: "inst_id", title: "币对", render: (row) => asText(row.inst_id) },
-      { id: "side", title: "方向", render: (row) => asText(row.side) },
-      { id: "fill_px", title: "成交价", render: (row) => formattedTradeNumber(row.fill_px, "") },
-      { id: "fill_sz", title: "数量", render: (row) => formattedTradeNumber(row.fill_sz, "") },
+      { id: "side", title: "方向", render: (row) => analysisPositionSideText(row.side) },
+      { id: "entry_px", title: "开仓价", render: (row) => formattedTradeNumber(row.entry_px, "") },
+      { id: "exit_px", title: "平仓价", render: (row) => formattedTradeNumber(row.exit_px, "") },
+      { id: "qty", title: "数量", render: (row) => formattedTradeNumber(row.qty, "") },
       { id: "margin", title: "保证金", render: (row) => formattedTradeNumber(row.margin, " USDT") },
       { id: "leverage", title: "杠杆", render: (row) => row.leverage ? asText(row.leverage) + "x" : "-" },
-      { id: "fill_pnl", title: "盈亏", signedField: "fill_pnl", render: (row) => formattedTradeNumber(row.fill_pnl, " USDT") },
+      { id: "realized_pnl", title: "盈亏", signedField: "realized_pnl", render: (row) => formattedTradeNumber(row.realized_pnl, " USDT") },
       { id: "fee", title: "手续费", render: (row) => tradeFeeText(row) },
-      { id: "funding_fee", title: "资金费", signedField: "funding_fee", render: (row) => formattedTradeNumber(row.funding_fee, " USDT") },
       { id: "net_pnl", title: "净盈亏", signedField: "net_pnl", render: (row) => formattedTradeNumber(row.net_pnl, " USDT") },
+      { id: "turnover", title: "成交额", render: (row) => formattedTradeNumber(row.turnover, " USDT") },
       { id: "fill_count", title: "成交笔数", render: (row) => asText(row.fill_count || 1) }
     ];
     const balanceWindowOptions = [
@@ -2008,6 +2025,8 @@ const tvbotHTML = `<!doctype html>
       state.orders = [];
       state.ordersTotal = 0;
       state.ordersPage = 1;
+      state.analysisPositions = null;
+      state.analysisPositionsError = "";
       state.positions = null;
       state.pendingOrders = null;
       state.pendingOrderGroup = "normal";
@@ -2265,7 +2284,7 @@ const tvbotHTML = `<!doctype html>
     function analysisPNLWindowMinutes() {
       const minutes = Math.max(0, Number(state.balanceWindowMinutes || 0));
       if (!Number.isFinite(minutes) || minutes <= 0) return 5;
-      return Math.min(minutes, 30 * 24 * 60);
+      return Math.min(minutes, 90 * 24 * 60);
     }
 
     function balanceOverviewPath(forceRefresh) {
@@ -2650,7 +2669,8 @@ const tvbotHTML = `<!doctype html>
       if (analysisBalanceRefreshBusy || !analysisBalanceAutoRefreshAllowed()) return;
       analysisBalanceRefreshBusy = true;
       try {
-        await loadBalanceOverview(true);
+        await Promise.all([loadBalanceOverview(true), loadAnalysisPositions(true)]);
+        renderAnalysis();
       } finally {
         analysisBalanceRefreshBusy = false;
       }
@@ -2834,7 +2854,7 @@ const tvbotHTML = `<!doctype html>
     async function loadAnalysis(refresh) {
       const qs = new URLSearchParams({ price_days: "3", pnl_minutes: String(analysisPNLWindowMinutes()) });
       if (refresh) qs.set("refresh", "true");
-      await loadBalanceOverview(!!refresh);
+      await Promise.all([loadBalanceOverview(!!refresh), loadAnalysisPositions(!!refresh)]);
       try {
         state.analysis = await api("/tvbot/analysis?" + qs.toString());
         state.analysisError = "";
@@ -2845,6 +2865,28 @@ const tvbotHTML = `<!doctype html>
         state.analysisTradePage = 1;
       }
       renderAnalysis();
+    }
+
+    async function loadAnalysisPositions(forceRefresh) {
+      const results = await Promise.all(positionExchanges.map((exchange) => loadPositionExchange(exchange, !!forceRefresh)));
+      const rows = [];
+      results.forEach((result) => {
+        const exchange = normalizeExchange(result.exchange);
+        const apiID = result.api_id || "";
+        (Array.isArray(result.positions) ? result.positions : []).forEach((row) => {
+          const view = Object.assign({}, row, { _exchange: exchange, _api_id: apiID });
+          rememberSymbolPrecision(exchange, view);
+          rows.push(view);
+        });
+      });
+      state.analysisPositions = {
+        ok: results.some((result) => result.ok),
+        count: rows.length,
+        refreshed_at: combinedRefreshedAt(results),
+        exchanges: results,
+        positions: rows
+      };
+      state.analysisPositionsError = combinedErrors(results);
     }
 
     async function loadPositions(forceRefresh) {
@@ -4291,25 +4333,50 @@ const tvbotHTML = `<!doctype html>
         $(prefix + "-profit-factor").textContent = "-";
         $(prefix + "-payoff-ratio").textContent = "-";
         $(prefix + "-trades").textContent = "-";
+        $(prefix + "-turnover").textContent = "-";
+        $(prefix + "-fees").textContent = "-";
+        $(prefix + "-position-count").textContent = "-";
+        $(prefix + "-position-upl").textContent = "-";
+        $(prefix + "-position-upl").className = "value";
         return;
       }
       const summary = analysisExchangeSummary(normalized);
+      const positionSummary = analysisPositionSummary(normalized);
       $(prefix + "-net-pnl").textContent = formatNumber(summary.net_pnl) + " USDT";
       $(prefix + "-win-rate").textContent = formatPct(summary.win_rate);
       $(prefix + "-profit-factor").textContent = formatFactor(summary);
       $(prefix + "-payoff-ratio").textContent = formatNumber(summary.payoff_ratio);
       $(prefix + "-trades").textContent = asText(summary.trade_count || 0);
+      $(prefix + "-turnover").textContent = formatNumber(summary.turnover) + " USDT";
+      $(prefix + "-fees").textContent = formatNumber(summary.fees) + " USDT";
+      $(prefix + "-position-count").textContent = positionSummary.ready ? asText(positionSummary.count) : "-";
+      $(prefix + "-position-upl").textContent = positionSummary.ready ? formatNumber(positionSummary.upl) + " USDT" : "-";
+      $(prefix + "-position-upl").className = ["value", positionSummary.ready ? signedToneClass(positionSummary.upl) : ""].filter(Boolean).join(" ");
     }
 
     function analysisExchangeSummary(exchange) {
       const summaries = state.analysis && Array.isArray(state.analysis.exchange_summaries) ? state.analysis.exchange_summaries : [];
       const found = summaries.find((row) => normalizeExchange(row.exchange) === normalizeExchange(exchange));
-      return found || { exchange: normalizeExchange(exchange), trade_count: 0, wins: 0, losses: 0, net_pnl: 0, fees: 0, win_rate: 0, profit_factor: 0, payoff_ratio: 0 };
+      return found || { exchange: normalizeExchange(exchange), trade_count: 0, wins: 0, losses: 0, net_pnl: 0, fees: 0, turnover: 0, win_rate: 0, profit_factor: 0, payoff_ratio: 0 };
+    }
+
+    function analysisPositionRows(exchange) {
+      const rows = state.analysisPositions && Array.isArray(state.analysisPositions.positions) ? state.analysisPositions.positions : [];
+      return rows.filter((row) => normalizeExchange(row._exchange || "okx") === normalizeExchange(exchange));
+    }
+
+    function analysisPositionSummary(exchange) {
+      const rows = analysisPositionRows(exchange);
+      return {
+        ready: !!state.analysisPositions,
+        count: rows.length,
+        upl: positionSum(rows, "upl")
+      };
     }
 
     function analysisTradesForActiveExchange() {
       const exchange = activeExchange();
-      const rows = state.analysis && Array.isArray(state.analysis.trades) ? state.analysis.trades : [];
+      const rows = state.analysis && Array.isArray(state.analysis.position_trades) ? state.analysis.position_trades : [];
       return rows.filter((row) => normalizeExchange(row.exchange) === exchange);
     }
 
@@ -4381,6 +4448,10 @@ const tvbotHTML = `<!doctype html>
       return ccy ? fee + " " + ccy : fee;
     }
 
+    function analysisPositionSideText(side) {
+      return positionDirectionText(side);
+    }
+
     function renderAnalysisTradeHead() {
       const head = $("analysis-trade-head");
       if (!head) return;
@@ -4409,7 +4480,7 @@ const tvbotHTML = `<!doctype html>
       const pageInfo = $("analysis-trade-page-info");
       const prev = $("analysis-trade-prev");
       const next = $("analysis-trade-next");
-      if (title) title.textContent = label + " 历史成交明细";
+      if (title) title.textContent = label + " 下单盈亏分析";
       renderAnalysisTradeHead();
       if (!rowsEl) return;
       if (errorText) {
@@ -4428,7 +4499,7 @@ const tvbotHTML = `<!doctype html>
       const columns = currentAnalysisTradeColumns();
       rowsEl.innerHTML = pageRows.map((row) => {
         return "<tr>" + columns.map((col) => analysisTradeCellHTML(col, row)).join("") + "</tr>";
-      }).join("") || '<tr><td colspan="' + analysisTradeColumnCount() + '" class="muted">暂无 ' + escapeHTML(label) + ' 成交明细</td></tr>';
+      }).join("") || '<tr><td colspan="' + analysisTradeColumnCount() + '" class="muted">暂无 ' + escapeHTML(label) + ' 下单盈亏记录</td></tr>';
       if (status) status.textContent = trades.length ? ("共 " + trades.length + " 条") : "-";
       if (pageInfo) pageInfo.textContent = trades.length ? ("第 " + state.analysisTradePage + " / " + totalPages + " 页") : "-";
       if (prev) prev.disabled = state.analysisTradePage <= 1;
@@ -4508,7 +4579,8 @@ const tvbotHTML = `<!doctype html>
 
     function renderAnalysisOKXBalance(item, balance) {
       const usdt = usdtBalanceDetail(balance);
-      $("analysis-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
+      renderAnalysisBalanceWindow("analysis-okx", item);
+      $("analysis-usdt-eq").textContent = usdt ? balanceAmount(usdt.eq) : "-";
       $("analysis-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : "-";
       $("analysis-okx-balance-status").textContent = exchangeBalanceStatusText(item, balance, "OKX");
       $("analysis-okx-usdt-title").textContent = "USDT 权益图 " + balanceWindowLabel(state.balanceWindowMinutes);
@@ -4521,12 +4593,42 @@ const tvbotHTML = `<!doctype html>
     function renderAnalysisBinanceBalance(item) {
       const balance = item && item.balance ? item.balance : null;
       const usdt = usdtBalanceDetail(balance);
-      $("analysis-binance-usdt-eq").textContent = usdt ? formatUSD(usdt.eq_usd || usdt.eq) : "-";
+      renderAnalysisBalanceWindow("analysis-binance", item);
+      $("analysis-binance-usdt-eq").textContent = usdt ? balanceAmount(usdt.eq) : "-";
       $("analysis-binance-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : (item && item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
       $("analysis-binance-balance-status").textContent = exchangeBalanceStatusText(item, balance, "Binance");
       $("analysis-binance-usdt-title").textContent = "USDT 权益图 " + balanceWindowLabel(state.balanceWindowMinutes);
       const points = usdtBalancePoints(item ? (item.balance_points || []) : [], balance);
       drawUSDTChart(points, "analysis-binance-usdt-chart", item && item.configured ? "暂无 Binance USDT 权益数据" : "Binance 未配置", "#138a55");
+    }
+
+    function renderAnalysisBalanceWindow(prefix, item) {
+      const windowStats = item && item.window ? item.window : null;
+      const startEl = $(prefix + "-window-start");
+      const changeEl = $(prefix + "-window-change");
+      const drawdownEl = $(prefix + "-max-drawdown");
+      if (!windowStats) {
+        if (startEl) startEl.textContent = "-";
+        if (changeEl) {
+          changeEl.textContent = "-";
+          changeEl.className = "value";
+        }
+        if (drawdownEl) {
+          drawdownEl.textContent = "-";
+          drawdownEl.className = "value";
+        }
+        return;
+      }
+      if (startEl) startEl.textContent = balanceAmount(windowStats.start_value);
+      if (changeEl) {
+        changeEl.textContent = formatNumber(windowStats.change) + " USDT / " + formatPct(windowStats.change_pct);
+        changeEl.className = ["value", signedToneClass(windowStats.change)].filter(Boolean).join(" ");
+      }
+      if (drawdownEl) {
+        const dd = Number(windowStats.max_drawdown);
+        drawdownEl.textContent = formatNumber(dd) + " USDT / " + formatPct(windowStats.max_drawdown_pct);
+        drawdownEl.className = ["value", Number.isFinite(dd) && dd > 0 ? "signed-loss" : ""].filter(Boolean).join(" ");
+      }
     }
 
     function exchangeBalanceStatusText(item, balance, label) {

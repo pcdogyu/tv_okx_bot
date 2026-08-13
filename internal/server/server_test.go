@@ -379,19 +379,21 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbolPrecisions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPNLWindowMinutes")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pnl_minutes")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("历史成交明细")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("下单盈亏分析")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-head")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-page-info")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisTradePageSize = 20")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v1"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v2"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`window.localStorage.getItem(analysisTradeColumnStorageKey)`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`window.localStorage.setItem(analysisTradeColumnStorageKey`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`data-analysis-trade-column`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("handleAnalysisTradeColumnDrop")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "保证金"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "杠杆"`)) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "资金费"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "开仓价"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "平仓价"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "成交额"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "净盈亏"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("renderAnalysisTradeHistory")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("exchange: activeExchange()")) ||
@@ -1903,7 +1905,6 @@ func TestTVBotAPIKeysRenameActiveID(t *testing.T) {
 
 func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T) {
 	srv := newTestServer(t)
-	windowStart := srv.now().Add(-24 * time.Hour).UnixMilli()
 	oldTradeTime := srv.now().Add(-25 * time.Hour).UnixMilli()
 	fillTime1 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
 	fillTime2 := time.Date(2026, 7, 23, 4, 0, 0, 0, time.UTC).UnixMilli()
@@ -1911,7 +1912,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	candleTime1 := time.Date(2026, 7, 23, 2, 0, 0, 0, time.UTC).UnixMilli()
 	candleTime2 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
 	var sawBalance, sawCandles, sawFills, sawOKXFunding, sawBinanceFunding bool
-	expectedBinanceStart := windowStart
+	expectedBinanceStart := int64(0)
 	expectedBinanceAPIKey := "binance-alt-key"
 	sawBinanceSymbols := map[string]bool{}
 	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1944,11 +1945,13 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 				t.Fatalf("bad fills query: %s", r.URL.RawQuery)
 			}
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"0","msg":"","data":[
-				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"t1","ordId":"o1","side":"sell","fillPx":"50000","fillSz":"1","fillPnl":"2.5","fee":"-0.1","feeCcy":"USDT","fillTime":"%d"},
-				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"t1b","ordId":"o1","side":"sell","fillPx":"50100","fillSz":"1","fillPnl":"0.5","fee":"-0.02","feeCcy":"USDT","fillTime":"%d"},
-				{"instType":"SWAP","instId":"ETH-USDT-SWAP","tradeId":"t2","ordId":"o2","side":"buy","fillPx":"2500","fillSz":"1","fillPnl":"-1","fee":"-0.05","feeCcy":"USDT","fillTime":"%d"},
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"t1","ordId":"o-btc-close","side":"sell","posSide":"long","fillPx":"50000","fillSz":"1","fillPnl":"2.5","fee":"-0.1","feeCcy":"USDT","fillTime":"%d"},
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"t1b","ordId":"o-btc-close","side":"sell","posSide":"long","fillPx":"50100","fillSz":"1","fillPnl":"0.5","fee":"-0.02","feeCcy":"USDT","fillTime":"%d"},
+				{"instType":"SWAP","instId":"ETH-USDT-SWAP","tradeId":"t2","ordId":"o-eth-close","side":"buy","posSide":"short","fillPx":"2510","fillSz":"1","fillPnl":"-1","fee":"-0.05","feeCcy":"USDT","fillTime":"%d"},
+				{"instType":"SWAP","instId":"ETH-USDT-SWAP","tradeId":"t2-open","ordId":"o-eth-open","side":"sell","posSide":"short","fillPx":"2500","fillSz":"1","fillPnl":"0","fee":"-0.05","feeCcy":"USDT","fillTime":"%d"},
+				{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"t1-open","ordId":"o-btc-open","side":"buy","posSide":"long","fillPx":"50000","fillSz":"2","fillPnl":"0","fee":"-0.1","feeCcy":"USDT","fillTime":"%d"},
 				{"instType":"SWAP","instId":"OLD-USDT-SWAP","tradeId":"t-old","ordId":"o-old","side":"sell","fillPx":"1","fillSz":"1","fillPnl":"999","fee":"0","feeCcy":"USDT","fillTime":"%d"}
-			]}`, fillTime2, fillTime2+1000, fillTime1, oldTradeTime)))
+			]}`, fillTime2, fillTime2+1000, fillTime2+2000, fillTime1, fillTime1, oldTradeTime)))
 		case "/api/v5/account/bills-archive":
 			sawOKXFunding = true
 			if r.Header.Get("x-simulated-trading") != "1" || r.Header.Get("OK-ACCESS-KEY") != "key" {
@@ -1999,10 +2002,10 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 		sawBinanceSymbols[symbol] = true
 		if symbol == "BTCUSDT" && startMS <= binanceTradeTime && endMS >= binanceTradeTime {
 			_, _ = w.Write([]byte(fmt.Sprintf(`[
+				{"symbol":"BTCUSDT","side":"BUY","positionSide":"LONG","price":"64000","qty":"0.03","realizedPnl":"0","commission":"0.1","commissionAsset":"USDT","time":%d,"id":9000,"orderId":7001},
 				{"symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","price":"64000","qty":"0.01","realizedPnl":"4.2","commission":"0.2","commissionAsset":"USDT","time":%d,"id":9001,"orderId":8001},
-				{"symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","price":"64010","qty":"0.02","realizedPnl":"0.8","commission":"0.05","commissionAsset":"USDT","time":%d,"id":9002,"orderId":8001},
-				{"symbol":"BTCUSDT","side":"BUY","positionSide":"BOTH","price":"1","qty":"1","realizedPnl":"999","commission":"0","commissionAsset":"USDT","time":%d,"id":9003,"orderId":8002}
-			]`, binanceTradeTime, binanceTradeTime+1000, oldTradeTime)))
+				{"symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","price":"64010","qty":"0.02","realizedPnl":"0.8","commission":"0.05","commissionAsset":"USDT","time":%d,"id":9002,"orderId":8001}
+			]`, binanceTradeTime-1000, binanceTradeTime, binanceTradeTime+1000)))
 			return
 		}
 		_, _ = w.Write([]byte(`[]`))
@@ -2090,8 +2093,11 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if resp.Summary.TradeCount != 3 || resp.Summary.Wins != 2 || resp.Summary.Losses != 1 {
 		t.Fatalf("bad summary counts: %#v", resp.Summary)
 	}
-	if math.Abs(resp.Summary.NetPnL-6.58) > 0.0000001 || math.Abs(resp.Summary.WinRate-(2.0/3.0)) > 0.0000001 {
+	if math.Abs(resp.Summary.NetPnL-6.33) > 0.0000001 || math.Abs(resp.Summary.WinRate-(2.0/3.0)) > 0.0000001 {
 		t.Fatalf("bad summary metrics: %#v", resp.Summary)
+	}
+	if math.Abs(resp.Summary.Fees-(-0.67)) > 0.0000001 || math.Abs(resp.Summary.Turnover-6342.2) > 0.0000001 {
+		t.Fatalf("bad summary period fill metrics: %#v", resp.Summary)
 	}
 	if len(resp.ExchangeSummaries) != 2 {
 		t.Fatalf("expected exchange summaries: %#v", resp.ExchangeSummaries)
@@ -2100,10 +2106,10 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	for _, stats := range resp.ExchangeSummaries {
 		byExchange[stats.Exchange] = stats
 	}
-	if byExchange["okx"].TradeCount != 2 || math.Abs(byExchange["okx"].NetPnL-1.83) > 0.0000001 {
+	if byExchange["okx"].TradeCount != 2 || math.Abs(byExchange["okx"].NetPnL-1.68) > 0.0000001 {
 		t.Fatalf("bad OKX exchange summary: %#v", resp.ExchangeSummaries)
 	}
-	if byExchange["binance"].TradeCount != 1 || math.Abs(byExchange["binance"].NetPnL-4.75) > 0.0000001 {
+	if byExchange["binance"].TradeCount != 1 || math.Abs(byExchange["binance"].NetPnL-4.65) > 0.0000001 {
 		t.Fatalf("bad Binance exchange summary: %#v", resp.ExchangeSummaries)
 	}
 	if len(resp.Symbols) != 3 {
@@ -2116,7 +2122,19 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if byExchangeSymbol["okx|BTC-USDT-SWAP"].TradeCount != 1 || byExchangeSymbol["binance|BTCUSDT"].TradeCount != 1 {
 		t.Fatalf("expected exchange-separated symbol stats: %#v", resp.Symbols)
 	}
-	if len(resp.Trades) != 3 || resp.Trades[0].Exchange != trading.ExchangeBinance || resp.Trades[0].InstID != "BTCUSDT" || resp.Trades[0].Fee != "-0.25" || resp.Trades[0].FillCount != 2 || resp.Trades[0].FillSz != "0.03" {
+	if len(resp.PositionTrades) != 3 {
+		t.Fatalf("bad position trades: %#v", resp.PositionTrades)
+	}
+	if resp.PositionTrades[0].Exchange != trading.ExchangeBinance || resp.PositionTrades[0].InstID != "BTCUSDT" || resp.PositionTrades[0].Side != "long" || resp.PositionTrades[0].NetPnL != "4.65" {
+		t.Fatalf("bad Binance position trade: %#v", resp.PositionTrades)
+	}
+	if resp.PositionTrades[1].Exchange != trading.ExchangeOKX || resp.PositionTrades[1].InstID != "ETH-USDT-SWAP" || resp.PositionTrades[1].Side != "short" || resp.PositionTrades[1].NetPnL != "-1.1" {
+		t.Fatalf("bad OKX short position trade: %#v", resp.PositionTrades)
+	}
+	if resp.PositionTrades[2].Exchange != trading.ExchangeOKX || resp.PositionTrades[2].InstID != "BTC-USDT-SWAP" || resp.PositionTrades[2].Side != "long" || resp.PositionTrades[2].NetPnL != "2.78" {
+		t.Fatalf("bad OKX long position trade: %#v", resp.PositionTrades)
+	}
+	if len(resp.Trades) == 0 || resp.Trades[0].Exchange != trading.ExchangeBinance || resp.Trades[0].InstID != "BTCUSDT" || resp.Trades[0].Fee != "-0.25" || resp.Trades[0].FillCount != 2 || resp.Trades[0].FillSz != "0.03" {
 		t.Fatalf("bad trade history: %#v", resp.Trades)
 	}
 
