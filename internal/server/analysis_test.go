@@ -382,6 +382,64 @@ func TestBuildAnalysisPositionTradesCountsClosedPositionsOnly(t *testing.T) {
 	}
 }
 
+func TestBuildAnalysisPositionTradesMergesClosedFillsByEntryOrder(t *testing.T) {
+	cfg := config.Config{Symbols: map[string]config.SymbolConfig{
+		"TEST": {InstID: "TEST-USDT-SWAP", CtVal: 1},
+	}}
+	periodSince := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	tradeAt := func(hours int) (time.Time, int64) {
+		ts := periodSince.Add(time.Duration(hours) * time.Hour)
+		return ts, ts.UnixMilli()
+	}
+	fillTime, fillTS := tradeAt(-2)
+	trades := []analysisTrade{
+		{Exchange: trading.ExchangeOKX, APIID: "default", InstID: "TEST-USDT-SWAP", TradeID: "long-open-a", OrdID: "long-entry", Side: "buy", PosSide: "long", FillPx: "100", FillSz: "2", Fee: "-0.2", FeeCcy: "USDT", Leverage: 10, FillTime: fillTime, FillTS: fillTS, FillCount: 1},
+	}
+	fillTime, fillTS = tradeAt(-1)
+	trades = append(trades, analysisTrade{Exchange: trading.ExchangeOKX, APIID: "default", InstID: "TEST-USDT-SWAP", TradeID: "long-open-b", OrdID: "long-entry", Side: "buy", PosSide: "long", FillPx: "110", FillSz: "3", Fee: "-0.3", FeeCcy: "USDT", Leverage: 10, FillTime: fillTime, FillTS: fillTS, FillCount: 1})
+	fillTime, fillTS = tradeAt(1)
+	trades = append(trades, analysisTrade{Exchange: trading.ExchangeOKX, APIID: "default", InstID: "TEST-USDT-SWAP", TradeID: "long-close-a", OrdID: "long-exit-a", Side: "sell", PosSide: "long", FillPx: "120", FillSz: "1", FillPnl: "20", Fee: "-0.1", FeeCcy: "USDT", FillTime: fillTime, FillTS: fillTS, FillCount: 1})
+	fillTime, fillTS = tradeAt(2)
+	trades = append(trades, analysisTrade{Exchange: trading.ExchangeOKX, APIID: "default", InstID: "TEST-USDT-SWAP", TradeID: "long-close-b", OrdID: "long-exit-b", Side: "sell", PosSide: "long", FillPx: "130", FillSz: "4", FillPnl: "80", Fee: "-0.4", FeeCcy: "USDT", FillTime: fillTime, FillTS: fillTS, FillCount: 1})
+	fillTime, fillTS = tradeAt(3)
+	trades = append(trades, analysisTrade{Exchange: trading.ExchangeOKX, APIID: "default", InstID: "TEST-USDT-SWAP", TradeID: "short-open", OrdID: "short-entry", Side: "sell", PosSide: "short", FillPx: "200", FillSz: "2", Fee: "-0.2", FeeCcy: "USDT", Leverage: 10, FillTime: fillTime, FillTS: fillTS, FillCount: 1})
+	fillTime, fillTS = tradeAt(4)
+	trades = append(trades, analysisTrade{Exchange: trading.ExchangeOKX, APIID: "default", InstID: "TEST-USDT-SWAP", TradeID: "short-close-a", OrdID: "short-exit-a", Side: "buy", PosSide: "short", FillPx: "210", FillSz: "0.5", FillPnl: "-5", Fee: "-0.05", FeeCcy: "USDT", FillTime: fillTime, FillTS: fillTS, FillCount: 1})
+	fillTime, fillTS = tradeAt(5)
+	trades = append(trades, analysisTrade{Exchange: trading.ExchangeOKX, APIID: "default", InstID: "TEST-USDT-SWAP", TradeID: "short-close-b", OrdID: "short-exit-b", Side: "buy", PosSide: "short", FillPx: "205", FillSz: "1.5", FillPnl: "-7.5", Fee: "-0.15", FeeCcy: "USDT", FillTime: fillTime, FillTS: fillTS, FillCount: 1})
+	fillTime, fillTS = tradeAt(6)
+	trades = append(trades, analysisTrade{Exchange: trading.ExchangeOKX, APIID: "default", InstID: "TEST-USDT-SWAP", TradeID: "partial-open", OrdID: "partial-entry", Side: "buy", PosSide: "long", FillPx: "50", FillSz: "2", Fee: "-0.2", FeeCcy: "USDT", Leverage: 10, FillTime: fillTime, FillTS: fillTS, FillCount: 1})
+	fillTime, fillTS = tradeAt(7)
+	trades = append(trades, analysisTrade{Exchange: trading.ExchangeOKX, APIID: "default", InstID: "TEST-USDT-SWAP", TradeID: "partial-close", OrdID: "partial-exit", Side: "sell", PosSide: "long", FillPx: "55", FillSz: "1", FillPnl: "5", Fee: "-0.1", FeeCcy: "USDT", FillTime: fillTime, FillTS: fillTS, FillCount: 1})
+
+	positions := buildAnalysisPositionTrades(cfg, trades, periodSince)
+	if len(positions) != 2 {
+		t.Fatalf("positions len=%d positions=%#v", len(positions), positions)
+	}
+	bySide := map[string]analysisPositionTrade{}
+	for _, position := range positions {
+		bySide[position.Side] = position
+	}
+	long := bySide[trading.PositionSideLong]
+	if long.EntryOrdID != "long-entry" || long.ExitOrdID != "long-exit-a / long-exit-b" || long.Qty != "5" || long.EntryPx != "106" || long.ExitPx != "128" {
+		t.Fatalf("bad merged long identity/prices: %#v", long)
+	}
+	if long.Margin != "53" || long.RealizedPnL != "100" || long.Fee != "-1" || long.NetPnL != "99" || long.Turnover != "1170" || long.FillCount != 4 {
+		t.Fatalf("bad merged long totals: %#v", long)
+	}
+	short := bySide[trading.PositionSideShort]
+	if short.EntryOrdID != "short-entry" || short.ExitOrdID != "short-exit-a / short-exit-b" || short.Qty != "2" || short.EntryPx != "200" || short.ExitPx != "206.25" {
+		t.Fatalf("bad merged short identity/prices: %#v", short)
+	}
+	if short.Margin != "40" || short.RealizedPnL != "-12.5" || short.Fee != "-0.4" || short.NetPnL != "-12.9" || short.Turnover != "812.5" || short.FillCount != 3 {
+		t.Fatalf("bad merged short totals: %#v", short)
+	}
+	summary, _, _ := computeStats(cfg, positions, trades, periodSince)
+	if summary.TradeCount != 2 || summary.Wins != 1 || summary.Losses != 1 || math.Abs(summary.NetPnL-86.1) > 0.0000001 {
+		t.Fatalf("bad merged summary: %#v", summary)
+	}
+}
+
 func TestBalanceWindowStatsComputesChangeAndMaxDrawdown(t *testing.T) {
 	base := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
 	got := balanceWindowStats([]analysisBalancePoint{

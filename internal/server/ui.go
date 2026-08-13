@@ -940,8 +940,31 @@ const tvbotHTML = `<!doctype html>
       padding-top: 12px;
     }
     .analysis-trade-table {
-      min-width: 980px;
+      min-width: 1560px;
     }
+    .analysis-trade-table th,
+    .analysis-trade-table td {
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .analysis-trade-table td.time {
+      overflow: hidden;
+      text-overflow: clip;
+    }
+    .analysis-trade-table .analysis-exit-time-col { width: 11.4%; }
+    .analysis-trade-table .analysis-inst-id-col { width: 6.4%; }
+    .analysis-trade-table .analysis-side-col { width: 5.4%; }
+    .analysis-trade-table .analysis-entry-px-col { width: 7%; }
+    .analysis-trade-table .analysis-exit-px-col { width: 7%; }
+    .analysis-trade-table .analysis-qty-col { width: 7%; }
+    .analysis-trade-table .analysis-margin-col { width: 7.6%; }
+    .analysis-trade-table .analysis-leverage-col { width: 4.6%; }
+    .analysis-trade-table .analysis-realized-pnl-col { width: 7.4%; }
+    .analysis-trade-table .analysis-pnl-ratio-col { width: 5.8%; }
+    .analysis-trade-table .analysis-fee-col { width: 8.2%; }
+    .analysis-trade-table .analysis-net-pnl-col { width: 7.6%; }
+    .analysis-trade-table .analysis-turnover-col { width: 8.6%; }
+    .analysis-trade-table .analysis-fill-count-col { width: 6%; }
     .positions-table {
       min-width: 1400px;
     }
@@ -1329,6 +1352,7 @@ const tvbotHTML = `<!doctype html>
         </div>
         <div class="symbol-table-wrap">
           <table class="symbol-table analysis-trade-table">
+            <colgroup id="analysis-trade-cols"></colgroup>
             <thead id="analysis-trade-head"></thead>
             <tbody id="analysis-trade-rows"></tbody>
           </table>
@@ -1665,20 +1689,20 @@ const tvbotHTML = `<!doctype html>
     const analysisTradePageSize = 20;
     const analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v3";
     const analysisTradeColumnDefs = [
-      { id: "exit_time", title: "平仓时间", tdClass: "time", render: (row) => shanghaiTime(row.exit_time) },
-      { id: "inst_id", title: "币对", render: (row) => analysisInstIDText(row.inst_id) },
-      { id: "side", title: "方向", toneClass: (row) => analysisPositionSideToneClass(row.side), render: (row) => analysisPositionSideText(row.side) },
-      { id: "entry_px", title: "开仓价", render: (row) => formattedTradeNumber(row.entry_px, "") },
-      { id: "exit_px", title: "平仓价", render: (row) => formattedTradeNumber(row.exit_px, "") },
-      { id: "qty", title: "数量", render: (row) => formattedTradeNumber(row.qty, "") },
-      { id: "margin", title: "保证金", render: (row) => formattedTradeNumber(row.margin, " USDT") },
-      { id: "leverage", title: "杠杆", render: (row) => row.leverage ? asText(row.leverage) + "x" : "-" },
-      { id: "realized_pnl", title: "盈亏", signedField: "realized_pnl", render: (row) => formattedTradeNumber(row.realized_pnl, " USDT") },
-      { id: "pnl_ratio", title: "盈亏比", toneClass: (row) => signedToneClass(analysisPnLRatioValue(row)), render: (row) => analysisPnLRatioText(row) },
-      { id: "fee", title: "手续费", render: (row) => tradeFeeText(row) },
-      { id: "net_pnl", title: "净盈亏", signedField: "net_pnl", render: (row) => formattedTradeNumber(row.net_pnl, " USDT") },
-      { id: "turnover", title: "成交额", render: (row) => formattedTradeNumber(row.turnover, " USDT") },
-      { id: "fill_count", title: "成交笔数", render: (row) => asText(row.fill_count || 1) }
+      { id: "exit_time", title: "平仓时间", colClass: "analysis-exit-time-col", tdClass: "time", render: (row) => shanghaiTime(row.exit_time) },
+      { id: "inst_id", title: "币对", colClass: "analysis-inst-id-col", render: (row) => analysisInstIDText(row.inst_id) },
+      { id: "side", title: "方向", colClass: "analysis-side-col", toneClass: (row) => analysisPositionSideToneClass(row.side), render: (row) => analysisPositionSideText(row.side) },
+      { id: "entry_px", title: "开仓价", colClass: "analysis-entry-px-col", render: (row) => analysisAmountText(row.entry_px) },
+      { id: "exit_px", title: "平仓价", colClass: "analysis-exit-px-col", render: (row) => analysisAmountText(row.exit_px) },
+      { id: "qty", title: "数量", colClass: "analysis-qty-col", render: (row) => analysisAmountText(row.qty) },
+      { id: "margin", title: "保证金", colClass: "analysis-margin-col", render: (row) => analysisAmountText(row.margin) },
+      { id: "leverage", title: "杠杆", colClass: "analysis-leverage-col", render: (row) => row.leverage ? asText(row.leverage) + "x" : "-" },
+      { id: "realized_pnl", title: "盈亏", colClass: "analysis-realized-pnl-col", signedField: "realized_pnl", render: (row) => analysisAmountText(row.realized_pnl) },
+      { id: "pnl_ratio", title: "盈亏比", colClass: "analysis-pnl-ratio-col", toneClass: (row) => signedToneClass(analysisPnLRatioValue(row)), render: (row) => analysisPnLRatioText(row) },
+      { id: "fee", title: "手续费", colClass: "analysis-fee-col", render: (row) => tradeFeeText(row) },
+      { id: "net_pnl", title: "净盈亏", colClass: "analysis-net-pnl-col", signedField: "net_pnl", render: (row) => analysisAmountText(row.net_pnl) },
+      { id: "turnover", title: "成交额", colClass: "analysis-turnover-col", render: (row) => analysisAmountText(row.turnover) },
+      { id: "fill_count", title: "成交笔数", colClass: "analysis-fill-count-col", render: (row) => asText(row.fill_count || 1) }
     ];
     const balanceWindowOptions = [
       { minutes: 0, label: "当前" },
@@ -4343,15 +4367,15 @@ const tvbotHTML = `<!doctype html>
       }
       const summary = analysisExchangeSummary(normalized);
       const positionSummary = analysisPositionSummary(normalized);
-      $(prefix + "-net-pnl").textContent = formatNumber(summary.net_pnl) + " USDT";
+      $(prefix + "-net-pnl").textContent = analysisAmountText(summary.net_pnl);
       $(prefix + "-win-rate").textContent = formatPct(summary.win_rate);
       $(prefix + "-profit-factor").textContent = formatFactor(summary);
       $(prefix + "-payoff-ratio").textContent = formatNumber(summary.payoff_ratio);
       $(prefix + "-trades").textContent = asText(summary.trade_count || 0);
-      $(prefix + "-turnover").textContent = formatNumber(summary.turnover) + " USDT";
-      $(prefix + "-fees").textContent = formatNumber(summary.fees) + " USDT";
+      $(prefix + "-turnover").textContent = analysisAmountText(summary.turnover);
+      $(prefix + "-fees").textContent = analysisAmountText(summary.fees);
       $(prefix + "-position-count").textContent = positionSummary.ready ? asText(positionSummary.count) : "-";
-      $(prefix + "-position-upl").textContent = positionSummary.ready ? formatNumber(positionSummary.upl) + " USDT" : "-";
+      $(prefix + "-position-upl").textContent = positionSummary.ready ? analysisAmountText(positionSummary.upl) : "-";
       $(prefix + "-position-upl").className = ["value", positionSummary.ready ? signedToneClass(positionSummary.upl) : ""].filter(Boolean).join(" ");
     }
 
@@ -4435,18 +4459,18 @@ const tvbotHTML = `<!doctype html>
       return currentAnalysisTradeColumnOrder().length;
     }
 
-    function formattedTradeNumber(value, suffix) {
+    function analysisAmountText(value) {
       if (value === null || value === undefined || String(value).trim() === "") return "-";
       const formatted = formatNumber(value);
       if (formatted === "-") return asText(value);
-      return formatted + (suffix || "");
+      return formatted;
     }
 
     function tradeFeeText(row) {
-      const fee = formattedTradeNumber(row && row.fee, "");
+      const fee = analysisAmountText(row && row.fee);
       const ccy = row && row.fee_ccy ? String(row.fee_ccy).trim() : "";
       if (fee === "-") return "-";
-      return ccy ? fee + " " + ccy : fee;
+      return ccy && ccy.toUpperCase() !== "USDT" ? fee + " " + ccy : fee;
     }
 
     function analysisInstIDText(instID) {
@@ -4489,8 +4513,13 @@ const tvbotHTML = `<!doctype html>
 
     function renderAnalysisTradeHead() {
       const head = $("analysis-trade-head");
+      const cols = $("analysis-trade-cols");
+      const columns = currentAnalysisTradeColumns();
+      if (cols) {
+        cols.innerHTML = columns.map((col) => '<col class="' + escapeHTML(col.colClass || "") + '">').join("");
+      }
       if (!head) return;
-      head.innerHTML = "<tr>" + currentAnalysisTradeColumns().map((col) =>
+      head.innerHTML = "<tr>" + columns.map((col) =>
         '<th draggable="true" data-analysis-trade-column="' + escapeHTML(col.id) + '" title="拖动调整栏目顺序">' + escapeHTML(col.title) + "</th>"
       ).join("") + "</tr>";
     }
@@ -4619,7 +4648,7 @@ const tvbotHTML = `<!doctype html>
     function renderAnalysisOKXBalance(item, balance) {
       const usdt = usdtBalanceDetail(balance);
       renderAnalysisBalanceWindow("analysis-okx", item);
-      $("analysis-usdt-eq").textContent = usdt ? balanceAmount(usdt.eq) : "-";
+      $("analysis-usdt-eq").textContent = usdt ? analysisAmountText(usdt.eq) : "-";
       $("analysis-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : "-";
       $("analysis-okx-balance-status").textContent = exchangeBalanceStatusText(item, balance, "OKX");
       $("analysis-okx-usdt-title").textContent = "USDT 权益图 " + balanceWindowLabel(state.balanceWindowMinutes);
@@ -4633,7 +4662,7 @@ const tvbotHTML = `<!doctype html>
       const balance = item && item.balance ? item.balance : null;
       const usdt = usdtBalanceDetail(balance);
       renderAnalysisBalanceWindow("analysis-binance", item);
-      $("analysis-binance-usdt-eq").textContent = usdt ? balanceAmount(usdt.eq) : "-";
+      $("analysis-binance-usdt-eq").textContent = usdt ? analysisAmountText(usdt.eq) : "-";
       $("analysis-binance-balance-updated").textContent = balance && balance.updated_at ? shanghaiTime(balance.updated_at) : (item && item.refreshed_at ? shanghaiTime(item.refreshed_at) : "-");
       $("analysis-binance-balance-status").textContent = exchangeBalanceStatusText(item, balance, "Binance");
       $("analysis-binance-usdt-title").textContent = "USDT 权益图 " + balanceWindowLabel(state.balanceWindowMinutes);
@@ -4658,14 +4687,14 @@ const tvbotHTML = `<!doctype html>
         }
         return;
       }
-      if (startEl) startEl.textContent = balanceAmount(windowStats.start_value);
+      if (startEl) startEl.textContent = analysisAmountText(windowStats.start_value);
       if (changeEl) {
-        changeEl.textContent = formatNumber(windowStats.change) + " USDT / " + formatPct(windowStats.change_pct);
+        changeEl.textContent = analysisAmountText(windowStats.change) + " / " + formatPct(windowStats.change_pct);
         changeEl.className = ["value", signedToneClass(windowStats.change)].filter(Boolean).join(" ");
       }
       if (drawdownEl) {
         const dd = Number(windowStats.max_drawdown);
-        drawdownEl.textContent = formatNumber(dd) + " USDT / " + formatPct(windowStats.max_drawdown_pct);
+        drawdownEl.textContent = analysisAmountText(dd) + " / " + formatPct(windowStats.max_drawdown_pct);
         drawdownEl.className = ["value", Number.isFinite(dd) && dd > 0 ? "signed-loss" : ""].filter(Boolean).join(" ");
       }
     }

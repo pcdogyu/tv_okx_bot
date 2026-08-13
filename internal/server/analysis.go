@@ -1502,6 +1502,7 @@ type analysisOpenLot struct {
 	apiID             string
 	instID            string
 	side              string
+	entryGroupKey     string
 	entryTime         time.Time
 	entryTS           int64
 	entryPx           float64
@@ -1512,6 +1513,33 @@ type analysisOpenLot struct {
 	ordID             string
 	leverage          int
 	fillCount         int
+}
+
+type analysisPositionTradeAccumulator struct {
+	Exchange       string
+	APIID          string
+	InstID         string
+	Side           string
+	EntryTime      time.Time
+	EntryTS        int64
+	ExitTime       time.Time
+	ExitTS         int64
+	EntryPxQty     float64
+	ExitPxQty      float64
+	Qty            float64
+	Margin         float64
+	Leverage       int
+	RealizedPnL    float64
+	Fee            float64
+	NetPnL         float64
+	Turnover       float64
+	EntryOrdID     string
+	ExitOrdIDs     []string
+	seenExitOrdIDs map[string]bool
+	seenCloseFills map[string]bool
+	EntryFillCount int
+	CloseFillCount int
+	Remaining      float64
 }
 
 func buildAnalysisPositionTrades(cfg config.Config, trades []analysisTrade, closeSince time.Time) []analysisPositionTrade {
@@ -1526,6 +1554,7 @@ func buildAnalysisPositionTrades(cfg config.Config, trades []analysisTrade, clos
 		return ordered[i].FillTS < ordered[j].FillTS
 	})
 	books := map[string][]*analysisOpenLot{}
+	pending := map[string]*analysisPositionTradeAccumulator{}
 	out := []analysisPositionTrade{}
 	for _, trade := range ordered {
 		qty, qtyOK := parsePositiveFloat(trade.FillSz)
@@ -1541,15 +1570,15 @@ func buildAnalysisPositionTrades(cfg config.Config, trades []analysisTrade, clos
 			if positionSide == "" {
 				positionSide = analysisOpeningSideFromTradeSide(trade.Side)
 			}
-			addAnalysisOpenLot(cfg, books, trade, positionSide, qty, price)
+			addAnalysisOpenLot(cfg, books, pending, trade, positionSide, qty, price)
 		case trading.PositionEffectClose:
 			positionSide := trade.PosSide
 			if positionSide == "" {
 				positionSide = analysisClosingSideFromTradeSide(trade.Side)
 			}
-			closeAnalysisOpenLots(cfg, books, trade, positionSide, qty, price, closeSince, &out)
+			closeAnalysisOpenLots(cfg, books, pending, trade, positionSide, qty, price, closeSince, &out)
 		default:
-			applyAnalysisTradeByPositionSide(cfg, books, trade, qty, price, closeSince, &out)
+			applyAnalysisTradeByPositionSide(cfg, books, pending, trade, qty, price, closeSince, &out)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -1564,41 +1593,41 @@ func buildAnalysisPositionTrades(cfg config.Config, trades []analysisTrade, clos
 	return out
 }
 
-func applyAnalysisTradeByPositionSide(cfg config.Config, books map[string][]*analysisOpenLot, trade analysisTrade, qty, price float64, closeSince time.Time, out *[]analysisPositionTrade) {
+func applyAnalysisTradeByPositionSide(cfg config.Config, books map[string][]*analysisOpenLot, pending map[string]*analysisPositionTradeAccumulator, trade analysisTrade, qty, price float64, closeSince time.Time, out *[]analysisPositionTrade) {
 	switch trade.PosSide {
 	case trading.PositionSideLong:
 		if strings.EqualFold(trade.Side, "sell") {
-			closeAnalysisOpenLots(cfg, books, trade, trading.PositionSideLong, qty, price, closeSince, out)
+			closeAnalysisOpenLots(cfg, books, pending, trade, trading.PositionSideLong, qty, price, closeSince, out)
 			return
 		}
-		addAnalysisOpenLot(cfg, books, trade, trading.PositionSideLong, qty, price)
+		addAnalysisOpenLot(cfg, books, pending, trade, trading.PositionSideLong, qty, price)
 	case trading.PositionSideShort:
 		if strings.EqualFold(trade.Side, "buy") {
-			closeAnalysisOpenLots(cfg, books, trade, trading.PositionSideShort, qty, price, closeSince, out)
+			closeAnalysisOpenLots(cfg, books, pending, trade, trading.PositionSideShort, qty, price, closeSince, out)
 			return
 		}
-		addAnalysisOpenLot(cfg, books, trade, trading.PositionSideShort, qty, price)
+		addAnalysisOpenLot(cfg, books, pending, trade, trading.PositionSideShort, qty, price)
 	default:
-		applyAnalysisNetTrade(cfg, books, trade, qty, price, closeSince, out)
+		applyAnalysisNetTrade(cfg, books, pending, trade, qty, price, closeSince, out)
 	}
 }
 
-func applyAnalysisNetTrade(cfg config.Config, books map[string][]*analysisOpenLot, trade analysisTrade, qty, price float64, closeSince time.Time, out *[]analysisPositionTrade) {
+func applyAnalysisNetTrade(cfg config.Config, books map[string][]*analysisOpenLot, pending map[string]*analysisPositionTradeAccumulator, trade analysisTrade, qty, price float64, closeSince time.Time, out *[]analysisPositionTrade) {
 	switch strings.ToLower(strings.TrimSpace(trade.Side)) {
 	case "buy":
-		remaining := closeAnalysisOpenLots(cfg, books, trade, trading.PositionSideShort, qty, price, closeSince, out)
+		remaining := closeAnalysisOpenLots(cfg, books, pending, trade, trading.PositionSideShort, qty, price, closeSince, out)
 		if remaining > positionEntrySizeEpsilon {
-			addAnalysisOpenLot(cfg, books, trade, trading.PositionSideLong, remaining, price)
+			addAnalysisOpenLot(cfg, books, pending, trade, trading.PositionSideLong, remaining, price)
 		}
 	case "sell":
-		remaining := closeAnalysisOpenLots(cfg, books, trade, trading.PositionSideLong, qty, price, closeSince, out)
+		remaining := closeAnalysisOpenLots(cfg, books, pending, trade, trading.PositionSideLong, qty, price, closeSince, out)
 		if remaining > positionEntrySizeEpsilon {
-			addAnalysisOpenLot(cfg, books, trade, trading.PositionSideShort, remaining, price)
+			addAnalysisOpenLot(cfg, books, pending, trade, trading.PositionSideShort, remaining, price)
 		}
 	}
 }
 
-func addAnalysisOpenLot(cfg config.Config, books map[string][]*analysisOpenLot, trade analysisTrade, positionSide string, qty, price float64) {
+func addAnalysisOpenLot(cfg config.Config, books map[string][]*analysisOpenLot, pending map[string]*analysisPositionTradeAccumulator, trade analysisTrade, positionSide string, qty, price float64) {
 	positionSide = normalizeAnalysisPositionSide(positionSide)
 	if positionSide == "" || qty <= 0 {
 		return
@@ -1612,11 +1641,14 @@ func addAnalysisOpenLot(cfg config.Config, books map[string][]*analysisOpenLot, 
 		turnover *= ratio
 	}
 	key := analysisPositionBookKey(trade.Exchange, trade.APIID, trade.InstID, positionSide)
+	entryGroupKey := analysisPositionEntryGroupKey(trade, positionSide)
+	ensureAnalysisPositionAccumulator(pending, entryGroupKey, trade, positionSide, qty)
 	books[key] = append(books[key], &analysisOpenLot{
 		exchange:          trading.NormalizeExchange(trade.Exchange),
 		apiID:             strings.TrimSpace(trade.APIID),
 		instID:            strings.ToUpper(strings.TrimSpace(trade.InstID)),
 		side:              positionSide,
+		entryGroupKey:     entryGroupKey,
 		entryTime:         trade.FillTime,
 		entryTS:           trade.FillTS,
 		entryPx:           price,
@@ -1630,7 +1662,7 @@ func addAnalysisOpenLot(cfg config.Config, books map[string][]*analysisOpenLot, 
 	})
 }
 
-func closeAnalysisOpenLots(cfg config.Config, books map[string][]*analysisOpenLot, trade analysisTrade, positionSide string, closeQty, exitPx float64, closeSince time.Time, out *[]analysisPositionTrade) float64 {
+func closeAnalysisOpenLots(cfg config.Config, books map[string][]*analysisOpenLot, pending map[string]*analysisPositionTradeAccumulator, trade analysisTrade, positionSide string, closeQty, exitPx float64, closeSince time.Time, out *[]analysisPositionTrade) float64 {
 	positionSide = normalizeAnalysisPositionSide(positionSide)
 	if positionSide == "" || closeQty <= 0 {
 		return closeQty
@@ -1661,35 +1693,12 @@ func closeAnalysisOpenLots(cfg config.Config, books map[string][]*analysisOpenLo
 		totalFee := entryFee + matchedCloseFee
 		totalTurnover := entryTurnover + matchedCloseTurnover
 		netPnL := realizedPnL + totalFee
-		if !trade.FillTime.Before(closeSince) {
-			*out = append(*out, analysisPositionTrade{
-				Exchange:    lot.exchange,
-				APIID:       lot.apiID,
-				InstID:      lot.instID,
-				Side:        lot.side,
-				EntryTime:   lot.entryTime,
-				EntryTS:     lot.entryTS,
-				ExitTime:    trade.FillTime,
-				ExitTS:      trade.FillTS,
-				EntryPx:     trading.NormalizeFloat(lot.entryPx),
-				ExitPx:      trading.NormalizeFloat(exitPx),
-				Qty:         trading.NormalizeFloat(matchedQty),
-				Margin:      analysisPositionMarginText(entryTurnover, lot.leverage),
-				Leverage:    lot.leverage,
-				RealizedPnL: trading.NormalizeFloat(realizedPnL),
-				Fee:         trading.NormalizeFloat(totalFee),
-				FeeCcy:      "USDT",
-				NetPnL:      trading.NormalizeFloat(netPnL),
-				Turnover:    trading.NormalizeFloat(totalTurnover),
-				EntryOrdID:  lot.ordID,
-				ExitOrdID:   strings.TrimSpace(trade.OrdID),
-				FillCount:   maxInt(1, lot.fillCount+maxInt(1, trade.FillCount)),
-			})
-		}
+		applyAnalysisPositionCloseMatch(pending, lot, trade, matchedQty, exitPx, entryTurnover, realizedPnL, totalFee, netPnL, totalTurnover)
 		lot.remaining -= matchedQty
 		lot.feeRemaining -= entryFee
 		lot.turnoverRemaining -= entryTurnover
 		remainingCloseQty -= matchedQty
+		finalizeAnalysisPositionAccumulator(pending, lot.entryGroupKey, closeSince, out)
 		if lot.remaining <= positionEntrySizeEpsilon {
 			lots = lots[1:]
 		}
@@ -1698,11 +1707,195 @@ func closeAnalysisOpenLots(cfg config.Config, books map[string][]*analysisOpenLo
 	return remainingCloseQty
 }
 
-func analysisPositionMarginText(entryTurnover float64, leverage int) string {
+func ensureAnalysisPositionAccumulator(pending map[string]*analysisPositionTradeAccumulator, entryGroupKey string, trade analysisTrade, positionSide string, qty float64) *analysisPositionTradeAccumulator {
+	if pending == nil || entryGroupKey == "" || qty <= 0 {
+		return nil
+	}
+	acc := pending[entryGroupKey]
+	if acc == nil {
+		acc = &analysisPositionTradeAccumulator{
+			Exchange:       trading.NormalizeExchange(trade.Exchange),
+			APIID:          strings.TrimSpace(trade.APIID),
+			InstID:         strings.ToUpper(strings.TrimSpace(trade.InstID)),
+			Side:           normalizeAnalysisPositionSide(positionSide),
+			EntryTime:      trade.FillTime,
+			EntryTS:        trade.FillTS,
+			Leverage:       trade.Leverage,
+			EntryOrdID:     strings.TrimSpace(trade.OrdID),
+			seenExitOrdIDs: map[string]bool{},
+			seenCloseFills: map[string]bool{},
+		}
+		pending[entryGroupKey] = acc
+	}
+	if acc.EntryTime.IsZero() || (trade.FillTS > 0 && (acc.EntryTS <= 0 || trade.FillTS < acc.EntryTS)) {
+		acc.EntryTime = trade.FillTime
+		acc.EntryTS = trade.FillTS
+	}
+	if acc.Leverage <= 0 && trade.Leverage > 0 {
+		acc.Leverage = trade.Leverage
+	}
+	acc.Remaining += qty
+	acc.EntryFillCount += maxInt(1, trade.FillCount)
+	return acc
+}
+
+func applyAnalysisPositionCloseMatch(pending map[string]*analysisPositionTradeAccumulator, lot *analysisOpenLot, trade analysisTrade, matchedQty, exitPx, entryTurnover, realizedPnL, totalFee, netPnL, totalTurnover float64) {
+	if pending == nil || lot == nil || lot.entryGroupKey == "" || matchedQty <= 0 {
+		return
+	}
+	acc := pending[lot.entryGroupKey]
+	if acc == nil {
+		acc = &analysisPositionTradeAccumulator{
+			Exchange:       lot.exchange,
+			APIID:          lot.apiID,
+			InstID:         lot.instID,
+			Side:           lot.side,
+			EntryTime:      lot.entryTime,
+			EntryTS:        lot.entryTS,
+			Leverage:       lot.leverage,
+			EntryOrdID:     lot.ordID,
+			seenExitOrdIDs: map[string]bool{},
+			seenCloseFills: map[string]bool{},
+			EntryFillCount: maxInt(1, lot.fillCount),
+			Remaining:      lot.remaining,
+		}
+		pending[lot.entryGroupKey] = acc
+	}
+	if acc.EntryTime.IsZero() || (lot.entryTS > 0 && (acc.EntryTS <= 0 || lot.entryTS < acc.EntryTS)) {
+		acc.EntryTime = lot.entryTime
+		acc.EntryTS = lot.entryTS
+	}
+	if acc.Leverage <= 0 && lot.leverage > 0 {
+		acc.Leverage = lot.leverage
+	}
+	acc.Qty += matchedQty
+	acc.EntryPxQty += lot.entryPx * matchedQty
+	acc.ExitPxQty += exitPx * matchedQty
+	acc.Margin += analysisPositionMarginValue(entryTurnover, lot.leverage)
+	acc.RealizedPnL += realizedPnL
+	acc.Fee += totalFee
+	acc.NetPnL += netPnL
+	acc.Turnover += totalTurnover
+	if acc.ExitTime.IsZero() || trade.FillTS >= acc.ExitTS {
+		acc.ExitTime = trade.FillTime
+		acc.ExitTS = trade.FillTS
+	}
+	analysisAddExitOrdIDs(acc, trade.OrdID)
+	closeFillKey := analysisPositionCloseFillKey(trade)
+	if closeFillKey != "" && !acc.seenCloseFills[closeFillKey] {
+		acc.seenCloseFills[closeFillKey] = true
+		acc.CloseFillCount += maxInt(1, trade.FillCount)
+	}
+	acc.Remaining -= matchedQty
+	if acc.Remaining < positionEntrySizeEpsilon {
+		acc.Remaining = 0
+	}
+}
+
+func finalizeAnalysisPositionAccumulator(pending map[string]*analysisPositionTradeAccumulator, entryGroupKey string, closeSince time.Time, out *[]analysisPositionTrade) {
+	if pending == nil || entryGroupKey == "" {
+		return
+	}
+	acc := pending[entryGroupKey]
+	if acc == nil || acc.Remaining > positionEntrySizeEpsilon {
+		return
+	}
+	delete(pending, entryGroupKey)
+	if acc.Qty <= positionEntrySizeEpsilon || acc.ExitTime.IsZero() || acc.ExitTime.Before(closeSince) {
+		return
+	}
+	entryPx := ""
+	if acc.EntryPxQty > 0 {
+		entryPx = trading.NormalizeFloat(acc.EntryPxQty / acc.Qty)
+	}
+	exitPx := ""
+	if acc.ExitPxQty > 0 {
+		exitPx = trading.NormalizeFloat(acc.ExitPxQty / acc.Qty)
+	}
+	margin := ""
+	if acc.Margin > 0 {
+		margin = trading.NormalizeFloat(acc.Margin)
+	}
+	*out = append(*out, analysisPositionTrade{
+		Exchange:    acc.Exchange,
+		APIID:       acc.APIID,
+		InstID:      acc.InstID,
+		Side:        acc.Side,
+		EntryTime:   acc.EntryTime,
+		EntryTS:     acc.EntryTS,
+		ExitTime:    acc.ExitTime,
+		ExitTS:      acc.ExitTS,
+		EntryPx:     entryPx,
+		ExitPx:      exitPx,
+		Qty:         trading.NormalizeFloat(acc.Qty),
+		Margin:      margin,
+		Leverage:    acc.Leverage,
+		RealizedPnL: trading.NormalizeFloat(acc.RealizedPnL),
+		Fee:         trading.NormalizeFloat(acc.Fee),
+		FeeCcy:      "USDT",
+		NetPnL:      trading.NormalizeFloat(acc.NetPnL),
+		Turnover:    trading.NormalizeFloat(acc.Turnover),
+		EntryOrdID:  acc.EntryOrdID,
+		ExitOrdID:   strings.Join(acc.ExitOrdIDs, " / "),
+		FillCount:   maxInt(1, acc.EntryFillCount+acc.CloseFillCount),
+	})
+}
+
+func analysisPositionEntryGroupKey(trade analysisTrade, positionSide string) string {
+	entryID := strings.TrimSpace(trade.OrdID)
+	prefix := "order"
+	if entryID == "" {
+		prefix = "lot"
+		entryID = strings.TrimSpace(trade.TradeID)
+		if entryID == "" {
+			entryID = strings.Join([]string{
+				strconv.FormatInt(trade.FillTS, 10),
+				strings.TrimSpace(trade.FillPx),
+				strings.TrimSpace(trade.FillSz),
+			}, ":")
+		}
+	}
+	return trading.NormalizeExchange(trade.Exchange) + "|" +
+		strings.TrimSpace(trade.APIID) + "|" +
+		strings.ToUpper(strings.TrimSpace(trade.InstID)) + "|" +
+		normalizeAnalysisPositionSide(positionSide) + "|" +
+		prefix + ":" + entryID
+}
+
+func analysisPositionCloseFillKey(trade analysisTrade) string {
+	return strings.Join([]string{
+		strings.TrimSpace(trade.OrdID),
+		strings.TrimSpace(trade.TradeID),
+		strconv.FormatInt(trade.FillTS, 10),
+	}, "|")
+}
+
+func analysisAddExitOrdIDs(acc *analysisPositionTradeAccumulator, raw string) {
+	if acc == nil {
+		return
+	}
+	for _, ordID := range splitAnalysisOrderIDs(raw) {
+		if acc.seenExitOrdIDs[ordID] {
+			continue
+		}
+		acc.seenExitOrdIDs[ordID] = true
+		acc.ExitOrdIDs = append(acc.ExitOrdIDs, ordID)
+	}
+}
+
+func analysisPositionMarginValue(entryTurnover float64, leverage int) float64 {
 	if entryTurnover <= 0 || leverage <= 0 {
+		return 0
+	}
+	return entryTurnover / float64(leverage)
+}
+
+func analysisPositionMarginText(entryTurnover float64, leverage int) string {
+	margin := analysisPositionMarginValue(entryTurnover, leverage)
+	if margin <= 0 {
 		return ""
 	}
-	return trading.NormalizeFloat(entryTurnover / float64(leverage))
+	return trading.NormalizeFloat(margin)
 }
 
 func analysisPositionBookKey(exchange, apiID, instID, positionSide string) string {

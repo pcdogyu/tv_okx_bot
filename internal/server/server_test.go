@@ -382,13 +382,19 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("下单盈亏分析")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-head")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-cols")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-trade-page-info")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("min-width: 1560px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisTradePageSize = 20")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v3"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`window.localStorage.getItem(analysisTradeColumnStorageKey)`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`window.localStorage.setItem(analysisTradeColumnStorageKey`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`data-analysis-trade-column`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`cols.innerHTML = columns.map`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("handleAnalysisTradeColumnDrop")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-exit-time-col")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-inst-id-col")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysis-side-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "保证金"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "杠杆"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "开仓价"`)) ||
@@ -396,6 +402,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "盈亏比"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "成交额"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "净盈亏"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("analysisAmountText")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`ccy.toUpperCase() !== "USDT"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisInstIDText")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPnLRatioText")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("analysisPositionSideToneClass")) ||
