@@ -174,12 +174,15 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table td")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("font-size: 12px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-actions-col")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .pos-actions-col { width: 23.3%; }")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-position-amount-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-entry-time-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pos-holding-time-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("仓位金额")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "下单时间"`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "持仓时间"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("displayInstID(row.instId)")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("formatFixed2(row.margin)")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionAmount(row)")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionReturnRatio")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("const uplRatio = positionNumber(row ? row.uplRatio : null);")) ||
@@ -196,7 +199,6 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("font-size: 7px")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .position-actions")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("gap: 6px")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte(".positions-table .pos-actions-col { width: 25.9%; }")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("missingPositionEntrySyncIntervalMs = 180000")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("positionEntryTimesMissing")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("syncMissingPositionEntryTimes")) ||

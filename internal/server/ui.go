@@ -985,7 +985,7 @@ const tvbotHTML = `<!doctype html>
       outline-offset: -2px;
     }
     .positions-table .pos-exchange-col { width: 4.8%; }
-    .positions-table .pos-symbol-col { width: 7.4%; }
+    .positions-table .pos-symbol-col { width: 7.8%; }
     .positions-table .pos-side-col { width: 6.8%; }
     .positions-table .pos-size-col { width: 6.1%; }
     .positions-table .pos-price-col { width: 5.6%; }
@@ -994,9 +994,9 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-position-amount-col { width: 6.3%; }
     .positions-table .pos-pnl-col { width: 6.5%; }
     .positions-table .pos-rate-col { width: 5.2%; }
-    .positions-table .pos-entry-time-col { width: 6.9%; }
-    .positions-table .pos-holding-time-col { width: 5.6%; }
-    .positions-table .pos-actions-col { width: 25.9%; }
+    .positions-table .pos-entry-time-col { width: 8.1%; }
+    .positions-table .pos-holding-time-col { width: 6.6%; }
+    .positions-table .pos-actions-col { width: 23.3%; }
     .pending-order-table {
       min-width: 1360px;
     }
@@ -1725,11 +1725,11 @@ const tvbotHTML = `<!doctype html>
 
     const positionTableColumnDefs = [
       { id: "exchange", title: "交易所", colClass: "pos-exchange-col", cell: (row) => textTableCell(exchangeLabel(normalizeExchange(row._exchange || "okx"))) },
-      { id: "symbol", title: "币对", colClass: "pos-symbol-col", cell: (row) => textTableCell(asText(row.instId)) },
+      { id: "symbol", title: "币对", colClass: "pos-symbol-col", cell: (row) => textTableCell(displayInstID(row.instId)) },
       { id: "side", title: "方向", colClass: "pos-side-col", cell: (row) => positionSideCell(row) },
       { id: "size", title: "持仓量", colClass: "pos-size-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.pos)) },
       { id: "avg_price", title: "均价", colClass: "pos-price-col", cell: (row) => textTableCell(formatPriceAmount(row, row.avgPx)) },
-      { id: "margin", title: "保证金", colClass: "pos-margin-col", cell: (row) => textTableCell(formatNumber(row.margin)) },
+      { id: "margin", title: "保证金", colClass: "pos-margin-col", cell: (row) => textTableCell(formatFixed2(row.margin)) },
       { id: "leverage", title: "杠杆", colClass: "pos-leverage-col", cell: (row) => textTableCell(asText(row.lever)) },
       { id: "position_amount", title: "仓位金额", colClass: "pos-position-amount-col", cell: (row) => textTableCell(positionAmount(row)) },
       { id: "mark_price", title: "标记价", colClass: "pos-price-col", cell: (row) => textTableCell(formatPriceAmount(row, row.markPx)) },
@@ -1742,14 +1742,14 @@ const tvbotHTML = `<!doctype html>
     const pendingOrderTableColumnDefs = [
       { id: "exchange", title: "交易所", colClass: "pending-exchange-col", cell: (row) => textTableCell(exchangeLabel(normalizeExchange(row._exchange || "okx"))) },
       { id: "time", title: "时间", colClass: "pending-time-col", cell: (row) => timeTableCell(shanghaiTimeFromOKX(row.cTime || row.uTime)) },
-      { id: "symbol", title: "币对", colClass: "pending-symbol-col", cell: (row) => textTableCell(asText(row.instId)) },
+      { id: "symbol", title: "币对", colClass: "pending-symbol-col", cell: (row) => textTableCell(displayInstID(row.instId)) },
       { id: "side", title: "方向", colClass: "pending-side-col", cell: (row) => textTableCell(pendingOrderDirectionText(row)) },
       { id: "position_side", title: "持仓方向", colClass: "pending-pos-side-col", cell: (row) => textTableCell(positionSideText(row.posSide, "")) },
       { id: "type", title: "类型", colClass: "pending-type-col", cell: (row) => textTableCell(pendingOrderTypeText(row)) },
       { id: "price", title: "委托价格", colClass: "pending-price-col", cell: (row) => textTableCell(pendingOrderPriceText(row)) },
       { id: "mid_price", title: "中间价", colClass: "pending-mid-col", cell: (row) => textTableCell(row.price_error ? row.price_error : formatPriceAmount(row, row.mid_px)) },
       { id: "size", title: "委托量", colClass: "pending-size-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.sz)) },
-      { id: "margin", title: "保证金", colClass: "pending-margin-col", cell: (row) => textTableCell(formatNumber(row.margin)) },
+      { id: "margin", title: "保证金", colClass: "pending-margin-col", cell: (row) => textTableCell(formatFixed2(row.margin)) },
       { id: "filled", title: "已成交", colClass: "pending-filled-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.accFillSz)) },
       { id: "pending_age", title: "挂单计时", colClass: "pending-age-col", cell: (row) => pendingOrderAgeCell(row) },
       { id: "state", title: "状态", colClass: "pending-state-col", cell: (row) => textTableCell(pendingOrderStateText(row.state)) },
@@ -2084,6 +2084,12 @@ const tvbotHTML = `<!doctype html>
       return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
     }
 
+    function formatFixed2(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "-";
+      return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
     function formatUSD(v) {
       const n = Number(v);
       if (!Number.isFinite(n)) return "-";
@@ -2101,6 +2107,17 @@ const tvbotHTML = `<!doctype html>
       const n = Number(v);
       if (!Number.isFinite(n)) return "-";
       return n.toLocaleString("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 8 });
+    }
+
+    function displayInstID(v) {
+      const raw = asText(v);
+      if (raw === "-") return raw;
+      const upper = raw.toUpperCase();
+      const okxMatch = upper.match(/^([A-Z0-9]+)-USDT-SWAP$/);
+      if (okxMatch) return okxMatch[1];
+      const binanceMatch = upper.match(/^([A-Z0-9]+)USDT$/);
+      if (binanceMatch) return binanceMatch[1];
+      return raw;
     }
 
     function normalizedPrecision(value) {
@@ -4206,7 +4223,7 @@ const tvbotHTML = `<!doctype html>
         const notionalText = String(notionalRaw).trim();
         if (notionalText && notionalText !== "-") {
           const notional = positionNumber(notionalText);
-          if (Number.isFinite(notional) && notional !== 0) return formatNumber(Math.abs(notional));
+          if (Number.isFinite(notional) && notional !== 0) return formatFixed2(Math.abs(notional));
         }
       }
       const marginRaw = row ? row.margin : null;
@@ -4218,7 +4235,7 @@ const tvbotHTML = `<!doctype html>
       const margin = positionNumber(marginText);
       const lever = positionNumber(leverText);
       if (!Number.isFinite(margin) || !Number.isFinite(lever)) return "-";
-      return formatNumber(margin * lever);
+      return formatFixed2(margin * lever);
     }
 
     function signedToneClass(v) {
