@@ -3676,7 +3676,7 @@ func TestTVBotPendingOrderChasePreservesExistingRiskControlsWhileAmendingPrice(t
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v5/trade/orders-pending":
-			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"sell","posSide":"short","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0","state":"live","attachAlgoOrds":[{"attachAlgoClOrdId":"client-100A","tpTriggerRatio":"-0.01","slTriggerRatio":"0.005"}],"cTime":"1784880000000"}]}`))
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"sell","posSide":"short","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0","state":"live","attachAlgoOrds":[{"attachAlgoClOrdId":"client-100A","tpTriggerRatio":"-0.03","slTriggerRatio":"0.015"}],"cTime":"1784880000000"}]}`))
 		case "/api/v5/public/instruments":
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","tickSz":"0.1","ctVal":"1","lotSz":"1","minSz":"1"}]}`))
 		case "/api/v5/market/ticker":
@@ -3731,6 +3731,105 @@ func TestTVBotPendingOrderChasePreservesExistingRiskControlsWhileAmendingPrice(t
 	}
 	if _, ok := amend["attachAlgoOrds"]; ok {
 		t.Fatalf("chase amend should only change price and preserve existing TP/SL on OKX: %#v", amend)
+	}
+}
+
+func TestTVBotPendingOrderChaseRebuildsStaleTPSLRiskControls(t *testing.T) {
+	oldInterval := pendingOrderChaseInterval
+	oldTimeout := pendingOrderChaseTimeout
+	oldJobs := pendingOrderChaseJobs
+	pendingOrderChaseInterval = time.Hour
+	pendingOrderChaseTimeout = time.Hour
+	pendingOrderChaseJobs = newPendingOrderChaseRegistry()
+	defer func() {
+		pendingOrderChaseInterval = oldInterval
+		pendingOrderChaseTimeout = oldTimeout
+		pendingOrderChaseJobs = oldJobs
+	}()
+
+	srv := newTestServer(t)
+	var cancelBodies []map[string]string
+	var orderBodies []map[string]any
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"sell","posSide":"short","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0.1","state":"partially_filled","attachAlgoOrds":[{"attachAlgoClOrdId":"client-100A","tpTriggerRatio":"-0.008","slTriggerRatio":"0.0095"}],"cTime":"1784880000000"}]}`))
+		case "/api/v5/public/instruments":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","tickSz":"0.1","ctVal":"1","lotSz":"1","minSz":"1"}]}`))
+		case "/api/v5/market/ticker":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","bidPx":"63999","askPx":"64001","last":"64000"}]}`))
+		case "/api/v5/trade/cancel-order":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			cancelBodies = append(cancelBodies, body)
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"100","clOrdId":"client-100","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/trade/order":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			orderBodies = append(orderBodies, body)
+			clOrdID, _ := body["clOrdId"].(string)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"0","msg":"","data":[{"ordId":"101","clOrdId":%q,"sCode":"0","sMsg":""}]}`, clOrdID)))
+		case "/api/v5/trade/amend-order":
+			t.Fatal("stale TP/SL risk controls should rebuild instead of amend")
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	cfg.Trading.RiskType = string(trading.RiskTPSL)
+	cfg.Trading.TakeProfitPct = 0.75
+	cfg.Trading.StopLossPct = 1
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:          "default",
+		Active:      true,
+		Credentials: okx.Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/chase", strings.NewReader(`{"api_id":"default","inst_id":"BTC-USDT-SWAP","ord_id":"100","cl_ord_id":"client-100"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("chase code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp pendingOrderChaseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	key := pendingOrderChaseKey(pendingOrderChaseRequest{APIID: "default", InstID: "BTC-USDT-SWAP", OrdID: "101", ClOrdID: resp.ClOrdID})
+	defer pendingOrderChaseJobs.stop(key)
+	if resp.Status != "running" || resp.OrdID != "101" || resp.Px != "64000.1" {
+		t.Fatalf("bad chase response: %#v", resp)
+	}
+	if len(cancelBodies) != 1 || cancelBodies[0]["ordId"] != "100" {
+		t.Fatalf("bad cancel bodies: %#v", cancelBodies)
+	}
+	if len(orderBodies) != 1 {
+		t.Fatalf("expected rebuilt order body, got %#v", orderBodies)
+	}
+	order := orderBodies[0]
+	if order["instId"] != "BTC-USDT-SWAP" || order["side"] != "sell" || order["ordType"] != "limit" || order["px"] != "64000.1" || order["sz"] != "0.4" {
+		t.Fatalf("bad rebuilt order: %#v", order)
+	}
+	attach, ok := order["attachAlgoOrds"].([]any)
+	if !ok || len(attach) != 1 {
+		t.Fatalf("missing attach algo on rebuilt order: %#v", order)
+	}
+	first, ok := attach[0].(map[string]any)
+	if !ok || first["tpTriggerRatio"] != "-0.0075" || first["slTriggerRatio"] != "0.01" || first["tpOrdPx"] != "-1" || first["slOrdPx"] != "-1" {
+		t.Fatalf("bad rebuilt attach algo: %#v", attach)
 	}
 }
 
@@ -4050,7 +4149,7 @@ func TestTVBotPendingOrderChaseFallbackMarketIncludesRiskControls(t *testing.T) 
 				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"cross","side":"buy","posSide":"net","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0.1","state":"live","attachAlgoOrds":[{"attachAlgoClOrdId":"client-100A","tpTriggerRatio":"0.01","slTriggerRatio":"-0.005"}],"cTime":"1784880000000"}]}`))
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"cross","side":"buy","posSide":"net","ordType":"limit","px":"64000","sz":"0.5","accFillSz":"0.1","state":"live","attachAlgoOrds":[{"attachAlgoClOrdId":"client-100A","tpTriggerRatio":"0.04","slTriggerRatio":"-0.02"}],"cTime":"1784880000000"}]}`))
 		case "/api/v5/public/instruments":
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","tickSz":"0.1","ctVal":"1","lotSz":"1","minSz":"1"}]}`))
 		case "/api/v5/market/ticker":

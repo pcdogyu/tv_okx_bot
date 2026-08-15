@@ -3762,7 +3762,52 @@ func shouldRebuildPendingOrderWithProtection(cfg config.Config, order okx.Pendin
 	}
 	risk := cfg.OrderSettings().Risk
 	risk.Normalize()
-	return risk.Type == trading.RiskTrailing
+	switch risk.Type {
+	case trading.RiskTrailing:
+		return true
+	case trading.RiskTPSL:
+		return pendingOrderTPSLRiskStale(attachAlgoOrds, order.AttachAlgoOrds)
+	default:
+		return false
+	}
+}
+
+func pendingOrderTPSLRiskStale(expected, existing []map[string]string) bool {
+	expectedTP, expectedSL := pendingOrderTPSLRatios(expected)
+	if expectedTP == "" || expectedSL == "" {
+		return false
+	}
+	for _, attach := range existing {
+		tp := normalizePendingOrderRiskRatio(attach["tpTriggerRatio"])
+		sl := normalizePendingOrderRiskRatio(attach["slTriggerRatio"])
+		if tp == expectedTP && sl == expectedSL {
+			return false
+		}
+	}
+	return true
+}
+
+func pendingOrderTPSLRatios(attachAlgoOrds []map[string]string) (string, string) {
+	for _, attach := range attachAlgoOrds {
+		tp := normalizePendingOrderRiskRatio(attach["tpTriggerRatio"])
+		sl := normalizePendingOrderRiskRatio(attach["slTriggerRatio"])
+		if tp != "" || sl != "" {
+			return tp, sl
+		}
+	}
+	return "", ""
+}
+
+func normalizePendingOrderRiskRatio(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return raw
+	}
+	return trading.NormalizeFloat(value)
 }
 
 func pendingOrderAttachAlgoOrders(cfg config.Config, order okx.PendingOrder, clOrdID string) []map[string]string {
