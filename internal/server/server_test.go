@@ -3833,6 +3833,85 @@ func TestTVBotPendingOrderChaseRebuildsStaleTPSLRiskControls(t *testing.T) {
 	}
 }
 
+func TestTVBotPendingOrderRiskRebuildPreservesPriceAndRefreshesTPSL(t *testing.T) {
+	srv := newTestServer(t)
+	var cancelBodies []map[string]string
+	var orderBodies []map[string]any
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"DOT-USDT-SWAP","ordId":"100","clOrdId":"client-100","tdMode":"isolated","side":"sell","posSide":"net","ordType":"limit","px":"0.78","sz":"3846.1","accFillSz":"601.6","avgPx":"0.78","state":"partially_filled","attachAlgoOrds":[{"attachAlgoClOrdId":"client-100A","tpTriggerRatio":"-0.01","slTriggerRatio":"0.05"}],"cTime":"1784880000000"}]}`))
+		case "/api/v5/trade/cancel-order":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			cancelBodies = append(cancelBodies, body)
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"100","clOrdId":"client-100","sCode":"0","sMsg":""}]}`))
+		case "/api/v5/trade/order":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			orderBodies = append(orderBodies, body)
+			clOrdID, _ := body["clOrdId"].(string)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"0","msg":"","data":[{"ordId":"101","clOrdId":%q,"sCode":"0","sMsg":""}]}`, clOrdID)))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	cfg.Trading.RiskType = string(trading.RiskTPSL)
+	cfg.Trading.TakeProfitPct = 0.75
+	cfg.Trading.StopLossPct = 1
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:          "default",
+		Active:      true,
+		Credentials: okx.Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/risk", strings.NewReader(`{"api_id":"default","inst_id":"DOT-USDT-SWAP","ord_id":"100","cl_ord_id":"client-100"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("risk rebuild code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp pendingOrderChaseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "rebuilt" || resp.OrdID != "101" || resp.Px != "0.78" {
+		t.Fatalf("bad risk rebuild response: %#v", resp)
+	}
+	if len(cancelBodies) != 1 || cancelBodies[0]["ordId"] != "100" {
+		t.Fatalf("bad cancel bodies: %#v", cancelBodies)
+	}
+	if len(orderBodies) != 1 {
+		t.Fatalf("expected one replacement order, got %#v", orderBodies)
+	}
+	order := orderBodies[0]
+	if order["instId"] != "DOT-USDT-SWAP" || order["tdMode"] != "isolated" || order["side"] != "sell" || order["ordType"] != "limit" || order["px"] != "0.78" || order["sz"] != "3244.5" {
+		t.Fatalf("bad replacement order: %#v", order)
+	}
+	attach, ok := order["attachAlgoOrds"].([]any)
+	if !ok || len(attach) != 1 {
+		t.Fatalf("missing attach algo on replacement order: %#v", order)
+	}
+	first, ok := attach[0].(map[string]any)
+	if !ok || first["tpTriggerRatio"] != "-0.0075" || first["slTriggerRatio"] != "0.01" || first["tpOrdPx"] != "-1" || first["slOrdPx"] != "-1" {
+		t.Fatalf("bad replacement attach algo: %#v", attach)
+	}
+}
+
 func TestTVBotPendingOrderChaseRebuildsExistingTrailingRiskControls(t *testing.T) {
 	oldInterval := pendingOrderChaseInterval
 	oldTimeout := pendingOrderChaseTimeout

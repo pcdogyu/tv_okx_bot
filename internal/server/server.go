@@ -387,6 +387,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handlePositions(w, r)
 	case path == "/pending-orders":
 		s.handlePendingOrders(w, r)
+	case path == "/pending-orders/risk":
+		s.handlePendingOrderRisk(w, r)
 	case path == "/pending-orders/chase":
 		s.handlePendingOrderChase(w, r)
 	case path == "/pending-orders/chase/stop":

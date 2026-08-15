@@ -391,6 +391,51 @@ func (s *Server) handlePendingOrderChaseStop(w http.ResponseWriter, r *http.Requ
 	s.handlePendingOrderChaseAction(w, r, false)
 }
 
+func (s *Server) handlePendingOrderRisk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
+		return
+	}
+	var req pendingOrderChaseRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	req.normalize()
+	if err := req.validate(); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_pending_order_risk", err.Error())
+		return
+	}
+	if req.OrderGroup == "algo" {
+		writeError(w, http.StatusBadRequest, "invalid_pending_order_risk", "only normal pending orders can be rebuilt with attached risk controls")
+		return
+	}
+	if req.Exchange == trading.ExchangeBinance {
+		writeError(w, http.StatusBadRequest, "invalid_pending_order_risk", "Binance pending order risk rebuild is not supported")
+		return
+	}
+	cfg := s.ConfigStore.Get()
+	if s.OKXCredentials == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+		return
+	}
+	client, apiID, err := s.okxClientForCredentials(cfg, req.APIID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "credentials_failed", err.Error())
+		return
+	}
+	req.APIID = apiID
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	resp, err := rebuildPendingOrderRiskAtCurrentPrice(ctx, cfg, client, req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_order_risk_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) handlePendingOrderCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
@@ -2926,6 +2971,76 @@ func preparePendingOrderChase(ctx context.Context, cfg config.Config, client okx
 	}
 	result, closed, err := chasePendingOrderFromOrder(ctx, cfg, client, req, order, true)
 	return req, result, closed, err
+}
+
+func rebuildPendingOrderRiskAtCurrentPrice(ctx context.Context, cfg config.Config, client okx.Client, req pendingOrderChaseRequest) (pendingOrderChaseResponse, error) {
+	order, found, err := currentPendingOrder(ctx, client, req)
+	if err != nil {
+		return pendingOrderChaseResponse{}, err
+	}
+	resp := pendingOrderChaseResponse{
+		OK:         true,
+		APIID:      req.APIID,
+		OrderGroup: req.OrderGroup,
+		InstID:     req.InstID,
+		OrdID:      req.OrdID,
+		ClOrdID:    req.ClOrdID,
+	}
+	if !found {
+		resp.Status = "finished"
+		resp.Message = "pending order is no longer open"
+		return resp, nil
+	}
+	resp.OrdID = order.OrdID
+	resp.ClOrdID = order.ClOrdID
+	if reason := pendingOrderChaseUnavailableReason(order); reason != "" {
+		return resp, errors.New(reason)
+	}
+	attachAlgoOrds := pendingOrderAttachAlgoOrders(cfg, order, "PENDINGRISK")
+	if len(attachAlgoOrds) == 0 {
+		resp.Status = "unchanged"
+		resp.Px = strings.TrimSpace(order.Px)
+		resp.Message = "current order settings do not attach risk controls"
+		return resp, nil
+	}
+	remaining, err := pendingOrderRemainingSize(order)
+	if err != nil {
+		if errors.Is(err, errPendingOrderNoRemaining) {
+			resp.Status = "finished"
+			resp.Message = "pending order has no remaining size"
+			return resp, nil
+		}
+		return resp, err
+	}
+	px := strings.TrimSpace(order.Px)
+	if err := validatePendingOrderChasePx(px); err != nil {
+		return resp, err
+	}
+	if err := cancelPendingOrder(ctx, client, order); err != nil {
+		if _, stillOpen, checkErr := currentPendingOrder(ctx, client, req); checkErr == nil && !stillOpen {
+			resp.Status = "finished"
+			resp.Message = "pending order is no longer open"
+			return resp, nil
+		}
+		return resp, err
+	}
+	limitReq, err := pendingOrderLimitRequest(cfg, order, remaining, px)
+	if err != nil {
+		return resp, err
+	}
+	ack, _, err := client.PlaceOrder(ctx, limitReq)
+	if err != nil {
+		return resp, err
+	}
+	resp.Status = "rebuilt"
+	resp.Message = "pending order rebuilt with current risk controls"
+	resp.OrdID = strings.TrimSpace(ack.OrdID)
+	resp.ClOrdID = strings.TrimSpace(ack.ClOrdID)
+	if resp.ClOrdID == "" {
+		resp.ClOrdID = limitReq.ClOrdID
+	}
+	resp.Px = px
+	return resp, nil
 }
 
 func chasePendingOrderOnce(ctx context.Context, cfg config.Config, client okx.Client, req pendingOrderChaseRequest, forceAttach bool) (pendingOrderChaseResponse, bool, error) {
