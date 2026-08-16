@@ -458,7 +458,7 @@ const tvbotHTML = `<!doctype html>
     }
     th.order-target,
     td.order-target {
-      width: 8.6%;
+      width: 9.46%;
     }
     th {
       color: var(--muted);

@@ -555,6 +555,7 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`id="clear-order-search"`),
 		[]byte(`class="order-target">下单去向`),
 		[]byte(`td class="order-target"`),
+		[]byte(`width: 9.46%;`),
 		[]byte(`ordersSearch: ""`),
 		[]byte(`qs.set("q", state.ordersSearch)`),
 		[]byte(`function applyOrderSearch()`),
