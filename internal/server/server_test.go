@@ -2014,6 +2014,11 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 			t.Fatalf("bad Binance analysis start time: got %d want %d query=%s", startMS, expectedBinanceStart, r.URL.RawQuery)
 		}
 		sawBinanceSymbols[symbol] = true
+		if symbol == "BADUSDT" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":-1121,"msg":"Invalid symbol."}`))
+			return
+		}
 		if symbol == "BTCUSDT" && startMS <= binanceTradeTime && endMS >= binanceTradeTime {
 			_, _ = w.Write([]byte(fmt.Sprintf(`[
 				{"symbol":"BTCUSDT","side":"BUY","positionSide":"LONG","price":"64000","qty":"0.03","realizedPnl":"0","commission":"0.1","commissionAsset":"USDT","time":%d,"id":9000,"orderId":7001},
@@ -2028,6 +2033,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	cfg := srv.ConfigStore.Get()
 	cfg.Trading.BaseURL = okxServer.URL
 	cfg.Trading.BinanceDemoBaseURL = binanceServer.URL
+	cfg.Symbols["BAD"] = config.SymbolConfig{Coinpair: "BADUSDT"}
 	srv.ConfigStore = config.NewStore("", cfg)
 	srv.OKXHTTPClient = okxServer.Client()
 	srv.BinanceHTTPClient = binanceServer.Client()
@@ -2078,7 +2084,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if !sawBalance || !sawCandles || !sawFills || !sawOKXFunding || !sawBinanceFunding {
 		t.Fatalf("expected analysis calls balance=%v candles=%v fills=%v okxFunding=%v binanceFunding=%v", sawBalance, sawCandles, sawFills, sawOKXFunding, sawBinanceFunding)
 	}
-	if !sawBinanceSymbols["BTCUSDT"] || !sawBinanceSymbols["ETHUSDT"] {
+	if !sawBinanceSymbols["BADUSDT"] || !sawBinanceSymbols["BTCUSDT"] || !sawBinanceSymbols["ETHUSDT"] {
 		t.Fatalf("expected Binance configured symbols to be queried, seen=%#v", sawBinanceSymbols)
 	}
 	var resp analysisResponse
@@ -2087,6 +2093,9 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	}
 	if resp.PNLMinutes != 1440 || resp.PNLDays != 1 || resp.BinanceAPIID != "binance-alt" || !strings.Contains(resp.Cache.CacheKey, "binance:binance-alt") {
 		t.Fatalf("bad analysis API/window metadata: %#v", resp)
+	}
+	if resp.Source.Fills != "okx+binance_error" {
+		t.Fatalf("expected partial Binance fill status, source=%#v", resp.Source)
 	}
 	if resp.Balance.TotalEq != "80078.07" || len(resp.Balance.Details) != 2 || resp.Balance.Details[0].Ccy != "BTC" {
 		t.Fatalf("bad balance data: %#v", resp.Balance)

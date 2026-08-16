@@ -1,9 +1,14 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +17,155 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
+
+type analysisRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f analysisRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestFetchBinanceAnalysisTradesContinuesAfterSymbolError(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	tradeTime := now.Add(-time.Hour).UnixMilli()
+	requested := []string{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/userTrades" {
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+		symbol := r.URL.Query().Get("symbol")
+		requested = append(requested, symbol)
+		w.Header().Set("Content-Type", "application/json")
+		if symbol == "BADUSDT" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":-1121,"msg":"Invalid symbol."}`))
+			return
+		}
+		startMS, _ := strconv.ParseInt(r.URL.Query().Get("startTime"), 10, 64)
+		endMS, _ := strconv.ParseInt(r.URL.Query().Get("endTime"), 10, 64)
+		if tradeTime < startMS || tradeTime > endMS {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		tradeID := int64(101)
+		if symbol == "ZZZUSDT" {
+			tradeID = 303
+		}
+		_ = json.NewEncoder(w).Encode([]binance.UserTrade{{
+			Symbol: symbol, Side: "SELL", PositionSide: "BOTH", Price: "10", Qty: "1",
+			RealizedPnl: "2", Commission: "0.1", CommissionAsset: "USDT",
+			Time: tradeTime, ID: tradeID, OrderID: tradeID + 1000,
+		}})
+	}))
+	defer ts.Close()
+
+	cfg := config.Config{Symbols: map[string]config.SymbolConfig{
+		"AAA": {Coinpair: "AAAUSDT"},
+		"BAD": {Coinpair: "BADUSDT"},
+		"ZZZ": {Coinpair: "ZZZUSDT"},
+	}}
+	client := binance.Client{
+		BaseURL:     ts.URL,
+		Credentials: binance.Credentials{APIKey: "key", SecretKey: "secret"},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return now },
+	}
+	trades, err := (&Server{}).fetchBinanceAnalysisTrades(context.Background(), client, "binance-main", cfg, 1440, now)
+	if err == nil || !strings.Contains(err.Error(), "BADUSDT") || !strings.Contains(err.Error(), "-1121") {
+		t.Fatalf("expected symbol-specific Binance error, got %v", err)
+	}
+	if len(trades) != 2 || trades[0].InstID != "AAAUSDT" || trades[1].InstID != "ZZZUSDT" {
+		t.Fatalf("successful symbols should be retained, trades=%#v", trades)
+	}
+	badIndex, zzzIndex := -1, -1
+	for i, symbol := range requested {
+		if symbol == "BADUSDT" && badIndex < 0 {
+			badIndex = i
+		}
+		if symbol == "ZZZUSDT" && zzzIndex < 0 {
+			zzzIndex = i
+		}
+	}
+	if badIndex < 0 || zzzIndex <= badIndex {
+		t.Fatalf("expected ZZZUSDT to be requested after BADUSDT failed, requested=%v", requested)
+	}
+}
+
+func TestFetchBinanceAnalysisTradesRetainsPartialTradesAndAggregatesErrors(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	tradeTime := now.Add(-time.Hour).UnixMilli()
+	calls := map[string]int{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		symbol := r.URL.Query().Get("symbol")
+		calls[symbol]++
+		w.Header().Set("Content-Type", "application/json")
+		switch symbol {
+		case "PARTIALUSDT":
+			if calls[symbol] == 1 {
+				_ = json.NewEncoder(w).Encode([]binance.UserTrade{{
+					Symbol: symbol, Side: "BUY", PositionSide: "BOTH", Price: "5", Qty: "2",
+					RealizedPnl: "1", CommissionAsset: "USDT", Time: tradeTime, ID: 401, OrderID: 1401,
+				}})
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`temporary failure`))
+		case "SECONDUSDT":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":-1121,"msg":"Invalid symbol."}`))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Config{Symbols: map[string]config.SymbolConfig{
+		"PARTIAL": {Coinpair: "PARTIALUSDT"},
+		"SECOND":  {Coinpair: "SECONDUSDT"},
+		"ZZZ":     {Coinpair: "ZZZUSDT"},
+	}}
+	client := binance.Client{
+		BaseURL:     ts.URL,
+		Credentials: binance.Credentials{APIKey: "key", SecretKey: "secret"},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return now },
+	}
+	trades, err := (&Server{}).fetchBinanceAnalysisTrades(context.Background(), client, "binance-main", cfg, 1440, now)
+	if err == nil || !strings.Contains(err.Error(), "PARTIALUSDT") || !strings.Contains(err.Error(), "SECONDUSDT") {
+		t.Fatalf("expected aggregated symbol errors, got %v", err)
+	}
+	if len(trades) != 1 || trades[0].InstID != "PARTIALUSDT" || trades[0].TradeID != "401" {
+		t.Fatalf("partial symbol trades should be retained, trades=%#v", trades)
+	}
+	if calls["ZZZUSDT"] == 0 {
+		t.Fatalf("expected later symbol to be processed, calls=%#v", calls)
+	}
+}
+
+func TestFetchBinanceAnalysisTradesStopsAfterContextCancellation(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	requested := []string{}
+	client := binance.Client{
+		BaseURL:     "https://binance.invalid",
+		Credentials: binance.Credentials{APIKey: "key", SecretKey: "secret"},
+		HTTPClient: &http.Client{Transport: analysisRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requested = append(requested, req.URL.Query().Get("symbol"))
+			return nil, context.Canceled
+		})},
+		Now: func() time.Time { return now },
+	}
+	cfg := config.Config{Symbols: map[string]config.SymbolConfig{
+		"AAA": {Coinpair: "AAAUSDT"},
+		"ZZZ": {Coinpair: "ZZZUSDT"},
+	}}
+
+	_, err := (&Server{}).fetchBinanceAnalysisTrades(context.Background(), client, "binance-main", cfg, 1440, now)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if len(requested) != 1 || requested[0] != "AAAUSDT" {
+		t.Fatalf("later symbols should not be requested after cancellation, requested=%v", requested)
+	}
+}
 
 func TestBalanceWindowQuerySupportsMinutesAndLegacyDays(t *testing.T) {
 	tests := []struct {

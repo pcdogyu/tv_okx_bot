@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -932,14 +933,19 @@ func (s *Server) fetchBinanceAnalysisTrades(ctx context.Context, client binance.
 		return nil, nil
 	}
 	out := []analysisTrade{}
+	symbolErrs := []error{}
 	for _, symbol := range symbols {
 		trades, err := fetchBinanceAnalysisSymbolTrades(ctx, client, apiID, symbol, since, now.UTC())
-		if err != nil {
-			return out, err
-		}
 		out = append(out, trades...)
+		if err != nil {
+			symbolErr := fmt.Errorf("Binance %s analysis trades: %w", symbol, err)
+			symbolErrs = append(symbolErrs, symbolErr)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+				return out, errors.Join(symbolErrs...)
+			}
+		}
 	}
-	return out, nil
+	return out, errors.Join(symbolErrs...)
 }
 
 func fetchBinanceAnalysisSymbolTrades(ctx context.Context, client binance.Client, apiID, symbol string, since, until time.Time) ([]analysisTrade, error) {
