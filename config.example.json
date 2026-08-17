@@ -13,7 +13,7 @@
     "default_margin_mode": "isolated",
     "position_mode": "net",
     "signal_ttl_seconds": 120,
-    "ignored_coinpair": "",
+    "ignored_coinpairs": [],
     "order_amount_usdt": 100,
     "leverage": 5,
     "order_type": "market",

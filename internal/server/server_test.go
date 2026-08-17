@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -560,9 +561,12 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`qs.set("q", state.ordersSearch)`),
 		[]byte(`function applyOrderSearch()`),
 		[]byte(`id="ignored-coinpair"`),
-		[]byte(`id="save-ignored-coinpair"`),
-		[]byte(`id="clear-ignored-coinpair"`),
-		[]byte(`ignored_coinpair: keyword`),
+		[]byte(`id="add-ignored-coinpair"`),
+		[]byte(`id="ignored-coinpair-list"`),
+		[]byte(`data-ignored-coinpair-index`),
+		[]byte(`ignored_coinpairs: keywords`),
+		[]byte(`function addIgnoredCoinpair()`),
+		[]byte(`function removeIgnoredCoinpair(index)`),
 		[]byte(`只过滤开仓信号`),
 		[]byte(`orderHistoryStatusText`),
 	} {
@@ -570,13 +574,16 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 			t.Fatalf("tvbot ui missing order search marker %q", marker)
 		}
 	}
+	if bytes.Contains(body, []byte(`id="clear-ignored-coinpair"`)) || bytes.Contains(body, []byte(`function clearIgnoredCoinpair()`)) {
+		t.Fatal("tvbot UI should only remove ignored coinpairs one at a time")
+	}
 }
 
-func TestTVBotConfigSavesAndClearsIgnoredCoinpair(t *testing.T) {
+func TestTVBotConfigSavesIgnoredCoinpairListAndSupportsLegacyPatch(t *testing.T) {
 	srv := newTestServer(t)
-	put := func(value string) config.Config {
+	put := func(tradingPatch map[string]any) config.Config {
 		t.Helper()
-		body, err := json.Marshal(map[string]any{"trading": map[string]any{"ignored_coinpair": value}})
+		body, err := json.Marshal(map[string]any{"trading": tradingPatch})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -593,11 +600,17 @@ func TestTVBotConfigSavesAndClearsIgnoredCoinpair(t *testing.T) {
 		}
 		return cfg
 	}
-	if cfg := put("  eth  "); cfg.Trading.IgnoredCoinpair != "ETH" {
-		t.Fatalf("ignored coinpair not normalized: %#v", cfg.Trading)
+	cfg := put(map[string]any{"ignored_coinpairs": []string{" syrup ", "ETH-USDT", "ethusdt", "btc"}})
+	if !reflect.DeepEqual(cfg.Trading.IgnoredCoinpairs, []string{"SYRUP", "ETH-USDT", "BTC"}) || cfg.Trading.IgnoredCoinpair != "SYRUP" {
+		t.Fatalf("ignored coinpair list not normalized: %#v", cfg.Trading)
 	}
-	if cfg := put(""); cfg.Trading.IgnoredCoinpair != "" {
-		t.Fatalf("ignored coinpair not cleared: %#v", cfg.Trading)
+	cfg = put(map[string]any{"ignored_coinpair": " sol "})
+	if !reflect.DeepEqual(cfg.Trading.IgnoredCoinpairs, []string{"SOL"}) || cfg.Trading.IgnoredCoinpair != "SOL" {
+		t.Fatalf("legacy ignored coinpair patch not supported: %#v", cfg.Trading)
+	}
+	cfg = put(map[string]any{"ignored_coinpairs": []string{}})
+	if len(cfg.Trading.IgnoredCoinpairs) != 0 || cfg.Trading.IgnoredCoinpair != "" {
+		t.Fatalf("ignored coinpair list not cleared: %#v", cfg.Trading)
 	}
 }
 
@@ -1144,7 +1157,7 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 
 func TestIgnoredEntrySignalUsesCaseInsensitiveFuzzyMatching(t *testing.T) {
 	cfg := config.Default()
-	cfg.Trading.IgnoredCoinpair = " eth "
+	cfg.Trading.IgnoredCoinpairs = []string{"SYRUP", " eth "}
 	for _, coinpair := range []string{"EETH", "ETHFI", "ETHUSDT", "ETHusd", "ETHusdc"} {
 		t.Run(coinpair, func(t *testing.T) {
 			filter, ignored := ignoredEntrySignal(cfg, trading.Signal{Coinpair: coinpair, PositionEffect: trading.PositionEffectOpen})
@@ -1156,19 +1169,26 @@ func TestIgnoredEntrySignalUsesCaseInsensitiveFuzzyMatching(t *testing.T) {
 	if _, ignored := ignoredEntrySignal(cfg, trading.Signal{Coinpair: "BTCUSDT", Ticker: "OKX:BTCUSDT.P"}); ignored {
 		t.Fatal("BTCUSDT should not match ETH")
 	}
-	cfg.Trading.IgnoredCoinpair = "eth-usdt"
+	cfg.Trading.IgnoredCoinpairs = []string{"SYRUP", "eth-usdt"}
 	if _, ignored := ignoredEntrySignal(cfg, trading.Signal{Ticker: "OKX:ETHUSDT.P"}); !ignored {
 		t.Fatal("common separators should be ignored during matching")
 	}
 	if _, ignored := ignoredEntrySignal(cfg, trading.Signal{Coinpair: "ETH-USDT-SWAP", PositionEffect: trading.PositionEffectClose}); ignored {
 		t.Fatal("close signals should not be filtered")
 	}
+	cfg.Trading.IgnoredCoinpairs = []string{"SYRUP"}
+	if _, ignored := ignoredEntrySignal(cfg, trading.Signal{Coinpair: "ETHUSDT"}); ignored {
+		t.Fatal("removed ETH rule should restore matching signals")
+	}
+	if filter, ignored := ignoredEntrySignal(cfg, trading.Signal{Coinpair: "SYRUPUSDT"}); !ignored || filter != "SYRUP" {
+		t.Fatalf("remaining rule should stay active: ignored=%v filter=%q", ignored, filter)
+	}
 }
 
 func TestTVOrderRecordsMatchingEntrySignalAsIgnored(t *testing.T) {
 	srv := newTestServer(t)
 	cfg := srv.ConfigStore.Get()
-	cfg.Trading.IgnoredCoinpair = "eth"
+	cfg.Trading.IgnoredCoinpairs = []string{"eth"}
 	srv.ConfigStore = config.NewStore("", cfg)
 	signal := validSignal(t, srv)
 	signal.Coinpair = "ETHusdc"
@@ -1686,7 +1706,7 @@ func TestOrderRetryMatchingFilterIsIgnoredBeforeMarketRequest(t *testing.T) {
 	defer marketServer.Close()
 	cfg := srv.ConfigStore.Get()
 	cfg.Trading.BaseURL = marketServer.URL
-	cfg.Trading.IgnoredCoinpair = "btc"
+	cfg.Trading.IgnoredCoinpairs = []string{"btc"}
 	srv.ConfigStore = config.NewStore("", cfg)
 	srv.OKXHTTPClient = marketServer.Client()
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -94,10 +95,23 @@ func TestNormalizeBinanceBaseURLs(t *testing.T) {
 	}
 }
 
-func TestIgnoredCoinpairPersistsAndOldConfigDefaultsDisabled(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
+func TestIgnoredCoinpairsMigratePersistAndDeduplicate(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, "legacy.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"trading":{"ignored_coinpair":"  syrup  "}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := Load(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(legacy.Trading.IgnoredCoinpairs, []string{"SYRUP"}) || legacy.Trading.IgnoredCoinpair != "SYRUP" {
+		t.Fatalf("legacy ignored coinpair not migrated: %#v", legacy.Trading)
+	}
+
+	path := filepath.Join(dir, "config.json")
 	cfg := Default()
-	cfg.Trading.IgnoredCoinpair = "  eth-usdt  "
+	cfg.Trading.IgnoredCoinpairs = []string{" syrup ", "ETH-USDT", "ethusdt", "", "btc"}
 	if err := Save(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -105,16 +119,39 @@ func TestIgnoredCoinpairPersistsAndOldConfigDefaultsDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Trading.IgnoredCoinpair != "ETH-USDT" {
-		t.Fatalf("ignored coinpair = %q, want ETH-USDT", loaded.Trading.IgnoredCoinpair)
+	if !reflect.DeepEqual(loaded.Trading.IgnoredCoinpairs, []string{"SYRUP", "ETH-USDT", "BTC"}) {
+		t.Fatalf("ignored coinpairs not normalized: %#v", loaded.Trading.IgnoredCoinpairs)
+	}
+	if loaded.Trading.IgnoredCoinpair != "SYRUP" {
+		t.Fatalf("legacy compatibility mirror = %q, want SYRUP", loaded.Trading.IgnoredCoinpair)
 	}
 
-	missing, err := Load(filepath.Join(t.TempDir(), "missing.json"))
+	missing, err := Load(filepath.Join(dir, "missing.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if missing.Trading.IgnoredCoinpair != "" {
-		t.Fatalf("old or missing config should default filter disabled, got %q", missing.Trading.IgnoredCoinpair)
+	if len(missing.Trading.IgnoredCoinpairs) != 0 || missing.Trading.IgnoredCoinpair != "" {
+		t.Fatalf("missing config should default filters disabled: %#v", missing.Trading)
+	}
+}
+
+func TestStoreClonesIgnoredCoinpairs(t *testing.T) {
+	cfg := Default()
+	cfg.Trading.IgnoredCoinpairs = []string{"ETH"}
+	store := NewStore("", cfg)
+	got := store.Get()
+	got.Trading.IgnoredCoinpairs[0] = "MUTATED"
+	if current := store.Get().Trading.IgnoredCoinpairs; !reflect.DeepEqual(current, []string{"ETH"}) {
+		t.Fatalf("Get shared ignored coinpair slice: %#v", current)
+	}
+	if _, err := store.Update(func(next *Config) error {
+		next.Trading.IgnoredCoinpairs = append(next.Trading.IgnoredCoinpairs, "BTC")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if current := store.Get().Trading.IgnoredCoinpairs; !reflect.DeepEqual(current, []string{"ETH", "BTC"}) {
+		t.Fatalf("Update lost ignored coinpair list: %#v", current)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
@@ -45,6 +46,7 @@ type TradingConfig struct {
 	PositionMode              string                `json:"position_mode"`
 	SignalTTLSeconds          int                   `json:"signal_ttl_seconds"`
 	IgnoredCoinpair           string                `json:"ignored_coinpair"`
+	IgnoredCoinpairs          []string              `json:"ignored_coinpairs"`
 	OrderAmountUSDT           float64               `json:"order_amount_usdt"`
 	Leverage                  int                   `json:"leverage"`
 	OrderType                 string                `json:"order_type"`
@@ -333,7 +335,12 @@ func (c *Config) Normalize() {
 	if c.Trading.SignalTTLSeconds <= 0 {
 		c.Trading.SignalTTLSeconds = 120
 	}
-	c.Trading.IgnoredCoinpair = strings.ToUpper(strings.TrimSpace(c.Trading.IgnoredCoinpair))
+	c.Trading.IgnoredCoinpairs = normalizeIgnoredCoinpairs(c.Trading.IgnoredCoinpairs, c.Trading.IgnoredCoinpair)
+	if len(c.Trading.IgnoredCoinpairs) > 0 {
+		c.Trading.IgnoredCoinpair = c.Trading.IgnoredCoinpairs[0]
+	} else {
+		c.Trading.IgnoredCoinpair = ""
+	}
 	if c.Trading.OrderAmountUSDT <= 0 {
 		c.Trading.OrderAmountUSDT = 100
 	}
@@ -695,6 +702,36 @@ func cloneStrings(in []string) []string {
 	out := make([]string, len(in))
 	copy(out, in)
 	return out
+}
+
+func normalizeIgnoredCoinpairs(values []string, legacy string) []string {
+	candidates := make([]string, 0, len(values)+1)
+	candidates = append(candidates, values...)
+	if strings.TrimSpace(legacy) != "" {
+		candidates = append(candidates, legacy)
+	}
+	out := make([]string, 0, len(candidates))
+	seen := make(map[string]bool, len(candidates))
+	for _, value := range candidates {
+		value = strings.ToUpper(strings.TrimSpace(value))
+		key := ignoredCoinpairKey(value)
+		if value == "" || key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+func ignoredCoinpairKey(value string) string {
+	var normalized strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(value)) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			normalized.WriteRune(r)
+		}
+	}
+	return normalized.String()
 }
 
 func (c Config) Symbol(coinpair string) (SymbolConfig, bool) {

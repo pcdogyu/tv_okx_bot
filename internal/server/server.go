@@ -256,13 +256,15 @@ func ignoredEntrySignal(cfg config.Config, signal trading.Signal) (string, bool)
 	if strings.EqualFold(strings.TrimSpace(signal.PositionEffect), trading.PositionEffectClose) {
 		return "", false
 	}
-	filter := normalizeCoinpairFilter(cfg.Trading.IgnoredCoinpair)
-	if filter == "" {
-		return "", false
-	}
-	for _, candidate := range []string{signal.Coinpair, signal.Ticker} {
-		if strings.Contains(normalizeCoinpairFilter(candidate), filter) {
-			return strings.ToUpper(strings.TrimSpace(cfg.Trading.IgnoredCoinpair)), true
+	for _, keyword := range cfg.Trading.IgnoredCoinpairs {
+		filter := normalizeCoinpairFilter(keyword)
+		if filter == "" {
+			continue
+		}
+		for _, candidate := range []string{signal.Coinpair, signal.Ticker} {
+			if strings.Contains(normalizeCoinpairFilter(candidate), filter) {
+				return strings.ToUpper(strings.TrimSpace(keyword)), true
+			}
 		}
 	}
 	return "", false
@@ -2055,6 +2057,7 @@ type tradingPatch struct {
 	PositionMode              *string                       `json:"position_mode"`
 	SignalTTLSeconds          *int                          `json:"signal_ttl_seconds"`
 	IgnoredCoinpair           *string                       `json:"ignored_coinpair"`
+	IgnoredCoinpairs          *[]string                     `json:"ignored_coinpairs"`
 	OrderAmountUSDT           *float64                      `json:"order_amount_usdt"`
 	Leverage                  *int                          `json:"leverage"`
 	OrderType                 *string                       `json:"order_type"`
@@ -2123,7 +2126,11 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	if patch.Trading.SignalTTLSeconds != nil {
 		c.Trading.SignalTTLSeconds = *patch.Trading.SignalTTLSeconds
 	}
-	if patch.Trading.IgnoredCoinpair != nil {
+	if patch.Trading.IgnoredCoinpairs != nil {
+		c.Trading.IgnoredCoinpairs = append([]string(nil), (*patch.Trading.IgnoredCoinpairs)...)
+		c.Trading.IgnoredCoinpair = ""
+	} else if patch.Trading.IgnoredCoinpair != nil {
+		c.Trading.IgnoredCoinpairs = nil
 		c.Trading.IgnoredCoinpair = *patch.Trading.IgnoredCoinpair
 	}
 	if patch.Trading.OrderAmountUSDT != nil {

@@ -58,7 +58,7 @@ func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
 	defer binanceServer.Close()
 	configureBinanceCloseTestServer(t, srv, binanceServer)
 	cfg := srv.ConfigStore.Get()
-	cfg.Trading.IgnoredCoinpair = "sports"
+	cfg.Trading.IgnoredCoinpairs = []string{"sports"}
 	srv.ConfigStore = config.NewStore("", cfg)
 
 	signal := validSignal(t, srv)

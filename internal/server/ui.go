@@ -736,6 +736,46 @@ const tvbotHTML = `<!doctype html>
       width: min(260px, 60vw);
       min-width: 180px;
     }
+    .coinpair-filter-list {
+      display: flex;
+      align-items: stretch;
+      gap: 10px;
+      flex-wrap: wrap;
+      flex: 1 0 100%;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .coinpair-filter-item {
+      position: relative;
+      min-width: 112px;
+      padding: 13px 34px 13px 14px;
+      border: 1px solid #b9c8df;
+      border-radius: 8px;
+      background: #f7faff;
+      color: var(--text);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .coinpair-filter-remove {
+      position: absolute;
+      top: 3px;
+      right: 5px;
+      width: 24px;
+      min-height: 24px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .coinpair-filter-remove:hover {
+      color: var(--red);
+    }
+    .coinpair-filter-empty {
+      padding: 6px 0;
+    }
     .menu-hidden-check {
       display: flex;
       align-items: center;
@@ -1566,9 +1606,9 @@ const tvbotHTML = `<!doctype html>
         </div>
         <div class="coinpair-filter-actions">
           <input class="coinpair-filter-input" id="ignored-coinpair" autocomplete="off" spellcheck="false" placeholder="例如 ETH" aria-label="忽略币对关键字">
-          <button class="btn primary" type="button" id="save-ignored-coinpair">保存过滤</button>
-          <button class="btn" type="button" id="clear-ignored-coinpair" disabled>清除过滤</button>
+          <button class="btn primary" type="button" id="add-ignored-coinpair" disabled>添加过滤</button>
         </div>
+        <div class="coinpair-filter-list" id="ignored-coinpair-list"><span class="muted coinpair-filter-empty">暂无已添加的币对过滤</span></div>
       </div>
     </section>
 
@@ -3259,7 +3299,7 @@ const tvbotHTML = `<!doctype html>
         ["保证金模式", t.default_margin_mode],
         ["持仓模式", t.position_mode],
         ["信号有效秒数", t.signal_ttl_seconds],
-        ["忽略币对", t.ignored_coinpair || "未启用"],
+        ["忽略币对", configuredIgnoredCoinpairs().join(", ") || "未启用"],
         ["USDT 下单金额", t.order_amount_usdt],
         ["杠杆", t.leverage],
         ["订单类型", orderTypeText(t.order_type || "market")],
@@ -4865,39 +4905,72 @@ const tvbotHTML = `<!doctype html>
       return $("ignored-coinpair") ? $("ignored-coinpair").value.trim() : "";
     }
 
+    function configuredIgnoredCoinpairs() {
+      const trading = state.config && state.config.trading ? state.config.trading : {};
+      if (Array.isArray(trading.ignored_coinpairs)) {
+        return trading.ignored_coinpairs.map((item) => String(item || "").trim()).filter(Boolean);
+      }
+      const legacy = String(trading.ignored_coinpair || "").trim();
+      return legacy ? [legacy] : [];
+    }
+
+    function ignoredCoinpairKey(value) {
+      return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    }
+
     function syncIgnoredCoinpairControls() {
-      const clearButton = $("clear-ignored-coinpair");
-      if (!clearButton) return;
-      const configured = state.config && state.config.trading ? String(state.config.trading.ignored_coinpair || "").trim() : "";
-      clearButton.disabled = !currentIgnoredCoinpairInput() && !configured;
+      const addButton = $("add-ignored-coinpair");
+      if (!addButton) return;
+      addButton.disabled = !ignoredCoinpairKey(currentIgnoredCoinpairInput());
     }
 
     function renderIgnoredCoinpairFilter() {
-      const input = $("ignored-coinpair");
       const status = $("ignored-coinpair-status");
-      if (!input || !status) return;
-      const keyword = state.config && state.config.trading ? String(state.config.trading.ignored_coinpair || "").trim() : "";
-      input.value = keyword;
-      status.textContent = keyword ? ('当前生效：包含 "' + keyword + '" 的开仓信号将被忽略') : "当前未启用";
+      const list = $("ignored-coinpair-list");
+      if (!status || !list) return;
+      const keywords = configuredIgnoredCoinpairs();
+      status.textContent = keywords.length ? ("当前生效：" + keywords.length + " 个开仓过滤关键字") : "当前未启用";
+      list.innerHTML = keywords.map((keyword, index) => {
+        const removeLabel = "删除过滤 " + keyword + "，恢复后续下单";
+        return '<div class="coinpair-filter-item"><span>' + escapeHTML(keyword) + '</span>' +
+          '<button class="coinpair-filter-remove" type="button" data-ignored-coinpair-index="' + index + '" title="' + escapeHTML(removeLabel) + '" aria-label="' + escapeHTML(removeLabel) + '">×</button></div>';
+      }).join("") || '<span class="muted coinpair-filter-empty">暂无已添加的币对过滤</span>';
       syncIgnoredCoinpairControls();
     }
 
-    async function saveIgnoredCoinpair() {
-      const keyword = currentIgnoredCoinpairInput();
+    async function persistIgnoredCoinpairs(keywords) {
       state.config = await api("/tvbot/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trading: { ignored_coinpair: keyword } })
+        body: JSON.stringify({ trading: { ignored_coinpairs: keywords } })
       });
       renderConfig();
       renderDashboard();
-      toast(keyword ? "币对过滤已保存" : "币对过滤已关闭");
     }
 
-    async function clearIgnoredCoinpair() {
+    async function addIgnoredCoinpair() {
+      const keyword = currentIgnoredCoinpairInput();
+      const key = ignoredCoinpairKey(keyword);
+      if (!key) return;
+      const keywords = configuredIgnoredCoinpairs();
+      if (keywords.some((item) => ignoredCoinpairKey(item) === key)) {
+        toast("该币对过滤已存在");
+        return;
+      }
+      await persistIgnoredCoinpairs(keywords.concat([keyword]));
       const input = $("ignored-coinpair");
       if (input) input.value = "";
-      await saveIgnoredCoinpair();
+      syncIgnoredCoinpairControls();
+      toast("币对过滤已添加");
+    }
+
+    async function removeIgnoredCoinpair(index) {
+      const keywords = configuredIgnoredCoinpairs();
+      if (!Number.isInteger(index) || index < 0 || index >= keywords.length) return;
+      const removed = keywords[index];
+      keywords.splice(index, 1);
+      await persistIgnoredCoinpairs(keywords);
+      toast(removed + " 已恢复后续下单");
     }
 
     function orderHistoryStatusText(status) {
@@ -5738,10 +5811,14 @@ const tvbotHTML = `<!doctype html>
     $("ignored-coinpair").addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
-      saveIgnoredCoinpair().catch((err) => toast(err.message));
+      addIgnoredCoinpair().catch((err) => toast(err.message));
     });
-    $("save-ignored-coinpair").addEventListener("click", () => saveIgnoredCoinpair().catch((err) => toast(err.message)));
-    $("clear-ignored-coinpair").addEventListener("click", () => clearIgnoredCoinpair().catch((err) => toast(err.message)));
+    $("add-ignored-coinpair").addEventListener("click", () => addIgnoredCoinpair().catch((err) => toast(err.message)));
+    $("ignored-coinpair-list").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-ignored-coinpair-index]");
+      if (!button) return;
+      removeIgnoredCoinpair(Number(button.dataset.ignoredCoinpairIndex)).catch((err) => toast(err.message));
+    });
     $("refresh-trade-monitor").addEventListener("click", () => loadTradeMonitor().then(() => toast("成交监听已刷新")).catch((err) => toast(err.message)));
     $("position-rows").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-position-close]");

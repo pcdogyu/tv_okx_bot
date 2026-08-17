@@ -17,6 +17,7 @@ func (s *Store) Get() Config {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	cfg := s.cfg
+	cfg.Trading.IgnoredCoinpairs = cloneStringList(s.cfg.Trading.IgnoredCoinpairs)
 	cfg.Symbols = cloneSymbols(s.cfg.Symbols)
 	cfg.UI.MenuItems = cloneMenuItems(s.cfg.UI.MenuItems)
 	cfg.UI.TableColumns = cloneTableColumns(s.cfg.UI.TableColumns)
@@ -27,6 +28,7 @@ func (s *Store) Update(fn func(*Config) error) (Config, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := s.cfg
+	next.Trading.IgnoredCoinpairs = cloneStringList(s.cfg.Trading.IgnoredCoinpairs)
 	next.Symbols = cloneSymbols(s.cfg.Symbols)
 	next.UI.MenuItems = cloneMenuItems(s.cfg.UI.MenuItems)
 	next.UI.TableColumns = cloneTableColumns(s.cfg.UI.TableColumns)
@@ -51,6 +53,12 @@ func cloneSymbols(in map[string]SymbolConfig) map[string]SymbolConfig {
 	for k, v := range in {
 		out[k] = v
 	}
+	return out
+}
+
+func cloneStringList(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
 	return out
 }
 
