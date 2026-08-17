@@ -1300,6 +1300,12 @@ func enrichAnalysisTrades(cfg config.Config, trades []analysisTrade, records []s
 				trade.PosSide = meta.PositionSide
 			}
 		}
+		// OKX fill history does not include leverage. Keep the recorded order
+		// leverage when available, and otherwise use the configured OKX leverage
+		// so an account fill without a local order record can still show ROI.
+		if trade.Leverage <= 0 && trading.NormalizeExchange(trade.Exchange) == trading.ExchangeOKX && cfg.Trading.Leverage > 0 {
+			trade.Leverage = cfg.Trading.Leverage
+		}
 		trade.PosSide = normalizeAnalysisPositionSide(trade.PosSide)
 		trade.PositionEffect = normalizeAnalysisPositionEffect(trade.PositionEffect)
 		if trade.Leverage > 0 {

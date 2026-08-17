@@ -339,7 +339,7 @@ func TestAnalysisBalanceFromBinanceIncludesUSDTPositionUnrealizedPnL(t *testing.
 func TestEnrichAnalysisTradesUsesMatchedOrderLeverageAndComputesNetPnL(t *testing.T) {
 	cfg := config.Config{Symbols: map[string]config.SymbolConfig{
 		"BTC": {InstID: "BTC-USDT-SWAP", CtVal: 0.01},
-	}}
+	}, Trading: config.TradingConfig{Leverage: 10}}
 	trades := []analysisTrade{
 		{
 			Exchange: trading.ExchangeOKX,
@@ -374,6 +374,17 @@ func TestEnrichAnalysisTradesUsesMatchedOrderLeverageAndComputesNetPnL(t *testin
 			Fee:      "-0.01",
 			FeeCcy:   "USDT",
 		},
+		{
+			Exchange: trading.ExchangeOKX,
+			APIID:    "default",
+			InstID:   "BTC-USDT-SWAP",
+			OrdID:    "unrecorded-okx-order",
+			FillPx:   "50000",
+			FillSz:   "2",
+			FillPnl:  "3",
+			Fee:      "-0.12",
+			FeeCcy:   "USDT",
+		},
 	}
 	records := []storage.OrderRecord{
 		{
@@ -402,6 +413,9 @@ func TestEnrichAnalysisTradesUsesMatchedOrderLeverageAndComputesNetPnL(t *testin
 	}
 	if trades[2].Leverage != 3 || trades[2].Margin != "" || trades[2].NetPnL != "0.99" {
 		t.Fatalf("missing ctVal should keep leverage/net pnl but omit margin: %#v", trades[2])
+	}
+	if trades[3].Leverage != 10 || trades[3].Margin != "100" || trades[3].NetPnL != "2.88" {
+		t.Fatalf("unrecorded OKX fill should use configured leverage: %#v", trades[3])
 	}
 }
 
