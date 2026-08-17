@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
@@ -15,6 +17,15 @@ const (
 	coinpairCooldownDuration        = 24 * time.Hour
 	coinpairCooldownCleanupInterval = time.Minute
 )
+
+var manualCoinpairCooldownSequence atomic.Uint64
+
+type createCoinpairBlockRequest struct {
+	Symbol       string `json:"symbol"`
+	TriggerPrice string `json:"trigger_price"`
+	Exchange     string `json:"exchange"`
+	APIID        string `json:"api_id"`
+}
 
 func (s *Server) StartCoinpairBlockCleaner(ctx context.Context) {
 	if s.Orders == nil {
@@ -54,14 +65,21 @@ func (s *Server) cleanExpiredCoinpairBlocks() {
 }
 
 func (s *Server) handleCoinpairBlocks(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is allowed")
-		return
-	}
 	if s.Orders == nil {
 		writeError(w, http.StatusServiceUnavailable, "not_configured", "order store is not configured")
 		return
 	}
+	switch r.Method {
+	case http.MethodGet:
+		s.handleCoinpairBlockList(w)
+	case http.MethodPost:
+		s.handleCoinpairBlockCreate(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and POST are allowed")
+	}
+}
+
+func (s *Server) handleCoinpairBlockList(w http.ResponseWriter) {
 	now := s.now()
 	blocks, err := s.Orders.ListActiveCoinpairBlocks(now)
 	if err != nil {
@@ -72,6 +90,70 @@ func (s *Server) handleCoinpairBlocks(w http.ResponseWriter, r *http.Request) {
 		"blocks":     blocks,
 		"updated_at": now,
 	})
+}
+
+func (s *Server) handleCoinpairBlockCreate(w http.ResponseWriter, r *http.Request) {
+	var req createCoinpairBlockRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	req.Symbol = strings.TrimSpace(req.Symbol)
+	req.TriggerPrice = strings.TrimSpace(req.TriggerPrice)
+	req.Exchange = strings.TrimSpace(req.Exchange)
+	req.APIID = strings.TrimSpace(req.APIID)
+	if req.Symbol == "" {
+		writeError(w, http.StatusBadRequest, "invalid_coinpair_block", "symbol is required")
+		return
+	}
+	if req.Exchange == "" || !trading.ValidTargetExchange(req.Exchange) {
+		writeError(w, http.StatusBadRequest, "invalid_coinpair_block", "exchange must be okx or binance")
+		return
+	}
+	req.Exchange = trading.NormalizeExchange(req.Exchange)
+	keyword, _ := coinpairCooldownIdentity(req.Symbol)
+	if keyword == "" {
+		writeError(w, http.StatusBadRequest, "invalid_coinpair_block", "symbol does not contain a usable coinpair")
+		return
+	}
+	now := s.now()
+	blocks, err := s.Orders.ListActiveCoinpairBlocks(now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if block, found := coinpairBlockCoveringSymbol(blocks, req.Symbol); found {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "active",
+			"block":  block,
+		})
+		return
+	}
+	eventID := fmt.Sprintf("analysis_manual:%s:%d:%d", keyword, now.UnixNano(), manualCoinpairCooldownSequence.Add(1))
+	block, _, err := s.recordCoinpairCooldown(eventID, "analysis_manual", req.Exchange, req.APIID, req.TriggerPrice, now, req.Symbol)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"status": "created",
+		"block":  block,
+	})
+}
+
+func coinpairBlockCoveringSymbol(blocks []storage.CoinpairBlock, symbol string) (storage.CoinpairBlock, bool) {
+	candidate := normalizeCoinpairFilter(symbol)
+	if candidate == "" {
+		return storage.CoinpairBlock{}, false
+	}
+	for _, block := range blocks {
+		filter := normalizeCoinpairFilter(block.Keyword)
+		if filter != "" && strings.Contains(candidate, filter) {
+			return block, true
+		}
+	}
+	return storage.CoinpairBlock{}, false
 }
 
 func (s *Server) activeCoinpairCooldown(signal trading.Signal, now time.Time) (storage.CoinpairBlock, bool, error) {

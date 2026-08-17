@@ -564,11 +564,11 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`id="add-ignored-coinpair"`),
 		[]byte(`id="ignored-coinpair-list"`),
 		[]byte(`id="coinpair-cooldown-list"`),
-		[]byte(`止损冷却（锁定 24 小时）`),
+		[]byte(`动态冷静期（锁定 24 小时）`),
 		[]byte(`function loadCoinpairBlocks()`),
 		[]byte(`function renderCoinpairCooldownList()`),
 		[]byte(`coinpairBlockPollIntervalMs = 20000`),
-		[]byte(`止损价：`),
+		[]byte(`止损价`),
 		[]byte(`价格待确认`),
 		[]byte(`data-ignored-coinpair-index`),
 		[]byte(`ignored_coinpairs: keywords`),
@@ -586,6 +586,35 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte(`coinpair-cooldown-remove`)) || bytes.Contains(body, []byte(`data-coinpair-cooldown-remove`)) {
 		t.Fatal("stop-loss cooldown cards must not provide an early remove control")
+	}
+}
+
+func TestTVBotUIAnalysisManualCooldownControls(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/tvbot/", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	resp := httptest.NewRecorder()
+	srv.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("tvbot ui code=%d body=%s", resp.Code, resp.Body.String())
+	}
+	body := resp.Body.Bytes()
+	for _, marker := range [][]byte{
+		[]byte(`renderHTML: (row) => analysisCooldownCellHTML(row)`),
+		[]byte(`class="btn small analysis-cooldown-btn"`),
+		[]byte(`data-analysis-cooldown="true"`),
+		[]byte(`function addAnalysisCoinpairCooldown(button)`),
+		[]byte(`window.confirm(`),
+		[]byte(`"/tvbot/coinpair-blocks"`),
+		[]byte(`trigger_price: button.dataset.triggerPrice`),
+		[]byte(`冷静中`),
+		[]byte(`手动冷静期`),
+		[]byte(`priceLabel = block.source === "analysis_manual" ? "平仓价" : "止损价"`),
+		[]byte(`activeTab !== "orders" && activeTab !== "analysis"`),
+	} {
+		if !bytes.Contains(body, marker) {
+			t.Fatalf("tvbot ui missing analysis cooldown marker %q", marker)
+		}
 	}
 }
 

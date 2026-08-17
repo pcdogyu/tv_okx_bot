@@ -64,6 +64,100 @@ func TestStopLossCloseSignalRequiresExplicitStopLoss(t *testing.T) {
 	}
 }
 
+func TestTVBotCreatesManualCoinpairCooldownWithoutExtendingActiveRule(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	type response struct {
+		Status string                `json:"status"`
+		Block  storage.CoinpairBlock `json:"block"`
+	}
+	post := func(symbol, price, exchange, apiID string) (int, response) {
+		t.Helper()
+		body, err := json.Marshal(map[string]string{
+			"symbol":        symbol,
+			"trigger_price": price,
+			"exchange":      exchange,
+			"api_id":        apiID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/tvbot/coinpair-blocks", bytes.NewReader(body))
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		var got response
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode response: %v body=%s", err, rr.Body.String())
+		}
+		return rr.Code, got
+	}
+
+	code, created := post("ETH-USDT-SWAP", "2525.5", trading.ExchangeOKX, "main")
+	if code != http.StatusCreated || created.Status != "created" {
+		t.Fatalf("create status=%d response=%#v", code, created)
+	}
+	if created.Block.Keyword != "ETH" || created.Block.Symbol != "ETH-USDT-SWAP" || created.Block.TriggerPrice != "2525.5" ||
+		created.Block.Source != "analysis_manual" || created.Block.Exchange != trading.ExchangeOKX || created.Block.APIID != "main" {
+		t.Fatalf("bad manual block: %#v", created.Block)
+	}
+	if !created.Block.StartedAt.Equal(now) || !created.Block.ExpiresAt.Equal(now.Add(coinpairCooldownDuration)) {
+		t.Fatalf("bad manual cooldown window: %#v", created.Block)
+	}
+
+	code, active := post("ETHFIUSDT", "0.75", trading.ExchangeBinance, "secondary")
+	if code != http.StatusOK || active.Status != "active" {
+		t.Fatalf("duplicate status=%d response=%#v", code, active)
+	}
+	if active.Block.Keyword != created.Block.Keyword || !active.Block.ExpiresAt.Equal(created.Block.ExpiresAt) || active.Block.TriggerPrice != created.Block.TriggerPrice {
+		t.Fatalf("active fuzzy rule should be returned without extension: created=%#v active=%#v", created.Block, active.Block)
+	}
+
+	probe := trading.Signal{Coinpair: "EETH", Ticker: "BINANCE:EETHUSDT", PositionEffect: trading.PositionEffectOpen}
+	if block, blocked, err := srv.activeCoinpairCooldown(probe, now); err != nil || !blocked || block.Keyword != "ETH" {
+		t.Fatalf("manual block should fuzzily cover open signal: blocked=%v block=%#v err=%v", blocked, block, err)
+	}
+	closeProbe := probe
+	closeProbe.PositionEffect = trading.PositionEffectClose
+	if _, blocked, err := srv.activeCoinpairCooldown(closeProbe, now); err != nil || blocked {
+		t.Fatalf("manual block should not cover close signal: blocked=%v err=%v", blocked, err)
+	}
+
+	later := now.Add(25 * time.Hour)
+	srv.Now = func() time.Time { return later }
+	code, recreated := post("ETHUSDT", "2600", trading.ExchangeOKX, "main")
+	if code != http.StatusCreated || recreated.Status != "created" || !recreated.Block.StartedAt.Equal(later) || !recreated.Block.ExpiresAt.Equal(later.Add(coinpairCooldownDuration)) {
+		t.Fatalf("expired rule should be recreated for a fresh 24 hours: status=%d response=%#v", code, recreated)
+	}
+}
+
+func TestTVBotManualCoinpairCooldownValidatesAuthAndPayload(t *testing.T) {
+	srv := newTestServer(t)
+	unauthorized := httptest.NewRecorder()
+	srv.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/tvbot/coinpair-blocks", strings.NewReader(`{"symbol":"ETHUSDT","exchange":"okx"}`)))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	for name, body := range map[string]string{
+		"missing symbol":   `{"exchange":"okx"}`,
+		"missing exchange": `{"symbol":"ETHUSDT"}`,
+		"invalid exchange": `{"symbol":"ETHUSDT","exchange":"bybit"}`,
+		"invalid symbol":   `{"symbol":"---","exchange":"okx"}`,
+		"bad json":         `{`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/tvbot/coinpair-blocks", strings.NewReader(body))
+			req.SetBasicAuth("admin", "Admin123")
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestTVOrderCooldownBlocksBeforeExecutorAndListsRule(t *testing.T) {
 	srv := newTestServer(t)
 	now := srv.now()

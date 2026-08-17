@@ -1062,6 +1062,18 @@ const tvbotHTML = `<!doctype html>
     .analysis-trade-table .analysis-net-pnl-col { width: 7.6%; }
     .analysis-trade-table .analysis-turnover-col { width: 8.6%; }
     .analysis-trade-table .analysis-fill-count-col { width: 6%; }
+    .analysis-realized-pnl-cell {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      white-space: nowrap;
+    }
+    .analysis-cooldown-btn {
+      flex: 0 0 auto;
+      min-height: 24px !important;
+      padding: 2px 6px !important;
+    }
     .positions-table {
       min-width: 1400px;
     }
@@ -1644,8 +1656,8 @@ const tvbotHTML = `<!doctype html>
           <div class="coinpair-filter-list" id="ignored-coinpair-list"><span class="muted coinpair-filter-empty">暂无已添加的币对过滤</span></div>
         </div>
         <div class="coinpair-filter-group">
-          <h4 class="coinpair-filter-group-title">止损冷却（锁定 24 小时）</h4>
-          <div class="coinpair-filter-list" id="coinpair-cooldown-list"><span class="muted coinpair-filter-empty">暂无止损冷却币对</span></div>
+          <h4 class="coinpair-filter-group-title">动态冷静期（锁定 24 小时）</h4>
+          <div class="coinpair-filter-list" id="coinpair-cooldown-list"><span class="muted coinpair-filter-empty">暂无冷静期币对</span></div>
         </div>
       </div>
     </section>
@@ -1746,6 +1758,7 @@ const tvbotHTML = `<!doctype html>
       ordersPage: 1,
       ordersSearch: "",
       coinpairBlocks: null,
+      coinpairCooldownSubmitting: {},
       retrying: {},
       positionClosing: {},
       pendingOrderActions: {},
@@ -1818,7 +1831,7 @@ const tvbotHTML = `<!doctype html>
       { id: "qty", title: "数量", colClass: "analysis-qty-col", render: (row) => analysisAmountText(row.qty) },
       { id: "margin", title: "保证金", colClass: "analysis-margin-col", render: (row) => analysisAmountText(row.margin) },
       { id: "leverage", title: "杠杆", colClass: "analysis-leverage-col", render: (row) => row.leverage ? asText(row.leverage) + "x" : "-" },
-      { id: "realized_pnl", title: "盈亏", colClass: "analysis-realized-pnl-col", signedField: "realized_pnl", render: (row) => analysisAmountText(row.realized_pnl) },
+      { id: "realized_pnl", title: "盈亏", colClass: "analysis-realized-pnl-col", signedField: "realized_pnl", renderHTML: (row) => analysisCooldownCellHTML(row) },
       { id: "pnl_ratio", title: "盈亏比", colClass: "analysis-pnl-ratio-col", toneClass: (row) => signedToneClass(analysisPnLRatioValue(row)), render: (row) => analysisPnLRatioText(row) },
       { id: "fee", title: "手续费", colClass: "analysis-fee-col", render: (row) => tradeFeeText(row) },
       { id: "net_pnl", title: "净盈亏", colClass: "analysis-net-pnl-col", signedField: "net_pnl", render: (row) => analysisAmountText(row.net_pnl) },
@@ -2884,7 +2897,7 @@ const tvbotHTML = `<!doctype html>
       } else {
         stopAnalysisBalanceAutoRefresh();
       }
-      if (target === "orders") {
+      if (target === "orders" || target === "analysis") {
         startCoinpairBlockPolling();
       } else {
         stopCoinpairBlockPolling();
@@ -3002,12 +3015,14 @@ const tvbotHTML = `<!doctype html>
       const data = await api("/tvbot/coinpair-blocks");
       state.coinpairBlocks = Array.isArray(data.blocks) ? data.blocks : [];
       renderIgnoredCoinpairFilter();
+      if (state.analysis) renderAnalysisTradeHistory("");
     }
 
     function startCoinpairBlockPolling() {
       if (!coinpairBlockPollTimer) {
         coinpairBlockPollTimer = window.setInterval(async () => {
-          if (coinpairBlockPollBusy || activeTabID() !== "orders") return;
+          const activeTab = activeTabID();
+          if (coinpairBlockPollBusy || (activeTab !== "orders" && activeTab !== "analysis")) return;
           coinpairBlockPollBusy = true;
           try {
             await loadCoinpairBlocks();
@@ -3019,7 +3034,10 @@ const tvbotHTML = `<!doctype html>
         }, coinpairBlockPollIntervalMs);
       }
       if (!coinpairBlockCountdownTimer) {
-        coinpairBlockCountdownTimer = window.setInterval(() => renderCoinpairCooldownList(), 1000);
+        coinpairBlockCountdownTimer = window.setInterval(() => {
+          renderCoinpairCooldownList();
+          syncAnalysisCooldownButtons();
+        }, 1000);
       }
       if (state.coinpairBlocks === null && !coinpairBlockPollBusy) {
         coinpairBlockPollBusy = true;
@@ -4719,7 +4737,89 @@ const tvbotHTML = `<!doctype html>
         if (tone) classes.push(tone);
       }
       const classAttr = classes.length ? ' class="' + classes.map(escapeHTML).join(" ") + '"' : "";
-      return "<td" + classAttr + ">" + escapeHTML(col.render(row || {})) + "</td>";
+      const content = col.renderHTML ? col.renderHTML(row || {}) : escapeHTML(col.render(row || {}));
+      return "<td" + classAttr + ">" + content + "</td>";
+    }
+
+    function analysisCooldownKey(symbol) {
+      return ignoredCoinpairKey(symbol);
+    }
+
+    function activeCoinpairBlockForSymbol(symbol) {
+      const candidate = ignoredCoinpairKey(symbol);
+      if (!candidate) return null;
+      return activeCoinpairBlocks().find((block) => {
+        const filter = ignoredCoinpairKey(block && block.keyword);
+        return !!filter && candidate.includes(filter);
+      }) || null;
+    }
+
+    function analysisCooldownCellHTML(row) {
+      const symbol = String(row && row.inst_id || "").trim();
+      const key = analysisCooldownKey(symbol);
+      const block = activeCoinpairBlockForSymbol(symbol);
+      const submitting = !!(key && state.coinpairCooldownSubmitting[key]);
+      const disabled = block || submitting || !key;
+      const label = submitting ? "提交中" : (block ? "冷静中" : "冷静期");
+      const title = block
+        ? ("冷静期至 " + shanghaiTime(block.expires_at))
+        : (submitting ? "正在加入冷静期" : "将该币对加入 24 小时冷静期");
+      return '<div class="analysis-realized-pnl-cell"><span>' + escapeHTML(analysisAmountText(row && row.realized_pnl)) + '</span>' +
+        '<button class="btn small analysis-cooldown-btn" type="button" data-analysis-cooldown="true"' +
+        ' data-symbol="' + escapeHTML(symbol) + '" data-trigger-price="' + escapeHTML(row && row.exit_px || "") + '"' +
+        ' data-exchange="' + escapeHTML(row && row.exchange || activeExchange()) + '" data-api-id="' + escapeHTML(row && row.api_id || "") + '"' +
+        ' title="' + escapeHTML(title) + '"' + (disabled ? " disabled" : "") + '>' + escapeHTML(label) + '</button></div>';
+    }
+
+    function syncAnalysisCooldownButtons() {
+      document.querySelectorAll("button[data-analysis-cooldown]").forEach((button) => {
+        const symbol = button.dataset.symbol || "";
+        const key = analysisCooldownKey(symbol);
+        const block = activeCoinpairBlockForSymbol(symbol);
+        const submitting = !!(key && state.coinpairCooldownSubmitting[key]);
+        button.disabled = !!block || submitting || !key;
+        button.textContent = submitting ? "提交中" : (block ? "冷静中" : "冷静期");
+        button.title = block
+          ? ("冷静期至 " + shanghaiTime(block.expires_at))
+          : (submitting ? "正在加入冷静期" : "将该币对加入 24 小时冷静期");
+      });
+    }
+
+    async function addAnalysisCoinpairCooldown(button) {
+      const symbol = String(button && button.dataset.symbol || "").trim();
+      const key = analysisCooldownKey(symbol);
+      if (!symbol || !key || state.coinpairCooldownSubmitting[key]) return;
+      const existing = activeCoinpairBlockForSymbol(symbol);
+      if (existing) {
+        syncAnalysisCooldownButtons();
+        return;
+      }
+      const estimatedExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      const confirmed = window.confirm(
+        "确认将 " + symbol + " 加入冷静期至 " + shanghaiTime(estimatedExpiry) + "？\n\n24 小时内将忽略该币对的新开仓、手动重试和自动补回，且不能提前解除；平仓不受影响。"
+      );
+      if (!confirmed) return;
+      state.coinpairCooldownSubmitting[key] = true;
+      syncAnalysisCooldownButtons();
+      try {
+        const result = await api("/tvbot/coinpair-blocks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            symbol,
+            trigger_price: button.dataset.triggerPrice || "",
+            exchange: normalizeExchange(button.dataset.exchange || activeExchange()),
+            api_id: button.dataset.apiId || ""
+          })
+        });
+        await loadCoinpairBlocks();
+        const block = result && result.block ? result.block : null;
+        const expiryText = block ? ("，至 " + shanghaiTime(block.expires_at)) : "";
+        toast(result && result.status === "active" ? (symbol + " 已在冷静期" + expiryText) : (symbol + " 已加入 24 小时冷静期" + expiryText));
+      } finally {
+        delete state.coinpairCooldownSubmitting[key];
+        syncAnalysisCooldownButtons();
+      }
     }
 
     function renderAnalysisTradeHistory(errorText) {
@@ -5017,7 +5117,7 @@ const tvbotHTML = `<!doctype html>
       const keywords = configuredIgnoredCoinpairs();
       const cooldowns = activeCoinpairBlocks();
       status.textContent = (keywords.length || cooldowns.length)
-        ? ("当前生效：" + keywords.length + " 个手动过滤，" + cooldowns.length + " 个止损冷却")
+        ? ("当前生效：" + keywords.length + " 个手动过滤，" + cooldowns.length + " 个动态冷静期")
         : "当前未启用";
       list.innerHTML = keywords.map((keyword, index) => {
         const removeLabel = "删除过滤 " + keyword + "，恢复后续下单";
@@ -5048,6 +5148,7 @@ const tvbotHTML = `<!doctype html>
       if (source === "stop_loss_webhook") return "止损信号";
       if (source === "position_monitor") return "持仓监控";
       if (source === "exchange_fill") return "亏损成交";
+      if (source === "analysis_manual") return "手动冷静期";
       return source || "止损";
     }
 
@@ -5061,19 +5162,20 @@ const tvbotHTML = `<!doctype html>
         const expiresAt = String(block.expires_at || "");
         const source = coinpairCooldownSource(block.source);
         const sourceExchange = block.exchange ? (" · " + exchangeLabel(block.exchange)) : "";
+        const priceLabel = block.source === "analysis_manual" ? "平仓价" : "止损价";
         return '<div class="coinpair-filter-item coinpair-cooldown-item" title="24 小时内禁止新开仓，不能提前解除">' +
           '<div class="coinpair-cooldown-title"><span aria-hidden="true">&#128274;</span><strong>' + escapeHTML(keyword) + '</strong></div>' +
-          '<span class="coinpair-cooldown-meta">止损价：' + escapeHTML(price || "价格待确认") + '</span>' +
+          '<span class="coinpair-cooldown-meta">' + escapeHTML(priceLabel) + '：' + escapeHTML(price || "价格待确认") + '</span>' +
           '<span class="coinpair-cooldown-meta">来源：' + escapeHTML(source + sourceExchange) + '</span>' +
           '<span class="coinpair-cooldown-meta">剩余：' + escapeHTML(coinpairCooldownRemaining(expiresAt)) + '</span>' +
           '<span class="coinpair-cooldown-meta">到期：' + escapeHTML(shanghaiTime(expiresAt)) + '</span>' +
           '</div>';
-      }).join("") || '<span class="muted coinpair-filter-empty">暂无止损冷却币对</span>';
+      }).join("") || '<span class="muted coinpair-filter-empty">暂无冷静期币对</span>';
       const status = $("ignored-coinpair-status");
       if (status) {
         const manualCount = configuredIgnoredCoinpairs().length;
         status.textContent = (manualCount || blocks.length)
-          ? ("当前生效：" + manualCount + " 个手动过滤，" + blocks.length + " 个止损冷却")
+          ? ("当前生效：" + manualCount + " 个手动过滤，" + blocks.length + " 个动态冷静期")
           : "当前未启用";
       }
     }
@@ -5885,6 +5987,11 @@ const tvbotHTML = `<!doctype html>
     $("sync-balance-history").addEventListener("click", () => syncBalanceHistory($("sync-balance-history")).catch((err) => toast(err.message)));
     $("analysis-trade-prev").addEventListener("click", () => changeAnalysisTradePage(-1));
     $("analysis-trade-next").addEventListener("click", () => changeAnalysisTradePage(1));
+    $("analysis-trade-rows").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-analysis-cooldown]");
+      if (!button) return;
+      addAnalysisCoinpairCooldown(button).catch((err) => toast(err.message));
+    });
     $("refresh-positions").addEventListener("click", () => loadPositionView(true).then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
     document.querySelectorAll("[data-pending-order-group]").forEach((button) => {
       button.addEventListener("click", () => {
