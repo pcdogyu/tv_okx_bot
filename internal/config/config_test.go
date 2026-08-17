@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -90,6 +91,30 @@ func TestNormalizeBinanceBaseURLs(t *testing.T) {
 	}
 	if cfg.Trading.BinanceDemoBaseURL != "https://demo-fapi.binance.com" {
 		t.Fatalf("Binance demo base URL should default, got %q", cfg.Trading.BinanceDemoBaseURL)
+	}
+}
+
+func TestIgnoredCoinpairPersistsAndOldConfigDefaultsDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := Default()
+	cfg.Trading.IgnoredCoinpair = "  eth-usdt  "
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Trading.IgnoredCoinpair != "ETH-USDT" {
+		t.Fatalf("ignored coinpair = %q, want ETH-USDT", loaded.Trading.IgnoredCoinpair)
+	}
+
+	missing, err := Load(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Trading.IgnoredCoinpair != "" {
+		t.Fatalf("old or missing config should default filter disabled, got %q", missing.Trading.IgnoredCoinpair)
 	}
 }
 

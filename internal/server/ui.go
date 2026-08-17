@@ -710,6 +710,32 @@ const tvbotHTML = `<!doctype html>
       width: min(270px, 55vw);
       min-width: 190px;
     }
+    .coinpair-filter-card {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .coinpair-filter-card h3 {
+      margin: 0 0 6px;
+    }
+    .coinpair-filter-actions {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .coinpair-filter-input {
+      width: min(260px, 60vw);
+      min-width: 180px;
+    }
     .menu-hidden-check {
       display: flex;
       align-items: center;
@@ -1531,6 +1557,18 @@ const tvbotHTML = `<!doctype html>
         <button class="btn small" type="button" id="order-prev">上一页</button>
         <span class="muted" id="order-page-info">-</span>
         <button class="btn small" type="button" id="order-next">下一页</button>
+      </div>
+      <div class="coinpair-filter-card">
+        <div>
+          <h3>忽略币对关键字</h3>
+          <div class="muted" id="ignored-coinpair-status">当前未启用</div>
+          <div class="muted">不区分大小写，采用包含匹配并忽略常见分隔符；只过滤开仓信号，平仓和系统持仓保护不受影响。</div>
+        </div>
+        <div class="coinpair-filter-actions">
+          <input class="coinpair-filter-input" id="ignored-coinpair" autocomplete="off" spellcheck="false" placeholder="例如 ETH" aria-label="忽略币对关键字">
+          <button class="btn primary" type="button" id="save-ignored-coinpair">保存过滤</button>
+          <button class="btn" type="button" id="clear-ignored-coinpair" disabled>清除过滤</button>
+        </div>
       </div>
     </section>
 
@@ -3221,6 +3259,7 @@ const tvbotHTML = `<!doctype html>
         ["保证金模式", t.default_margin_mode],
         ["持仓模式", t.position_mode],
         ["信号有效秒数", t.signal_ttl_seconds],
+        ["忽略币对", t.ignored_coinpair || "未启用"],
         ["USDT 下单金额", t.order_amount_usdt],
         ["杠杆", t.leverage],
         ["订单类型", orderTypeText(t.order_type || "market")],
@@ -3284,6 +3323,7 @@ const tvbotHTML = `<!doctype html>
       $("cfg-position").value = trading.position_mode || "net";
       $("cfg-ttl").value = trading.signal_ttl_seconds || 120;
       $("cfg-live").checked = !!trading.allow_live_trading;
+      renderIgnoredCoinpairFilter();
     }
 
     function renderSymbols() {
@@ -4821,6 +4861,49 @@ const tvbotHTML = `<!doctype html>
       await loadOrders(true);
     }
 
+    function currentIgnoredCoinpairInput() {
+      return $("ignored-coinpair") ? $("ignored-coinpair").value.trim() : "";
+    }
+
+    function syncIgnoredCoinpairControls() {
+      const clearButton = $("clear-ignored-coinpair");
+      if (!clearButton) return;
+      const configured = state.config && state.config.trading ? String(state.config.trading.ignored_coinpair || "").trim() : "";
+      clearButton.disabled = !currentIgnoredCoinpairInput() && !configured;
+    }
+
+    function renderIgnoredCoinpairFilter() {
+      const input = $("ignored-coinpair");
+      const status = $("ignored-coinpair-status");
+      if (!input || !status) return;
+      const keyword = state.config && state.config.trading ? String(state.config.trading.ignored_coinpair || "").trim() : "";
+      input.value = keyword;
+      status.textContent = keyword ? ('当前生效：包含 "' + keyword + '" 的开仓信号将被忽略') : "当前未启用";
+      syncIgnoredCoinpairControls();
+    }
+
+    async function saveIgnoredCoinpair() {
+      const keyword = currentIgnoredCoinpairInput();
+      state.config = await api("/tvbot/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trading: { ignored_coinpair: keyword } })
+      });
+      renderConfig();
+      renderDashboard();
+      toast(keyword ? "币对过滤已保存" : "币对过滤已关闭");
+    }
+
+    async function clearIgnoredCoinpair() {
+      const input = $("ignored-coinpair");
+      if (input) input.value = "";
+      await saveIgnoredCoinpair();
+    }
+
+    function orderHistoryStatusText(status) {
+      return status === "ignored" ? "已忽略" : status;
+    }
+
     function renderOrders() {
       const total = Number(state.ordersTotal || 0);
       const totalPages = ordersTotalPages();
@@ -4842,7 +4925,7 @@ const tvbotHTML = `<!doctype html>
         const retrying = canRetry && state.retrying[order.signal_id];
         const retryButton = canRetry ? '<button class="btn small" type="button" data-retry-id="' + escapeHTML(order.signal_id) + '"' + (retrying ? " disabled" : "") + ">" + (retrying ? "重试中" : "重试") + "</button>" : "";
         const rawJSONButton = orderRawJSONText(order) ? '<button class="btn small order-json-button" type="button" data-order-json-index="' + index + '">JSON</button>' : "";
-        const statusCell = '<div class="status-cell">' + pill(order.status, tone) + rawJSONButton + "</div>";
+        const statusCell = '<div class="status-cell">' + pill(orderHistoryStatusText(order.status), tone) + rawJSONButton + "</div>";
         return "<tr>" +
           '<td class="time">' + escapeHTML(shanghaiTime(order.accepted_at)) + "</td>" +
           '<td class="order-status">' + statusCell + "</td>" +
@@ -5651,6 +5734,14 @@ const tvbotHTML = `<!doctype html>
     });
     $("search-orders").addEventListener("click", () => applyOrderSearch().catch((err) => toast(err.message)));
     $("clear-order-search").addEventListener("click", () => clearOrderSearch().catch((err) => toast(err.message)));
+    $("ignored-coinpair").addEventListener("input", () => syncIgnoredCoinpairControls());
+    $("ignored-coinpair").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      saveIgnoredCoinpair().catch((err) => toast(err.message));
+    });
+    $("save-ignored-coinpair").addEventListener("click", () => saveIgnoredCoinpair().catch((err) => toast(err.message)));
+    $("clear-ignored-coinpair").addEventListener("click", () => clearIgnoredCoinpair().catch((err) => toast(err.message)));
     $("refresh-trade-monitor").addEventListener("click", () => loadTradeMonitor().then(() => toast("成交监听已刷新")).catch((err) => toast(err.message)));
     $("position-rows").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-position-close]");

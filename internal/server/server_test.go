@@ -559,10 +559,45 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`ordersSearch: ""`),
 		[]byte(`qs.set("q", state.ordersSearch)`),
 		[]byte(`function applyOrderSearch()`),
+		[]byte(`id="ignored-coinpair"`),
+		[]byte(`id="save-ignored-coinpair"`),
+		[]byte(`id="clear-ignored-coinpair"`),
+		[]byte(`ignored_coinpair: keyword`),
+		[]byte(`只过滤开仓信号`),
+		[]byte(`orderHistoryStatusText`),
 	} {
 		if !bytes.Contains(body, marker) {
 			t.Fatalf("tvbot ui missing order search marker %q", marker)
 		}
+	}
+}
+
+func TestTVBotConfigSavesAndClearsIgnoredCoinpair(t *testing.T) {
+	srv := newTestServer(t)
+	put := func(value string) config.Config {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"trading": map[string]any{"ignored_coinpair": value}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader(body))
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("config status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var cfg config.Config
+		if err := json.Unmarshal(rr.Body.Bytes(), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	if cfg := put("  eth  "); cfg.Trading.IgnoredCoinpair != "ETH" {
+		t.Fatalf("ignored coinpair not normalized: %#v", cfg.Trading)
+	}
+	if cfg := put(""); cfg.Trading.IgnoredCoinpair != "" {
+		t.Fatalf("ignored coinpair not cleared: %#v", cfg.Trading)
 	}
 }
 
@@ -1107,6 +1142,64 @@ func TestTVOrderAcceptsAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestIgnoredEntrySignalUsesCaseInsensitiveFuzzyMatching(t *testing.T) {
+	cfg := config.Default()
+	cfg.Trading.IgnoredCoinpair = " eth "
+	for _, coinpair := range []string{"EETH", "ETHFI", "ETHUSDT", "ETHusd", "ETHusdc"} {
+		t.Run(coinpair, func(t *testing.T) {
+			filter, ignored := ignoredEntrySignal(cfg, trading.Signal{Coinpair: coinpair, PositionEffect: trading.PositionEffectOpen})
+			if !ignored || filter != "ETH" {
+				t.Fatalf("coinpair %q ignored=%v filter=%q", coinpair, ignored, filter)
+			}
+		})
+	}
+	if _, ignored := ignoredEntrySignal(cfg, trading.Signal{Coinpair: "BTCUSDT", Ticker: "OKX:BTCUSDT.P"}); ignored {
+		t.Fatal("BTCUSDT should not match ETH")
+	}
+	cfg.Trading.IgnoredCoinpair = "eth-usdt"
+	if _, ignored := ignoredEntrySignal(cfg, trading.Signal{Ticker: "OKX:ETHUSDT.P"}); !ignored {
+		t.Fatal("common separators should be ignored during matching")
+	}
+	if _, ignored := ignoredEntrySignal(cfg, trading.Signal{Coinpair: "ETH-USDT-SWAP", PositionEffect: trading.PositionEffectClose}); ignored {
+		t.Fatal("close signals should not be filtered")
+	}
+}
+
+func TestTVOrderRecordsMatchingEntrySignalAsIgnored(t *testing.T) {
+	srv := newTestServer(t)
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.IgnoredCoinpair = "eth"
+	srv.ConfigStore = config.NewStore("", cfg)
+	signal := validSignal(t, srv)
+	signal.Coinpair = "ETHusdc"
+	signal.Ticker = "OKX:ETHUSDC.P"
+	body, err := json.Marshal(signal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/tvorder", bytes.NewReader(body)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	resp := decodeTVOrderSignalResponse(t, rr.Body.Bytes())
+	if resp.Status != "ignored" {
+		t.Fatalf("response should be ignored: %#v", resp)
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		t.Fatalf("ignored signal should not execute: %#v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	rec, ok := srv.Orders.Get(resp.SignalID)
+	if !ok || rec.Status != storage.StatusIgnored || rec.ErrorCode != "coinpair_filtered" || !strings.Contains(rec.Error, `"ETH"`) {
+		t.Fatalf("bad ignored history record: %#v found=%v", rec, ok)
+	}
+	if rec.Coinpair != "ETHUSDC" || rec.PositionEffect != trading.PositionEffectOpen {
+		t.Fatalf("ignored history lost normalized signal fields: %#v", rec)
+	}
+}
+
 func TestTVOrderTradeEnvDefaultsDemoAndLiveOverridesExecutionConfig(t *testing.T) {
 	srv := newTestServer(t)
 	srv.Executor = fakeExecutor{calls: make(chan trading.Signal, 2), demoFlags: make(chan bool, 2)}
@@ -1571,6 +1664,61 @@ func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 	}
 	if gotRetry.Price != "50120" {
 		t.Fatalf("retry record should store refreshed market price: %#v", gotRetry)
+	}
+}
+
+func TestOrderRetryMatchingFilterIsIgnoredBeforeMarketRequest(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.PositionEffect = trading.PositionEffectOpen
+	source, _, err := srv.Orders.RecordAccepted(signal, "retry-filter-source", srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orders.MarkFailed(source.SignalID, errors.New("exchange failed"), srv.now()); err != nil {
+		t.Fatal(err)
+	}
+	marketRequests := 0
+	marketServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		marketRequests++
+		http.Error(w, "market request should have been filtered", http.StatusInternalServerError)
+	}))
+	defer marketServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = marketServer.URL
+	cfg.Trading.IgnoredCoinpair = "btc"
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = marketServer.Client()
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+source.SignalID+"/retry", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Status   string `json:"status"`
+		SignalID string `json:"signal_id"`
+		RetryOf  string `json:"retry_of"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "ignored" || resp.SignalID == "" || resp.RetryOf != source.SignalID {
+		t.Fatalf("bad ignored retry response: %#v", resp)
+	}
+	if marketRequests != 0 {
+		t.Fatalf("ignored retry made %d market requests", marketRequests)
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		t.Fatalf("ignored retry should not execute: %#v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	rec, ok := srv.Orders.Get(resp.SignalID)
+	if !ok || rec.Status != storage.StatusIgnored || rec.ErrorCode != "coinpair_filtered" {
+		t.Fatalf("bad ignored retry record: %#v found=%v", rec, ok)
 	}
 }
 

@@ -26,6 +26,7 @@ const (
 	StatusSubmitted OrderStatus = "submitted"
 	StatusFailed    OrderStatus = "failed"
 	StatusRejected  OrderStatus = "rejected"
+	StatusIgnored   OrderStatus = "ignored"
 )
 
 type OrderRecord struct {
@@ -158,6 +159,26 @@ func (s *OrderStore) RecordRejected(signal trading.Signal, code string, err erro
 	rec := newOrderRecord(signal, dedupeKey, StatusRejected, now)
 	rec.SignalID = s.newSignalIDLocked(now, dedupeKey)
 	rec.ErrorCode = code
+	rec.Error = message
+	s.state.Orders = append(s.state.Orders, rec)
+	if err := s.saveLocked(); err != nil {
+		return OrderRecord{}, err
+	}
+	return rec, nil
+}
+
+func (s *OrderStore) RecordIgnored(signal trading.Signal, filter string, now time.Time) (OrderRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	filter = strings.ToUpper(strings.TrimSpace(filter))
+	message := fmt.Sprintf("coinpair matched ignore filter %q", filter)
+	if s.db != nil {
+		return s.recordIgnoredSQLiteLocked(signal, filter, message, now)
+	}
+	dedupeKey := RejectedKey(signal, "coinpair_filtered", filter, now)
+	rec := newOrderRecord(signal, dedupeKey, StatusIgnored, now)
+	rec.SignalID = s.newSignalIDLocked(now, dedupeKey)
+	rec.ErrorCode = "coinpair_filtered"
 	rec.Error = message
 	s.state.Orders = append(s.state.Orders, rec)
 	if err := s.saveLocked(); err != nil {
@@ -853,6 +874,18 @@ func (s *OrderStore) recordRejectedSQLiteLocked(signal trading.Signal, code stri
 	rec := newOrderRecord(signal, dedupeKey, StatusRejected, now)
 	rec.SignalID = s.newSignalIDLocked(now, dedupeKey)
 	rec.ErrorCode = code
+	rec.Error = message
+	if err := s.insertOrderSQLiteLocked(rec); err != nil {
+		return OrderRecord{}, err
+	}
+	return rec, nil
+}
+
+func (s *OrderStore) recordIgnoredSQLiteLocked(signal trading.Signal, filter, message string, now time.Time) (OrderRecord, error) {
+	dedupeKey := RejectedKey(signal, "coinpair_filtered", filter, now)
+	rec := newOrderRecord(signal, dedupeKey, StatusIgnored, now)
+	rec.SignalID = s.newSignalIDLocked(now, dedupeKey)
+	rec.ErrorCode = "coinpair_filtered"
 	rec.Error = message
 	if err := s.insertOrderSQLiteLocked(rec); err != nil {
 		return OrderRecord{}, err

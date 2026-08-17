@@ -57,6 +57,9 @@ func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
 	}))
 	defer binanceServer.Close()
 	configureBinanceCloseTestServer(t, srv, binanceServer)
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.IgnoredCoinpair = "sports"
+	srv.ConfigStore = config.NewStore("", cfg)
 
 	signal := validSignal(t, srv)
 	signal.TargetExchange = trading.ExchangeBinance
@@ -68,6 +71,9 @@ func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
 	signal.Condition = "空单止盈止损"
 	signal.Token = srv.Token.Generate(signal.CanonicalWebhookTokenPayload())
 	resp := postTVOrderSignal(t, srv, signal)
+	if resp.Status != "accepted" {
+		t.Fatalf("matching close signal should not be filtered: %#v", resp)
+	}
 	rec := waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusSubmitted)
 
 	select {

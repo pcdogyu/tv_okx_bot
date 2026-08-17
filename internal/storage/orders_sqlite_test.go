@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,53 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 			t.Fatalf("position semantics should be preserved: %#v", rec)
 		}
 	}
+}
+
+func TestOrderStoreRecordIgnoredDoesNotBlockLaterAcceptance(t *testing.T) {
+	run := func(t *testing.T, store *OrderStore) {
+		t.Helper()
+		now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+		signal := trading.Signal{
+			Action:         trading.ActionLong,
+			TargetExchange: trading.ExchangeOKX,
+			TradeEnv:       trading.TradeEnvDemo,
+			Coinpair:       "ETHUSDT.P",
+			Ticker:         "OKX:ETHUSDT.P",
+			Price:          trading.NewFlexibleFloat(2500),
+			Amount:         trading.NewFlexibleFloat(100),
+			Leverage:       5,
+		}
+		ignored, err := store.RecordIgnored(signal, "ETH", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ignored.Status != StatusIgnored || ignored.ErrorCode != "coinpair_filtered" || !strings.Contains(ignored.Error, `"ETH"`) {
+			t.Fatalf("bad ignored record: %#v", ignored)
+		}
+		accepted, duplicate, err := store.RecordAccepted(signal, DedupeKey(signal), now.Add(time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if duplicate || accepted.Status != StatusAccepted {
+			t.Fatalf("ignored record should not poison dedupe: duplicate=%v record=%#v", duplicate, accepted)
+		}
+	}
+
+	t.Run("memory", func(t *testing.T) {
+		store, err := NewOrderStore("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run(t, store)
+	})
+	t.Run("sqlite", func(t *testing.T) {
+		store, err := NewSQLiteOrderStore(filepath.Join(t.TempDir(), "tvbot.db"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		run(t, store)
+	})
 }
 
 func TestOrderStoreListByTargetExchangeFiltersMemoryAndSQLite(t *testing.T) {

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
@@ -110,6 +111,20 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	classErr := applyTVOrderPositionSemantics(&signal)
+	if classErr == nil {
+		if filter, ignored := ignoredEntrySignal(cfg, signal); ignored {
+			record, err := s.Orders.RecordIgnored(signal, filter, now)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":    "ignored",
+				"signal_id": record.SignalID,
+			})
+			return
+		}
+	}
 	dedupeKey := storage.DedupeKey(signal)
 	record, duplicate, err := s.Orders.RecordAccepted(signal, dedupeKey, now)
 	if err != nil {
@@ -235,6 +250,32 @@ func configForTradeEnv(cfg config.Config, tradeEnv string) config.Config {
 		cfg.Trading.Env = config.EnvDemo
 	}
 	return cfg
+}
+
+func ignoredEntrySignal(cfg config.Config, signal trading.Signal) (string, bool) {
+	if strings.EqualFold(strings.TrimSpace(signal.PositionEffect), trading.PositionEffectClose) {
+		return "", false
+	}
+	filter := normalizeCoinpairFilter(cfg.Trading.IgnoredCoinpair)
+	if filter == "" {
+		return "", false
+	}
+	for _, candidate := range []string{signal.Coinpair, signal.Ticker} {
+		if strings.Contains(normalizeCoinpairFilter(candidate), filter) {
+			return strings.ToUpper(strings.TrimSpace(cfg.Trading.IgnoredCoinpair)), true
+		}
+	}
+	return "", false
+}
+
+func normalizeCoinpairFilter(value string) string {
+	var normalized strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(value)) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			normalized.WriteRune(r)
+		}
+	}
+	return normalized.String()
 }
 
 func applySignalSourceExchangeRouting(signal *trading.Signal, targetExchangeProvided bool) {
@@ -1440,6 +1481,25 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 	}
 	cfg := configForTradeEnv(s.ConfigStore.Get(), source.TradeEnv)
 	now := s.now()
+	probe := trading.Signal{
+		Coinpair:       source.Coinpair,
+		Ticker:         source.Ticker,
+		PositionEffect: source.PositionEffect,
+	}
+	if filter, ignored := ignoredEntrySignal(cfg, probe); ignored {
+		signal := ignoredRetrySignalFromRecord(source, now)
+		record, err := s.Orders.RecordIgnored(signal, filter, now)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"status":    "ignored",
+			"signal_id": record.SignalID,
+			"retry_of":  source.SignalID,
+		})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	price, err := s.currentRetryMarketPrice(ctx, cfg, source)
@@ -1473,6 +1533,32 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		"retry_of":  source.SignalID,
 		"price":     trading.NormalizeFloat(signal.Price.Value),
 	})
+}
+
+func ignoredRetrySignalFromRecord(rec storage.OrderRecord, now time.Time) trading.Signal {
+	signal := trading.Signal{
+		Action:         rec.Action,
+		APIID:          rec.APIID,
+		TargetExchange: rec.TargetExchange,
+		TradeEnv:       orderRecordTradeEnv(rec),
+		Coinpair:       rec.Coinpair,
+		Ticker:         rec.Ticker,
+		Exchange:       rec.SourceExchange,
+		SentAt:         now.UTC().Format(time.RFC3339Nano),
+		Leverage:       rec.Leverage,
+		Risk:           rec.Risk,
+		PositionEffect: rec.PositionEffect,
+		PositionSide:   rec.PositionSide,
+		RawJSON:        rec.RawJSON,
+	}
+	if price, err := strconv.ParseFloat(strings.TrimSpace(rec.Price), 64); err == nil && price > 0 {
+		signal.Price = trading.NewFlexibleFloat(price)
+	}
+	if amount, err := strconv.ParseFloat(strings.TrimSpace(rec.Amount), 64); err == nil && amount > 0 {
+		signal.Amount = trading.NewFlexibleFloat(amount)
+	}
+	signal.Normalize()
+	return signal
 }
 
 func (s *Server) currentRetryMarketPrice(ctx context.Context, cfg config.Config, rec storage.OrderRecord) (float64, error) {
@@ -1968,6 +2054,7 @@ type tradingPatch struct {
 	DefaultMarginMode         *string                       `json:"default_margin_mode"`
 	PositionMode              *string                       `json:"position_mode"`
 	SignalTTLSeconds          *int                          `json:"signal_ttl_seconds"`
+	IgnoredCoinpair           *string                       `json:"ignored_coinpair"`
 	OrderAmountUSDT           *float64                      `json:"order_amount_usdt"`
 	Leverage                  *int                          `json:"leverage"`
 	OrderType                 *string                       `json:"order_type"`
@@ -2035,6 +2122,9 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.Trading.SignalTTLSeconds != nil {
 		c.Trading.SignalTTLSeconds = *patch.Trading.SignalTTLSeconds
+	}
+	if patch.Trading.IgnoredCoinpair != nil {
+		c.Trading.IgnoredCoinpair = *patch.Trading.IgnoredCoinpair
 	}
 	if patch.Trading.OrderAmountUSDT != nil {
 		c.Trading.OrderAmountUSDT = *patch.Trading.OrderAmountUSDT

@@ -44,6 +44,7 @@ type TradingConfig struct {
 	DefaultMarginMode         string                `json:"default_margin_mode"`
 	PositionMode              string                `json:"position_mode"`
 	SignalTTLSeconds          int                   `json:"signal_ttl_seconds"`
+	IgnoredCoinpair           string                `json:"ignored_coinpair"`
 	OrderAmountUSDT           float64               `json:"order_amount_usdt"`
 	Leverage                  int                   `json:"leverage"`
 	OrderType                 string                `json:"order_type"`
@@ -332,6 +333,7 @@ func (c *Config) Normalize() {
 	if c.Trading.SignalTTLSeconds <= 0 {
 		c.Trading.SignalTTLSeconds = 120
 	}
+	c.Trading.IgnoredCoinpair = strings.ToUpper(strings.TrimSpace(c.Trading.IgnoredCoinpair))
 	if c.Trading.OrderAmountUSDT <= 0 {
 		c.Trading.OrderAmountUSDT = 100
 	}
