@@ -5209,9 +5209,7 @@ func (s *Server) watchLimitPositionCloseWithOptions(apiID string, cfg config.Con
 				continue
 			}
 			if closed {
-				if cancelProtectionOrders && !active.Partial {
-					s.cancelClosedPositionProtectionOrders(client, active.Position)
-				}
+				s.cancelClosedOKXPositionOrders(client, active.Position, cancelProtectionOrders && !active.Partial)
 				return
 			}
 			active = next
@@ -5224,21 +5222,21 @@ func (s *Server) watchLimitPositionCloseWithOptions(apiID string, cfg config.Con
 			}
 			if err != nil {
 				s.logPositionCloseError("limit position close fallback failed", err, active.Position)
-			} else if cancelProtectionOrders && !active.Partial {
-				s.cancelClosedPositionProtectionOrders(client, active.Position)
+			} else {
+				s.cancelClosedOKXPositionOrders(client, active.Position, cancelProtectionOrders && !active.Partial)
 			}
 			return
 		}
 	}
 }
 
-func (s *Server) cancelClosedPositionProtectionOrders(client okx.Client, position okx.Position) {
+func (s *Server) cancelClosedOKXPositionOrders(client okx.Client, position okx.Position, cancelProtectionOrders bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	for {
 		closed, err := positionClosed(ctx, client, position)
 		if err != nil {
-			s.logPositionCloseError("failed to confirm auto-profit position close", err, position)
+			s.logPositionCloseError("failed to confirm position close before canceling pending orders", err, position)
 			return
 		}
 		if closed {
@@ -5248,14 +5246,39 @@ func (s *Server) cancelClosedPositionProtectionOrders(client okx.Client, positio
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			s.logPositionCloseError("auto-profit position close not confirmed before protection cancellation", ctx.Err(), position)
+			s.logPositionCloseError("position close not confirmed before pending-order cancellation", ctx.Err(), position)
 			return
 		case <-timer.C:
 		}
 	}
-	if err := cancelOKXPositionProtectionOrders(ctx, client, position); err != nil {
-		s.logPositionCloseError("failed to cancel closed position protection orders", err, position)
+	if err := cancelOKXPositionPendingOrders(ctx, client, position); err != nil {
+		s.logPositionCloseError("failed to cancel closed position pending orders", err, position)
 	}
+	if cancelProtectionOrders {
+		if err := cancelOKXPositionProtectionOrders(ctx, client, position); err != nil {
+			s.logPositionCloseError("failed to cancel closed position protection orders", err, position)
+		}
+	}
+}
+
+func cancelOKXPositionPendingOrders(ctx context.Context, client okx.Client, position okx.Position) error {
+	orders, _, err := client.PendingOrders(ctx, "SWAP")
+	if err != nil {
+		return err
+	}
+	for _, order := range orders {
+		if !strings.EqualFold(strings.TrimSpace(order.InstID), strings.TrimSpace(position.InstID)) {
+			continue
+		}
+		if err := cancelPendingOrder(ctx, client, order); err != nil {
+			req := pendingOrderChaseRequest{InstID: order.InstID, OrdID: order.OrdID, ClOrdID: order.ClOrdID}
+			if _, stillOpen, checkErr := currentPendingOrder(ctx, client, req); checkErr == nil && !stillOpen {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func cancelOKXPositionProtectionOrders(ctx context.Context, client okx.Client, position okx.Position) error {

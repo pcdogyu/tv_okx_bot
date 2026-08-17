@@ -4782,6 +4782,39 @@ func TestCancelOKXPositionProtectionOrdersMatchesPositionSide(t *testing.T) {
 	}
 }
 
+func TestCancelOKXPositionPendingOrdersCancelsOnlySameInstrument(t *testing.T) {
+	var canceled []okx.CancelOrderRequest
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instId":"BTC-USDT-SWAP","ordId":"btc-entry","clOrdId":"btc-entry-client","side":"buy","ordType":"limit","sz":"1","accFillSz":"0","state":"live"},
+				{"instId":"BTC-USDT-SWAP","ordId":"btc-reduce","clOrdId":"btc-reduce-client","side":"sell","ordType":"limit","sz":"1","accFillSz":"0","state":"live","reduceOnly":true},
+				{"instId":"ETH-USDT-SWAP","ordId":"eth-entry","clOrdId":"eth-entry-client","side":"buy","ordType":"limit","sz":"1","accFillSz":"0","state":"live"}
+			]}`))
+		case "/api/v5/trade/cancel-order":
+			var req okx.CancelOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			canceled = append(canceled, req)
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+
+	client := okx.Client{BaseURL: okxServer.URL, Credentials: okx.Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: okxServer.Client()}
+	if err := cancelOKXPositionPendingOrders(context.Background(), client, okx.Position{InstID: "BTC-USDT-SWAP", PosSide: "net", Pos: "0"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(canceled) != 2 || canceled[0].InstID != "BTC-USDT-SWAP" || canceled[0].OrdID != "btc-entry" || canceled[1].OrdID != "btc-reduce" {
+		t.Fatalf("canceled pending orders = %#v", canceled)
+	}
+}
+
 func TestTVBotAPIKeysTestUsesSelectedStoredAccount(t *testing.T) {
 	var seenAPIKey string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
