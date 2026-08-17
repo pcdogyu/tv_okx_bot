@@ -93,15 +93,15 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		Sz:             sz,
 		AttachAlgoOrds: attachAlgoOrders(signal, clOrdID),
 	}
-	ack, env, err := t.placeOrderWithFallback(ctx, client, req, signal, clOrdID, sizingPx, sym)
+	ack, env, submittedReq, err := t.placeOrderWithFallback(ctx, client, req, signal, clOrdID, sizingPx, sym)
 	result := trading.OrderResult{
 		SignalID:       "",
 		APIID:          apiID,
 		TargetExchange: trading.ExchangeOKX,
-		InstID:         sym.InstID,
+		InstID:         submittedReq.InstID,
 		ClOrdID:        clOrdID,
-		OrdType:        req.OrdType,
-		Px:             req.Px,
+		OrdType:        submittedReq.OrdType,
+		Px:             submittedReq.Px,
 		OrdID:          ack.OrdID,
 		OKXCode:        env.Code,
 		OKXMsg:         env.Msg,
@@ -111,28 +111,48 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		return result, err
 	}
 	if t.Logger != nil {
-		t.Logger.Info("okx order submitted", "api_id", apiID, "inst_id", sym.InstID, "action", signal.Action, "cl_ord_id", clOrdID, "okx_code", env.Code)
+		t.Logger.Info("okx order submitted", "api_id", apiID, "inst_id", submittedReq.InstID, "action", signal.Action, "cl_ord_id", clOrdID, "okx_code", env.Code)
 	}
 	return result, nil
 }
 
-func (t Trader) placeOrderWithFallback(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx float64, sym trading.SymbolInfo) (OrderAck, Envelope, error) {
+func (t Trader) placeOrderWithFallback(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx float64, sym trading.SymbolInfo) (OrderAck, Envelope, PlaceOrderRequest, error) {
 	ack, env, err := t.placeOrderWithAlgoFallback(ctx, client, req, signal, clOrdID, referencePx, sym.TickSz)
 	if err == nil {
-		return ack, env, nil
+		return ack, env, req, nil
 	}
 	fallbackReq, ok := maxPositionFallbackRequest(req, err, sym.LotSz, sym.MinSz)
-	if !ok {
-		return ack, env, err
+	if ok {
+		if t.Logger != nil {
+			t.Logger.Warn("okx order exceeds max position amount, retrying with remaining size", "inst_id", req.InstID, "cl_ord_id", req.ClOrdID, "requested_sz", req.Sz, "retry_sz", fallbackReq.Sz, "error", err)
+		}
+		fallbackAck, fallbackEnv, fallbackErr := t.placeOrderWithAlgoFallback(ctx, client, fallbackReq, signal, clOrdID, referencePx, sym.TickSz)
+		if fallbackErr != nil {
+			return fallbackAck, fallbackEnv, fallbackReq, fmt.Errorf("okx max position size retry from %s to %s after rejection: %v; retry failed: %w", req.Sz, fallbackReq.Sz, err, fallbackErr)
+		}
+		return fallbackAck, fallbackEnv, fallbackReq, nil
 	}
-	if t.Logger != nil {
-		t.Logger.Warn("okx order exceeds max position amount, retrying with remaining size", "inst_id", req.InstID, "cl_ord_id", req.ClOrdID, "requested_sz", req.Sz, "retry_sz", fallbackReq.Sz, "error", err)
+	if refreshedReq, refreshedSym, ok := refreshedInstrumentFallbackRequest(ctx, client, req, signal, err); ok {
+		if t.Logger != nil {
+			t.Logger.Warn("okx instrument rejected, refreshing configured instrument metadata before retry", "inst_id", req.InstID, "retry_inst_id", refreshedReq.InstID, "cl_ord_id", req.ClOrdID, "error", err)
+		}
+		fallbackAck, fallbackEnv, fallbackErr := t.placeOrderWithAlgoFallback(ctx, client, refreshedReq, signal, clOrdID, referencePx, refreshedSym.TickSz)
+		if fallbackErr != nil {
+			return fallbackAck, fallbackEnv, refreshedReq, fmt.Errorf("okx instrument %s rejected: %v; refreshed instrument retry as %s failed: %w", req.InstID, err, refreshedReq.InstID, fallbackErr)
+		}
+		return fallbackAck, fallbackEnv, refreshedReq, nil
 	}
-	fallbackAck, fallbackEnv, fallbackErr := t.placeOrderWithAlgoFallback(ctx, client, fallbackReq, signal, clOrdID, referencePx, sym.TickSz)
-	if fallbackErr != nil {
-		return fallbackAck, fallbackEnv, fmt.Errorf("okx max position size retry from %s to %s after rejection: %v; retry failed: %w", req.Sz, fallbackReq.Sz, err, fallbackErr)
+	if fallbackReq, fallbackPx, ok := marketPriceProtectionFallbackRequest(ctx, client, req, signal, sym, err); ok {
+		if t.Logger != nil {
+			t.Logger.Warn("okx market order hit price protection, retrying as a protected limit order", "inst_id", req.InstID, "cl_ord_id", req.ClOrdID, "retry_px", fallbackReq.Px, "retry_sz", fallbackReq.Sz, "error", err)
+		}
+		fallbackAck, fallbackEnv, fallbackErr := t.placeOrderWithAlgoFallback(ctx, client, fallbackReq, signal, clOrdID, fallbackPx, sym.TickSz)
+		if fallbackErr != nil {
+			return fallbackAck, fallbackEnv, fallbackReq, fmt.Errorf("okx market order rejected by price protection: %v; protected limit retry at %s failed: %w", err, fallbackReq.Px, fallbackErr)
+		}
+		return fallbackAck, fallbackEnv, fallbackReq, nil
 	}
-	return fallbackAck, fallbackEnv, nil
+	return ack, env, req, err
 }
 
 func (t Trader) placeOrderWithAlgoFallback(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx, tickSz float64) (OrderAck, Envelope, error) {
@@ -497,7 +517,146 @@ func isDynamicAlgoUnsupportedError(err error) bool {
 		(strings.Contains(text, "dynamic change") && strings.Contains(text, "futures mode"))
 }
 
+func refreshedInstrumentFallbackRequest(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, orderErr error) (PlaceOrderRequest, trading.SymbolInfo, bool) {
+	if !isOKXInstrumentNotFoundError(orderErr) {
+		return PlaceOrderRequest{}, trading.SymbolInfo{}, false
+	}
+	instID, coinpair, err := DeriveSwapInstrumentID(signal.Coinpair, signal.Ticker)
+	if err != nil || strings.EqualFold(instID, req.InstID) {
+		return PlaceOrderRequest{}, trading.SymbolInfo{}, false
+	}
+	inst, err := client.SwapInstrument(ctx, instID)
+	if err != nil {
+		return PlaceOrderRequest{}, trading.SymbolInfo{}, false
+	}
+	meta, err := inst.SymbolInfo()
+	if err != nil {
+		return PlaceOrderRequest{}, trading.SymbolInfo{}, false
+	}
+	refreshedSym := trading.SymbolInfo{
+		Coinpair: coinpair,
+		InstID:   meta.InstID,
+		CtVal:    meta.CtVal,
+		TickSz:   meta.TickSz,
+		LotSz:    meta.LotSz,
+		MinSz:    meta.MinSz,
+	}
+	sz, err := trading.SizeFromUSDTNotional(signal.Amount.Value, signal.Price.Value, refreshedSym.CtVal, refreshedSym.LotSz, refreshedSym.MinSz)
+	if err != nil {
+		return PlaceOrderRequest{}, trading.SymbolInfo{}, false
+	}
+	refreshedReq := req
+	refreshedReq.InstID = refreshedSym.InstID
+	refreshedReq.Sz = sz
+	return refreshedReq, refreshedSym, true
+}
+
+func isOKXInstrumentNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr APIError
+	if errors.As(err, &apiErr) && apiErr.HasCode("51001") {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "51001") && strings.Contains(text, "instrument") && strings.Contains(text, "exist")
+}
+
+func marketPriceProtectionFallbackRequest(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, sym trading.SymbolInfo, orderErr error) (PlaceOrderRequest, float64, bool) {
+	if req.OrdType != string(trading.OrderTypeMarket) || !isOKXPriceProtectionError(orderErr) {
+		return PlaceOrderRequest{}, 0, false
+	}
+	limit, ok := okxPriceProtectionLimitFromError(orderErr)
+	if !ok {
+		return PlaceOrderRequest{}, 0, false
+	}
+	price, roundUp, ok := protectedLimitPrice(ctx, client, req.Side, sym.InstID, limit)
+	if !ok {
+		return PlaceOrderRequest{}, 0, false
+	}
+	px := formatOKXPrice(price, sym.TickSz, roundUp)
+	if px == "" || px == "0" {
+		return PlaceOrderRequest{}, 0, false
+	}
+	sizingPx, err := strconv.ParseFloat(px, 64)
+	if err != nil || sizingPx <= 0 {
+		return PlaceOrderRequest{}, 0, false
+	}
+	sz, err := trading.SizeFromUSDTNotional(signal.Amount.Value, sizingPx, sym.CtVal, sym.LotSz, sym.MinSz)
+	if err != nil {
+		return PlaceOrderRequest{}, 0, false
+	}
+	fallbackReq := req
+	fallbackReq.OrdType = string(trading.OrderTypeLimit)
+	fallbackReq.Px = px
+	fallbackReq.Sz = sz
+	return fallbackReq, sizingPx, true
+}
+
+func protectedLimitPrice(ctx context.Context, client Client, side, instID string, limit okxPriceProtectionLimit) (float64, bool, bool) {
+	ticker, _, tickerErr := client.MarketTicker(ctx, instID)
+	if strings.EqualFold(side, "buy") {
+		if limit.MaxBuy <= 0 {
+			return 0, false, false
+		}
+		if tickerErr == nil {
+			if ask, err := strconv.ParseFloat(strings.TrimSpace(ticker.AskPx), 64); err == nil && ask > 0 && ask < limit.MaxBuy {
+				return ask, false, true
+			}
+		}
+		return limit.MaxBuy, false, true
+	}
+	if strings.EqualFold(side, "sell") {
+		if limit.MinSell <= 0 {
+			return 0, false, false
+		}
+		if tickerErr == nil {
+			if bid, err := strconv.ParseFloat(strings.TrimSpace(ticker.BidPx), 64); err == nil && bid > limit.MinSell {
+				return bid, true, true
+			}
+		}
+		return limit.MinSell, true, true
+	}
+	return 0, false, false
+}
+
+func isOKXPriceProtectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr APIError
+	if errors.As(err, &apiErr) && apiErr.HasCode("51006") {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "51006") && strings.Contains(text, "price limit")
+}
+
+type okxPriceProtectionLimit struct {
+	MaxBuy  float64
+	MinSell float64
+}
+
+func okxPriceProtectionLimitFromError(err error) (okxPriceProtectionLimit, bool) {
+	if err == nil {
+		return okxPriceProtectionLimit{}, false
+	}
+	var apiErr APIError
+	_ = errors.As(err, &apiErr)
+	for _, text := range okxErrorTexts(err, apiErr) {
+		maxBuy, hasMaxBuy := firstRegexFloat(okxMaxBuyPriceRE, text)
+		minSell, hasMinSell := firstRegexFloat(okxMinSellPriceRE, text)
+		if hasMaxBuy || hasMinSell {
+			return okxPriceProtectionLimit{MaxBuy: maxBuy, MinSell: minSell}, true
+		}
+	}
+	return okxPriceProtectionLimit{}, false
+}
+
 var (
+	okxMaxBuyPriceRE               = regexp.MustCompile(`(?i)max\s+buy\s+price:\s*([0-9]+(?:\.[0-9]+)?)`)
+	okxMinSellPriceRE              = regexp.MustCompile(`(?i)min\s+sell\s+price:\s*([0-9]+(?:\.[0-9]+)?)`)
 	okxMaxPositionLimitRE          = regexp.MustCompile(`(?i)more than\s+([0-9]+(?:\.[0-9]+)?)(?:\s*\(contracts?\)|\s+contracts?)`)
 	okxMaxPositionCurrentOrderRE   = regexp.MustCompile(`(?i)current\s+(?:buy|sell)\s+order\s+size:\s*([0-9]+(?:\.[0-9]+)?)\s*contracts?`)
 	okxMaxPositionQuantityRE       = regexp.MustCompile(`(?i)position\s+quantity:\s*([0-9]+(?:\.[0-9]+)?)\s*contracts?`)

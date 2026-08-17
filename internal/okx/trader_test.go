@@ -598,6 +598,134 @@ func TestTraderExecuteSignalRetriesWithOKXMaxPositionSizeLimit(t *testing.T) {
 	}
 }
 
+func TestTraderExecuteSignalRefreshesStaleConfiguredInstrumentAfterOKX51001(t *testing.T) {
+	var orderReqs []PlaceOrderRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions", "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instId") != "PLUME-USDT-SWAP" {
+				t.Fatalf("instrument refresh query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"PLUME-USDT-SWAP","ctVal":"10","tickSz":"0.000001","lotSz":"1","minSz":"1"}]}`))
+		case "/api/v5/trade/order":
+			var req PlaceOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			orderReqs = append(orderReqs, req)
+			if len(orderReqs) == 1 {
+				if req.InstID != "PLUME-OLD-USDT-SWAP" {
+					t.Fatalf("initial configured instrument = %#v", req)
+				}
+				_, _ = w.Write([]byte(`{"code":"1","msg":"All operations failed","data":[{"sCode":"51001","sMsg":"Instrument ID, Instrument ID code, or Spread ID doesn't exist."}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"x","ordId":"plume-order","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	cfg.Symbols = map[string]config.SymbolConfig{
+		"PLUMEUSDT.P": {
+			Coinpair: "PLUMEUSDT.P",
+			InstID:   "PLUME-OLD-USDT-SWAP",
+			CtVal:    1,
+			TickSz:   0.000001,
+			LotSz:    1,
+			MinSz:    1,
+		},
+	}
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "PLUMEUSDT.P",
+		Ticker:   "OKX:PLUMEUSDT.P",
+		Price:    trading.NewFlexibleFloat(2),
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(100),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.InstID != "PLUME-USDT-SWAP" || result.OrdID != "plume-order" {
+		t.Fatalf("bad refreshed result: %#v", result)
+	}
+	if len(orderReqs) != 2 || orderReqs[1].InstID != "PLUME-USDT-SWAP" || orderReqs[1].Sz != "5" {
+		t.Fatalf("expected stale instrument retry with refreshed size, got %#v", orderReqs)
+	}
+}
+
+func TestTraderExecuteSignalRetriesMarketOrderAsProtectedLimitAfterOKX51006(t *testing.T) {
+	var orderReqs []PlaceOrderRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instId") != "H-USDT-SWAP" {
+				t.Fatalf("instrument query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"H-USDT-SWAP","ctVal":"100","tickSz":"0.00001","lotSz":"0.1","minSz":"0.1"}]}`))
+		case "/api/v5/account/positions", "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/market/ticker":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"H-USDT-SWAP","bidPx":"0.0653","askPx":"0.0654","last":"0.06535"}]}`))
+		case "/api/v5/trade/order":
+			var req PlaceOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			orderReqs = append(orderReqs, req)
+			if len(orderReqs) == 1 {
+				if req.OrdType != "market" || req.Px != "" || req.Sz != "500" {
+					t.Fatalf("unexpected initial market order: %#v", req)
+				}
+				_, _ = w.Write([]byte(`{"code":"1","msg":"All operations failed","data":[{"sCode":"51006","sMsg":"Order price is not within the price limit (max buy price: 0.0655, min sell price: 0.0595)"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"x","ordId":"h-limit-order","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Symbols = map[string]config.SymbolConfig{}
+	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	cfg.Trading.OrderType = string(trading.OrderTypeMarket)
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: ts.Client()}
+	result, err := trader.ExecuteSignal(context.Background(), trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "HUSDT.P",
+		Ticker:   "OKX:HUSDT.P",
+		Price:    trading.NewFlexibleFloat(0.06),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(3000),
+	}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OrdType != "limit" || result.Px != "0.0654" || result.OrdID != "h-limit-order" {
+		t.Fatalf("bad protected limit result: %#v", result)
+	}
+	if len(orderReqs) != 2 || orderReqs[1].OrdType != "limit" || orderReqs[1].Px != "0.0654" || orderReqs[1].Sz != "458.7" {
+		t.Fatalf("expected protected limit retry, got %#v", orderReqs)
+	}
+}
+
 func TestParseOKXMaxPositionLimit(t *testing.T) {
 	msg := "Order failed. For buy/sell mode of ZAMA-USDT-SWAP, the sum of current buy order size, position quantity, and pending buy orders can't be more than 20(contracts) which is the maximum position amount under current leverage. Please lower the leverage or use a new sub-account to place the order again (current leverage: 5x, current buy order size: 216 contracts, position quantity: 0 contracts, pending buy orders: 0 contracts)."
 	limit, ok := parseOKXMaxPositionLimit(msg)
