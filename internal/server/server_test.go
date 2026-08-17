@@ -1926,7 +1926,7 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	binanceTradeTime := time.Date(2026, 7, 23, 5, 0, 0, 0, time.UTC).UnixMilli()
 	candleTime1 := time.Date(2026, 7, 23, 2, 0, 0, 0, time.UTC).UnixMilli()
 	candleTime2 := time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC).UnixMilli()
-	var sawBalance, sawCandles, sawFills, sawOKXFunding, sawBinanceFunding bool
+	var sawBalance, sawCandles, sawFills, sawOKXFunding, sawBinanceFunding, sawInstruments bool
 	expectedBinanceStart := int64(0)
 	expectedBinanceAPIKey := "binance-alt-key"
 	sawBinanceSymbols := map[string]bool{}
@@ -1976,6 +1976,15 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 				t.Fatalf("bad bills query: %s", r.URL.RawQuery)
 			}
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/public/instruments":
+			sawInstruments = true
+			if r.URL.Query().Get("instType") != "SWAP" || r.Header.Get("OK-ACCESS-KEY") != "" {
+				t.Fatalf("bad public instruments request: query=%s api_key=%q", r.URL.RawQuery, r.Header.Get("OK-ACCESS-KEY"))
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instId":"BTC-USDT-SWAP","ctVal":"0.01"},
+				{"instId":"ETH-USDT-SWAP","ctVal":"0.1"}
+			]}`))
 		default:
 			t.Fatalf("unexpected OKX path %s", r.URL.Path)
 		}
@@ -2082,8 +2091,8 @@ func TestTVBotAnalysisRequiresAdminAndReturnsExchangeSeparatedStats(t *testing.T
 	if rr.Code != http.StatusOK {
 		t.Fatalf("analysis code=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if !sawBalance || !sawCandles || !sawFills || !sawOKXFunding || !sawBinanceFunding {
-		t.Fatalf("expected analysis calls balance=%v candles=%v fills=%v okxFunding=%v binanceFunding=%v", sawBalance, sawCandles, sawFills, sawOKXFunding, sawBinanceFunding)
+	if !sawBalance || !sawCandles || !sawFills || !sawOKXFunding || !sawBinanceFunding || !sawInstruments {
+		t.Fatalf("expected analysis calls balance=%v candles=%v fills=%v okxFunding=%v binanceFunding=%v instruments=%v", sawBalance, sawCandles, sawFills, sawOKXFunding, sawBinanceFunding, sawInstruments)
 	}
 	if !sawBinanceSymbols["BADUSDT"] || !sawBinanceSymbols["BTCUSDT"] || !sawBinanceSymbols["ETHUSDT"] {
 		t.Fatalf("expected Binance configured symbols to be queried, seen=%#v", sawBinanceSymbols)

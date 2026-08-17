@@ -14,6 +14,7 @@ import (
 
 	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
+	"github.com/pcdogyu/tv_okx_bot/internal/okx"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
@@ -401,6 +402,44 @@ func TestEnrichAnalysisTradesUsesMatchedOrderLeverageAndComputesNetPnL(t *testin
 	}
 	if trades[2].Leverage != 3 || trades[2].Margin != "" || trades[2].NetPnL != "0.99" {
 		t.Fatalf("missing ctVal should keep leverage/net pnl but omit margin: %#v", trades[2])
+	}
+}
+
+func TestAnalysisConfigWithOKXCtValsAddsHistoricalContractValues(t *testing.T) {
+	cfg := config.Config{Symbols: map[string]config.SymbolConfig{
+		"BTC": {InstID: "BTC-USDT-SWAP", CtVal: 0.01},
+	}}
+	analysisCfg := analysisConfigWithOKXCtVals(cfg, []okx.Instrument{
+		{InstID: "CRV-USDT-SWAP", CtVal: "1"},
+		{InstID: "BTC-USDT-SWAP", CtVal: "99"},
+		{InstID: "INVALID-USDT-SWAP", CtVal: "not-a-number"},
+	})
+	if got := analysisOKXCtVal(analysisCfg, "CRV-USDT-SWAP"); got != 1 {
+		t.Fatalf("historical CRV ctVal=%v, want 1", got)
+	}
+	if got := analysisOKXCtVal(analysisCfg, "BTC-USDT-SWAP"); got != 0.01 {
+		t.Fatalf("configured BTC ctVal=%v, want 0.01", got)
+	}
+	if got := analysisOKXCtVal(analysisCfg, "INVALID-USDT-SWAP"); got != 0 {
+		t.Fatalf("invalid instrument ctVal=%v, want 0", got)
+	}
+	margin, ok := analysisTradeMargin(analysisCfg, analysisTrade{
+		Exchange: trading.ExchangeOKX,
+		InstID:   "CRV-USDT-SWAP",
+		FillPx:   "10",
+		FillSz:   "3",
+		Leverage: 10,
+	})
+	if !ok || margin != "3" {
+		t.Fatalf("historical CRV margin=%q ok=%v, want 3/true", margin, ok)
+	}
+	if turnover := analysisTradeTurnoverValue(analysisCfg, analysisTrade{
+		Exchange: trading.ExchangeOKX,
+		InstID:   "CRV-USDT-SWAP",
+		FillPx:   "10",
+		FillSz:   "3",
+	}); turnover != 30 {
+		t.Fatalf("historical CRV turnover=%v, want 30", turnover)
 	}
 }
 

@@ -477,7 +477,15 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		}
 		return analysisResponse{}, err
 	}
-	resp, err := s.analysisFromStore(cfg, apiID, binanceAPIID, envName, priceDays, pnlMinutes, now, source, binanceTrades)
+	analysisCfg := cfg
+	if instruments, _, instrumentErr := client.SwapInstruments(ctx); instrumentErr != nil {
+		if s.Logger != nil {
+			s.Logger.Warn("failed to fetch OKX instruments for analysis contract values", "api_id", apiID, "env", envName, "error", instrumentErr)
+		}
+	} else {
+		analysisCfg = analysisConfigWithOKXCtVals(cfg, instruments)
+	}
+	resp, err := s.analysisFromStore(analysisCfg, apiID, binanceAPIID, envName, priceDays, pnlMinutes, now, source, binanceTrades)
 	if err != nil {
 		return analysisResponse{}, err
 	}
@@ -1434,6 +1442,42 @@ func analysisOKXCtVal(cfg config.Config, instID string) float64 {
 		}
 	}
 	return 0
+}
+
+// analysisConfigWithOKXCtVals preserves configured symbols and adds the current
+// OKX contract values for historical fills whose symbols are no longer in the
+// bot configuration. The returned config owns a copied Symbols map.
+func analysisConfigWithOKXCtVals(cfg config.Config, instruments []okx.Instrument) config.Config {
+	if len(instruments) == 0 {
+		return cfg
+	}
+	cloned := make(map[string]config.SymbolConfig, len(cfg.Symbols)+len(instruments))
+	byInstID := make(map[string]string, len(cfg.Symbols))
+	for key, sym := range cfg.Symbols {
+		cloned[key] = sym
+		instID := strings.ToUpper(strings.TrimSpace(sym.InstID))
+		if instID != "" {
+			byInstID[instID] = key
+		}
+	}
+	for _, instrument := range instruments {
+		instID := strings.ToUpper(strings.TrimSpace(instrument.InstID))
+		ctVal, ok := parsePositiveFloat(instrument.CtVal)
+		if instID == "" || !ok {
+			continue
+		}
+		if key, exists := byInstID[instID]; exists {
+			sym := cloned[key]
+			if sym.CtVal <= 0 {
+				sym.CtVal = ctVal
+				cloned[key] = sym
+			}
+			continue
+		}
+		cloned["analysis:"+instID] = config.SymbolConfig{InstID: instID, CtVal: ctVal}
+	}
+	cfg.Symbols = cloned
+	return cfg
 }
 
 func analysisTradeNetPnL(trade analysisTrade) string {
