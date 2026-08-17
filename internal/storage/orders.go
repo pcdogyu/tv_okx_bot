@@ -64,16 +64,20 @@ type OrderStore struct {
 }
 
 type orderState struct {
-	Dedupe map[string]string `json:"dedupe"`
-	Orders []OrderRecord     `json:"orders"`
+	Dedupe              map[string]string `json:"dedupe"`
+	Orders              []OrderRecord     `json:"orders"`
+	CoinpairBlocks      []CoinpairBlock   `json:"coinpair_blocks,omitempty"`
+	CoinpairBlockEvents map[string]bool   `json:"coinpair_block_events,omitempty"`
 }
 
 func NewOrderStore(path string) (*OrderStore, error) {
 	s := &OrderStore{
 		path: path,
 		state: orderState{
-			Dedupe: map[string]string{},
-			Orders: []OrderRecord{},
+			Dedupe:              map[string]string{},
+			Orders:              []OrderRecord{},
+			CoinpairBlocks:      []CoinpairBlock{},
+			CoinpairBlockEvents: map[string]bool{},
 		},
 	}
 	if path == "" {
@@ -100,8 +104,10 @@ func NewSQLiteOrderStore(databasePath, legacyJSONPath string) (*OrderStore, erro
 	s := &OrderStore{
 		path: legacyJSONPath,
 		state: orderState{
-			Dedupe: map[string]string{},
-			Orders: []OrderRecord{},
+			Dedupe:              map[string]string{},
+			Orders:              []OrderRecord{},
+			CoinpairBlocks:      []CoinpairBlock{},
+			CoinpairBlockEvents: map[string]bool{},
 		},
 		db: db,
 	}
@@ -168,17 +174,25 @@ func (s *OrderStore) RecordRejected(signal trading.Signal, code string, err erro
 }
 
 func (s *OrderStore) RecordIgnored(signal trading.Signal, filter string, now time.Time) (OrderRecord, error) {
+	filter = strings.ToUpper(strings.TrimSpace(filter))
+	return s.RecordIgnoredReason(signal, "coinpair_filtered", fmt.Sprintf("coinpair matched ignore filter %q", filter), now)
+}
+
+func (s *OrderStore) RecordIgnoredReason(signal trading.Signal, code, message string, now time.Time) (OrderRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	filter = strings.ToUpper(strings.TrimSpace(filter))
-	message := fmt.Sprintf("coinpair matched ignore filter %q", filter)
-	if s.db != nil {
-		return s.recordIgnoredSQLiteLocked(signal, filter, message, now)
+	code = strings.ToLower(strings.TrimSpace(code))
+	message = strings.TrimSpace(message)
+	if code == "" {
+		code = "coinpair_filtered"
 	}
-	dedupeKey := RejectedKey(signal, "coinpair_filtered", filter, now)
+	if s.db != nil {
+		return s.recordIgnoredSQLiteLocked(signal, code, message, now)
+	}
+	dedupeKey := RejectedKey(signal, code, message, now)
 	rec := newOrderRecord(signal, dedupeKey, StatusIgnored, now)
 	rec.SignalID = s.newSignalIDLocked(now, dedupeKey)
-	rec.ErrorCode = "coinpair_filtered"
+	rec.ErrorCode = code
 	rec.Error = message
 	s.state.Orders = append(s.state.Orders, rec)
 	if err := s.saveLocked(); err != nil {
@@ -615,6 +629,27 @@ func (s *OrderStore) migrateSQLite() error {
 			raw_json TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_trade_monitor_events_time ON trade_monitor_events(event_time)`,
+		`CREATE TABLE IF NOT EXISTS coinpair_blocks (
+			keyword TEXT PRIMARY KEY,
+			symbol TEXT NOT NULL,
+			trigger_price TEXT,
+			source TEXT NOT NULL,
+			exchange TEXT,
+			api_id TEXT,
+			started_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			last_event_id TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_coinpair_blocks_expires ON coinpair_blocks(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS coinpair_block_events (
+			event_id TEXT PRIMARY KEY,
+			keyword TEXT NOT NULL,
+			occurred_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_coinpair_block_events_time ON coinpair_block_events(occurred_at)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -881,11 +916,11 @@ func (s *OrderStore) recordRejectedSQLiteLocked(signal trading.Signal, code stri
 	return rec, nil
 }
 
-func (s *OrderStore) recordIgnoredSQLiteLocked(signal trading.Signal, filter, message string, now time.Time) (OrderRecord, error) {
-	dedupeKey := RejectedKey(signal, "coinpair_filtered", filter, now)
+func (s *OrderStore) recordIgnoredSQLiteLocked(signal trading.Signal, code, message string, now time.Time) (OrderRecord, error) {
+	dedupeKey := RejectedKey(signal, code, message, now)
 	rec := newOrderRecord(signal, dedupeKey, StatusIgnored, now)
 	rec.SignalID = s.newSignalIDLocked(now, dedupeKey)
-	rec.ErrorCode = "coinpair_filtered"
+	rec.ErrorCode = code
 	rec.Error = message
 	if err := s.insertOrderSQLiteLocked(rec); err != nil {
 		return OrderRecord{}, err
@@ -1339,6 +1374,12 @@ func (s *OrderStore) load() error {
 	}
 	if s.state.Orders == nil {
 		s.state.Orders = []OrderRecord{}
+	}
+	if s.state.CoinpairBlocks == nil {
+		s.state.CoinpairBlocks = []CoinpairBlock{}
+	}
+	if s.state.CoinpairBlockEvents == nil {
+		s.state.CoinpairBlockEvents = map[string]bool{}
 	}
 	return nil
 }

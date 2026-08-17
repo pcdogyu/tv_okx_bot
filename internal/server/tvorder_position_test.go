@@ -68,7 +68,7 @@ func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
 	signal.Coinpair = "ESPORTSUSDT.P"
 	signal.Ticker = "ESPORTSUSDT.P"
 	signal.Price = trading.NewFlexibleFloat(0.02264)
-	signal.Condition = "空单止盈止损"
+	signal.Condition = "空单止损"
 	signal.Token = srv.Token.Generate(signal.CanonicalWebhookTokenPayload())
 	resp := postTVOrderSignal(t, srv, signal)
 	if resp.Status != "accepted" {
@@ -86,6 +86,13 @@ func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
 	}
 	if rec.Result.PositionEffect != trading.PositionEffectClose || rec.Result.PositionSide != trading.PositionSideShort || rec.Result.TargetExchange != trading.ExchangeBinance {
 		t.Fatalf("close result semantics not stored: %#v", rec.Result)
+	}
+	blocks, err := srv.Orders.ListActiveCoinpairBlocks(srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 || blocks[0].Keyword != "ESPORTS" || blocks[0].TriggerPrice != "0.022631" || blocks[0].Source != "stop_loss_webhook" {
+		t.Fatalf("submitted stop-loss webhook did not create cooldown: %#v", blocks)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -132,7 +139,7 @@ func TestTVOrderCloseSignalDoesNotCloseOppositeBinanceNetPosition(t *testing.T) 
 	signal.Coinpair = "ESPORTSUSDT.P"
 	signal.Ticker = "ESPORTSUSDT.P"
 	signal.Price = trading.NewFlexibleFloat(0.02264)
-	signal.Condition = "空单止盈止损"
+	signal.Condition = "空单止损"
 	signal.Token = srv.Token.Generate(signal.CanonicalWebhookTokenPayload())
 	resp := postTVOrderSignal(t, srv, signal)
 	rec := waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusFailed)
@@ -144,6 +151,13 @@ func TestTVOrderCloseSignalDoesNotCloseOppositeBinanceNetPosition(t *testing.T) 
 	}
 	if rec.ErrorCode != "position_not_open" || rec.PositionEffect != trading.PositionEffectClose || rec.PositionSide != trading.PositionSideShort {
 		t.Fatalf("target short position should be reported missing: %#v", rec)
+	}
+	blocks, err := srv.Orders.ListActiveCoinpairBlocks(srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("failed stop-loss close should not create cooldown: %#v", blocks)
 	}
 }
 

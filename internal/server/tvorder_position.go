@@ -218,7 +218,33 @@ func (s *Server) executePositionCloseSignal(signalID string, signal trading.Sign
 		}
 		return
 	}
-	_ = s.Orders.MarkSubmitted(signalID, result, s.now())
+	completedAt := s.now()
+	if err := s.Orders.MarkSubmitted(signalID, result, completedAt); err != nil {
+		if s.Logger != nil {
+			s.Logger.Error("failed to store submitted position close", "signal_id", signalID, "error", err)
+		}
+		return
+	}
+	if !isStopLossCloseSignal(signal) {
+		return
+	}
+	triggerPrice := strings.TrimSpace(result.Px)
+	if triggerPrice == "" && signal.Price.Set {
+		triggerPrice = trading.NormalizeFloat(signal.Price.Value)
+	}
+	if _, _, err := s.recordCoinpairCooldown(
+		"stop_loss_webhook:"+signalID,
+		"stop_loss_webhook",
+		firstNonEmptyString(result.TargetExchange, signal.TargetExchange),
+		firstNonEmptyString(result.APIID, signal.APIID),
+		triggerPrice,
+		completedAt,
+		result.InstID,
+		signal.Coinpair,
+		signal.Ticker,
+	); err != nil && s.Logger != nil {
+		s.Logger.Error("failed to record stop-loss coinpair cooldown", "signal_id", signalID, "coinpair", signal.Coinpair, "error", err)
+	}
 }
 
 func (s *Server) closePositionFromSignal(ctx context.Context, signal trading.Signal, cfg config.Config) (trading.OrderResult, error) {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
+	"github.com/pcdogyu/tv_okx_bot/internal/okx"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
@@ -95,6 +97,105 @@ func TestTradeMonitorStateMachineClassifiesExitFills(t *testing.T) {
 				t.Fatalf("bad lifecycle found=%v lifecycle=%#v", found, lifecycle)
 			}
 		})
+	}
+}
+
+func TestBinanceLossFillCreatesCooldownWithoutBackfill(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	call := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/userTrades" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		call++
+		fillTime := now.Add(-time.Minute)
+		tradeID := 100
+		if call > 1 {
+			fillTime = now.Add(time.Minute)
+			tradeID = 101
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `[{"symbol":"ETHUSDT","side":"SELL","positionSide":"BOTH","price":"2490","qty":"1","realizedPnl":"-5","commission":"0.1","commissionAsset":"USDT","time":%d,"id":%d,"orderId":900}]`, fillTime.UnixMilli(), tradeID)
+	}))
+	defer ts.Close()
+	client := binance.Client{
+		BaseURL:     ts.URL,
+		Credentials: binance.Credentials{APIKey: "key", SecretKey: "secret"},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return now },
+	}
+	cfg := config.Default()
+	if err := srv.pollBinanceSymbolFills(context.Background(), cfg, client, "main", "ETHUSDT", now, 72*time.Hour, false); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := srv.Orders.ListActiveCoinpairBlocks(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("first Binance poll must not backfill cooldowns: %#v", blocks)
+	}
+	if err := srv.pollBinanceSymbolFills(context.Background(), cfg, client, "main", "ETHUSDT", now.Add(2*time.Minute), 72*time.Hour, false); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err = srv.Orders.ListActiveCoinpairBlocks(now.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 || blocks[0].Keyword != "ETH" || blocks[0].TriggerPrice != "2490" || blocks[0].Source != "exchange_fill" {
+		t.Fatalf("new Binance loss fill did not create cooldown: %#v", blocks)
+	}
+}
+
+func TestOKXLossFillCreatesCooldownWithoutBackfill(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	call := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/trade/fills-history" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		call++
+		oldFill := fmt.Sprintf(`{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"100","ordId":"900","side":"sell","fillPx":"49000","fillSz":"1","fillPnl":"-5","fillTime":"%d"}`, now.Add(-time.Minute).UnixMilli())
+		data := oldFill
+		if call > 1 {
+			newFill := fmt.Sprintf(`{"instType":"SWAP","instId":"ETH-USDT-SWAP","tradeId":"101","ordId":"901","side":"sell","fillPx":"2490","fillSz":"1","fillPnl":"-3","fillTime":"%d"}`, now.Add(time.Minute).UnixMilli())
+			data = newFill + "," + oldFill
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"code":"0","msg":"","data":[%s]}`, data)
+	}))
+	defer ts.Close()
+	client := okx.Client{
+		BaseURL: ts.URL,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+		HTTPClient: ts.Client(),
+		Now:        func() time.Time { return now },
+	}
+	if err := srv.pollOKXCoinpairCooldownFills(context.Background(), client, "default", now); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := srv.Orders.ListActiveCoinpairBlocks(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("first OKX poll must not backfill cooldowns: %#v", blocks)
+	}
+	if err := srv.pollOKXCoinpairCooldownFills(context.Background(), client, "default", now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err = srv.Orders.ListActiveCoinpairBlocks(now.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 || blocks[0].Keyword != "ETH" || blocks[0].TriggerPrice != "2490" || blocks[0].Source != "exchange_fill" {
+		t.Fatalf("new OKX loss fill did not create cooldown: %#v", blocks)
 	}
 }
 

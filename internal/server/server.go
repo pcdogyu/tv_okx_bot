@@ -112,6 +112,18 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	classErr := applyTVOrderPositionSemantics(&signal)
 	if classErr == nil {
+		if block, blocked, err := s.activeCoinpairCooldown(signal, now); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "cooldown_check_failed", err.Error())
+			return
+		} else if blocked {
+			record, err := s.recordCooldownIgnoredSignal(signal, block, now)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusAccepted, coinpairCooldownResponse(record, block))
+			return
+		}
 		if filter, ignored := ignoredEntrySignal(cfg, signal); ignored {
 			record, err := s.Orders.RecordIgnored(signal, filter, now)
 			if err != nil {
@@ -418,6 +430,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handleTemplates(w, r)
 	case path == "/orders":
 		s.handleOrders(w, r)
+	case path == "/coinpair-blocks":
+		s.handleCoinpairBlocks(w, r)
 	case path == "/trade-monitor":
 		s.handleTradeMonitor(w, r)
 	case isOrderRetryPath(path):
@@ -1487,6 +1501,21 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		Coinpair:       source.Coinpair,
 		Ticker:         source.Ticker,
 		PositionEffect: source.PositionEffect,
+	}
+	if block, blocked, err := s.activeCoinpairCooldown(probe, now); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "cooldown_check_failed", err.Error())
+		return
+	} else if blocked {
+		signal := ignoredRetrySignalFromRecord(source, now)
+		record, err := s.recordCooldownIgnoredSignal(signal, block, now)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+			return
+		}
+		resp := coinpairCooldownResponse(record, block)
+		resp["retry_of"] = source.SignalID
+		writeJSON(w, http.StatusAccepted, resp)
+		return
 	}
 	if filter, ignored := ignoredEntrySignal(cfg, probe); ignored {
 		signal := ignoredRetrySignalFromRecord(source, now)

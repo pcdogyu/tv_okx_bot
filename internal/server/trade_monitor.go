@@ -13,6 +13,7 @@ import (
 
 	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
+	"github.com/pcdogyu/tv_okx_bot/internal/okx"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
@@ -22,10 +23,11 @@ const (
 	tradeMonitorPollTimeout         = 45 * time.Second
 	tradeMonitorOrderTimeout        = 20 * time.Second
 	tradeMonitorHistoryLimit        = 1000
+	coinpairCooldownOKXCheckpoint   = "__COINPAIR_COOLDOWN__"
 )
 
 func (s *Server) StartTradeFillMonitor(ctx context.Context) {
-	if s.ConfigStore == nil || s.Orders == nil || s.BinanceCredentials == nil {
+	if s.ConfigStore == nil || s.Orders == nil || (s.BinanceCredentials == nil && s.OKXCredentials == nil) {
 		return
 	}
 	go s.runTradeFillMonitor(ctx)
@@ -53,16 +55,20 @@ func (s *Server) runTradeFillMonitor(ctx context.Context) {
 
 func (s *Server) runTradeFillMonitorOnce(ctx context.Context) {
 	cfg := s.ConfigStore.Get()
-	if !tradeFillMonitorBinanceEnabled(cfg) {
+	now := s.now()
+	s.scanOKXCoinpairCooldownFills(ctx, cfg, now)
+	if s.BinanceCredentials == nil {
 		return
 	}
-	now := s.now()
+	lifecycleEnabled := tradeFillMonitorBinanceEnabled(cfg)
 	lookback := time.Duration(cfg.Trading.FillMonitor.LookbackHours) * time.Hour
 	if lookback <= 0 {
 		lookback = 72 * time.Hour
 	}
-	if err := s.ensureRecentBinanceTradeLifecycles(cfg, now, lookback); err != nil && s.Logger != nil {
-		s.Logger.Warn("failed to sync Binance trade lifecycles", "error", err)
+	if lifecycleEnabled {
+		if err := s.ensureRecentBinanceTradeLifecycles(cfg, now, lookback); err != nil && s.Logger != nil {
+			s.Logger.Warn("failed to sync Binance trade lifecycles", "error", err)
+		}
 	}
 	symbols := s.tradeMonitorBinanceSymbols(cfg, now, lookback)
 	if len(symbols) == 0 {
@@ -78,13 +84,150 @@ func (s *Server) runTradeFillMonitorOnce(ctx context.Context) {
 		}
 		for _, symbol := range symbols {
 			pollCtx, cancel := context.WithTimeout(ctx, tradeMonitorPollTimeout)
-			err := s.pollBinanceSymbolFills(pollCtx, cfg, client, apiID, symbol, now, lookback)
+			err := s.pollBinanceSymbolFills(pollCtx, cfg, client, apiID, symbol, now, lookback, lifecycleEnabled)
 			cancel()
 			if err != nil && s.Logger != nil {
 				s.Logger.Warn("failed to poll Binance fills", "api_id", apiID, "symbol", symbol, "error", err)
 			}
 		}
 	}
+}
+
+type timedOKXFill struct {
+	fill okx.Fill
+	time time.Time
+}
+
+func (s *Server) scanOKXCoinpairCooldownFills(ctx context.Context, cfg config.Config, now time.Time) {
+	if s.OKXCredentials == nil {
+		return
+	}
+	for _, requestedAPIID := range configuredAPIIDs(s.OKXCredentials.Status()) {
+		client, apiID, err := s.okxClientForCredentials(cfg, requestedAPIID)
+		if err != nil {
+			if s.Logger != nil {
+				s.Logger.Warn("failed to create OKX cooldown monitor client", "api_id", requestedAPIID, "error", err)
+			}
+			continue
+		}
+		pollCtx, cancel := context.WithTimeout(ctx, tradeMonitorPollTimeout)
+		err = s.pollOKXCoinpairCooldownFills(pollCtx, client, apiID, now)
+		cancel()
+		if err != nil && s.Logger != nil {
+			s.Logger.Warn("failed to poll OKX fills for coinpair cooldown", "api_id", apiID, "error", err)
+		}
+	}
+}
+
+func (s *Server) pollOKXCoinpairCooldownFills(ctx context.Context, client okx.Client, apiID string, now time.Time) error {
+	cp, found, err := s.Orders.TradeMonitorCheckpoint(trading.ExchangeOKX, apiID, coinpairCooldownOKXCheckpoint)
+	if err != nil {
+		return err
+	}
+	after := ""
+	newFills := []timedOKXFill{}
+	latestTime := cp.LastFillTime
+	latestTradeID := cp.LastTradeID
+	for page := 0; page < 20; page++ {
+		fills, _, err := client.FillsHistory(ctx, "SWAP", after, 100)
+		if err != nil {
+			_ = s.Orders.UpsertTradeMonitorCheckpoint(storage.TradeMonitorCheckpoint{
+				Exchange:     trading.ExchangeOKX,
+				APIID:        apiID,
+				Symbol:       coinpairCooldownOKXCheckpoint,
+				LastFillTime: cp.LastFillTime,
+				LastTradeID:  cp.LastTradeID,
+				LastPolledAt: now,
+				LastError:    err.Error(),
+				UpdatedAt:    now,
+			})
+			return err
+		}
+		if len(fills) == 0 {
+			break
+		}
+		reachedCheckpoint := false
+		for _, fill := range fills {
+			fillMS, parseErr := strconv.ParseInt(strings.TrimSpace(fill.FillTime), 10, 64)
+			if parseErr != nil || fillMS <= 0 {
+				continue
+			}
+			tradeID := strings.TrimSpace(fill.TradeID)
+			if fillMS > latestTime || (fillMS == latestTime && tradeID > latestTradeID) {
+				latestTime = fillMS
+				latestTradeID = tradeID
+			}
+			if found && (fillMS > cp.LastFillTime || (fillMS == cp.LastFillTime && tradeID > cp.LastTradeID)) {
+				newFills = append(newFills, timedOKXFill{fill: fill, time: time.UnixMilli(fillMS).UTC()})
+			} else if found {
+				reachedCheckpoint = true
+			}
+		}
+		if !found || reachedCheckpoint || len(fills) < 100 {
+			break
+		}
+		nextAfter := strings.TrimSpace(fills[len(fills)-1].TradeID)
+		if nextAfter == "" || nextAfter == after {
+			break
+		}
+		after = nextAfter
+	}
+	if !found {
+		if latestTime <= 0 {
+			latestTime = now.UnixMilli()
+		}
+		return s.Orders.UpsertTradeMonitorCheckpoint(storage.TradeMonitorCheckpoint{
+			Exchange:     trading.ExchangeOKX,
+			APIID:        apiID,
+			Symbol:       coinpairCooldownOKXCheckpoint,
+			LastFillTime: latestTime,
+			LastTradeID:  latestTradeID,
+			LastPolledAt: now,
+			UpdatedAt:    now,
+		})
+	}
+	sort.Slice(newFills, func(i, j int) bool {
+		if newFills[i].time.Equal(newFills[j].time) {
+			return newFills[i].fill.TradeID < newFills[j].fill.TradeID
+		}
+		return newFills[i].time.Before(newFills[j].time)
+	})
+	for _, timed := range newFills {
+		fill := timed.fill
+		if !negativeRealizedPnL(fill.FillPnl) {
+			continue
+		}
+		_, _, blockErr := s.recordCoinpairCooldown(
+			strings.Join([]string{"exchange_fill", trading.ExchangeOKX, apiID, fill.InstID, fill.TradeID}, ":"),
+			"exchange_fill",
+			trading.ExchangeOKX,
+			apiID,
+			fill.FillPx,
+			timed.time,
+			fill.InstID,
+		)
+		if blockErr != nil && s.Logger != nil {
+			s.Logger.Error("failed to record OKX loss-fill coinpair cooldown", "api_id", apiID, "inst_id", fill.InstID, "trade_id", fill.TradeID, "error", blockErr)
+		}
+		if blockErr != nil {
+			return blockErr
+		}
+	}
+	return s.Orders.UpsertTradeMonitorCheckpoint(storage.TradeMonitorCheckpoint{
+		Exchange:     trading.ExchangeOKX,
+		APIID:        apiID,
+		Symbol:       coinpairCooldownOKXCheckpoint,
+		LastFillTime: latestTime,
+		LastTradeID:  latestTradeID,
+		LastPolledAt: now,
+		LastError:    "",
+		UpdatedAt:    now,
+	})
+}
+
+func negativeRealizedPnL(raw string) bool {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	return err == nil && !math.IsNaN(value) && !math.IsInf(value, 0) && value < 0
 }
 
 func tradeFillMonitorBinanceEnabled(cfg config.Config) bool {
@@ -157,7 +300,7 @@ func (s *Server) tradeMonitorBinanceSymbols(cfg config.Config, now time.Time, lo
 	return symbols
 }
 
-func (s *Server) pollBinanceSymbolFills(ctx context.Context, cfg config.Config, client binance.Client, apiID, symbol string, now time.Time, lookback time.Duration) error {
+func (s *Server) pollBinanceSymbolFills(ctx context.Context, cfg config.Config, client binance.Client, apiID, symbol string, now time.Time, lookback time.Duration, processLifecycles bool) error {
 	cp, found, err := s.Orders.TradeMonitorCheckpoint(trading.ExchangeBinance, apiID, symbol)
 	if err != nil {
 		return err
@@ -219,8 +362,31 @@ func (s *Server) pollBinanceSymbolFills(ctx context.Context, cfg config.Config, 
 		return inserted[i].FillTime < inserted[j].FillTime
 	})
 	for _, fill := range inserted {
-		if err := s.processBinanceFill(ctx, cfg, client, fill, now); err != nil && s.Logger != nil {
-			s.Logger.Warn("failed to process Binance fill", "api_id", apiID, "symbol", symbol, "trade_id", fill.TradeID, "error", err)
+		if found && negativeRealizedPnL(fill.RealizedPnl) {
+			occurredAt := time.UnixMilli(fill.FillTime).UTC()
+			if fill.FillTime <= 0 {
+				occurredAt = now
+			}
+			_, _, blockErr := s.recordCoinpairCooldown(
+				strings.Join([]string{"exchange_fill", trading.ExchangeBinance, fill.APIID, fill.Symbol, fill.TradeID}, ":"),
+				"exchange_fill",
+				trading.ExchangeBinance,
+				fill.APIID,
+				fill.Price,
+				occurredAt,
+				fill.Symbol,
+			)
+			if blockErr != nil && s.Logger != nil {
+				s.Logger.Error("failed to record Binance loss-fill coinpair cooldown", "api_id", fill.APIID, "symbol", fill.Symbol, "trade_id", fill.TradeID, "error", blockErr)
+			}
+			if blockErr != nil {
+				return blockErr
+			}
+		}
+		if processLifecycles {
+			if err := s.processBinanceFill(ctx, cfg, client, fill, now); err != nil && s.Logger != nil {
+				s.Logger.Warn("failed to process Binance fill", "api_id", apiID, "symbol", symbol, "trade_id", fill.TradeID, "error", err)
+			}
 		}
 	}
 	lastFillTime := cp.LastFillTime
@@ -369,6 +535,31 @@ func exitSide(action string) string {
 func (s *Server) maybeSubmitAutoReentry(ctx context.Context, cfg config.Config, client binance.Client, lifecycle storage.TradeLifecycle, now time.Time) error {
 	reentry := cfg.Trading.AutoReentry
 	if !reentry.Enabled {
+		return nil
+	}
+	probe := trading.Signal{Coinpair: lifecycle.Symbol, Ticker: lifecycle.Symbol, PositionEffect: trading.PositionEffectOpen}
+	if block, blocked, err := s.activeCoinpairCooldown(probe, now); err != nil {
+		return err
+	} else if blocked {
+		updated, err := s.Orders.UpdateTradeLifecycle(lifecycle.LifecycleID, storage.TradeLifecycleUpdate{
+			Status:        storage.TradeLifecycleCooldown,
+			CooldownUntil: block.ExpiresAt.UTC().Format(time.RFC3339Nano),
+			UpdatedAt:     now,
+		})
+		if err != nil {
+			return err
+		}
+		s.recordTradeMonitorEvent(storage.TradeMonitorEvent{
+			EventTime:      now,
+			Exchange:       lifecycle.Exchange,
+			APIID:          lifecycle.APIID,
+			Symbol:         lifecycle.Symbol,
+			LifecycleID:    lifecycle.LifecycleID,
+			SourceSignalID: lifecycle.SourceSignalID,
+			EventType:      "auto_reentry_cooldown",
+			Status:         updated.Status,
+			Message:        "stop-loss coinpair cooldown is active until " + block.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		})
 		return nil
 	}
 	if s.Executor == nil {

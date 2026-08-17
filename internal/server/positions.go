@@ -1039,6 +1039,25 @@ func (s *Server) scanOKXPositionMonitorForAPI(ctx context.Context, cfg config.Co
 			}
 			continue
 		}
+		if started && trigger == "stop_loss" {
+			detectedAt := s.now()
+			eventOrderID := firstNonEmpty(order.Ack.OrdID, order.Ack.ClOrdID)
+			if eventOrderID == "" {
+				eventOrderID = detectedAt.Format(time.RFC3339Nano)
+			}
+			_, _, blockErr := s.recordCoinpairCooldown(
+				strings.Join([]string{"position_monitor", trading.ExchangeOKX, apiID, position.InstID, position.PosSide, eventOrderID}, ":"),
+				"position_monitor",
+				trading.ExchangeOKX,
+				apiID,
+				firstNonEmpty(position.MarkPx, order.Px),
+				detectedAt,
+				position.InstID,
+			)
+			if blockErr != nil && s.Logger != nil {
+				s.Logger.Error("failed to record OKX stop-loss coinpair cooldown", "api_id", apiID, "inst_id", position.InstID, "error", blockErr)
+			}
+		}
 		if started && s.Logger != nil {
 			s.Logger.Info("OKX auto position close started", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "trigger", trigger, "upl_ratio", ratio, "px", order.Px, "ord_id", order.Ack.OrdID)
 		}
@@ -1097,6 +1116,25 @@ func (s *Server) scanBinancePositionMonitorForAPI(ctx context.Context, cfg confi
 				s.Logger.Warn("failed to start Binance auto position close", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "trigger", trigger, "upl_ratio", ratio, "error", err)
 			}
 			continue
+		}
+		if started && trigger == "stop_loss" {
+			detectedAt := s.now()
+			eventOrderID := firstNonEmpty(order.Ack.OrdID, order.Ack.ClOrdID)
+			if eventOrderID == "" {
+				eventOrderID = detectedAt.Format(time.RFC3339Nano)
+			}
+			_, _, blockErr := s.recordCoinpairCooldown(
+				strings.Join([]string{"position_monitor", trading.ExchangeBinance, apiID, position.InstID, position.PosSide, eventOrderID}, ":"),
+				"position_monitor",
+				trading.ExchangeBinance,
+				apiID,
+				firstNonEmpty(position.MarkPx, order.Px),
+				detectedAt,
+				position.InstID,
+			)
+			if blockErr != nil && s.Logger != nil {
+				s.Logger.Error("failed to record Binance stop-loss coinpair cooldown", "api_id", apiID, "inst_id", position.InstID, "error", blockErr)
+			}
 		}
 		if started && s.Logger != nil {
 			s.Logger.Info("Binance auto position close started", "api_id", apiID, "inst_id", position.InstID, "pos_side", position.PosSide, "trigger", trigger, "upl_ratio", ratio, "px", order.Px, "ord_id", order.Ack.OrdID)

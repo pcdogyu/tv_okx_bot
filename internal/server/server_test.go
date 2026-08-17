@@ -563,6 +563,13 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`id="ignored-coinpair"`),
 		[]byte(`id="add-ignored-coinpair"`),
 		[]byte(`id="ignored-coinpair-list"`),
+		[]byte(`id="coinpair-cooldown-list"`),
+		[]byte(`止损冷却（锁定 24 小时）`),
+		[]byte(`function loadCoinpairBlocks()`),
+		[]byte(`function renderCoinpairCooldownList()`),
+		[]byte(`coinpairBlockPollIntervalMs = 20000`),
+		[]byte(`止损价：`),
+		[]byte(`价格待确认`),
 		[]byte(`data-ignored-coinpair-index`),
 		[]byte(`ignored_coinpairs: keywords`),
 		[]byte(`function addIgnoredCoinpair()`),
@@ -576,6 +583,9 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte(`id="clear-ignored-coinpair"`)) || bytes.Contains(body, []byte(`function clearIgnoredCoinpair()`)) {
 		t.Fatal("tvbot UI should only remove ignored coinpairs one at a time")
+	}
+	if bytes.Contains(body, []byte(`coinpair-cooldown-remove`)) || bytes.Contains(body, []byte(`data-coinpair-cooldown-remove`)) {
+		t.Fatal("stop-loss cooldown cards must not provide an early remove control")
 	}
 }
 
@@ -1739,6 +1749,64 @@ func TestOrderRetryMatchingFilterIsIgnoredBeforeMarketRequest(t *testing.T) {
 	rec, ok := srv.Orders.Get(resp.SignalID)
 	if !ok || rec.Status != storage.StatusIgnored || rec.ErrorCode != "coinpair_filtered" {
 		t.Fatalf("bad ignored retry record: %#v found=%v", rec, ok)
+	}
+}
+
+func TestOrderRetryActiveCooldownIsIgnoredBeforeMarketRequest(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.PositionEffect = trading.PositionEffectOpen
+	source, _, err := srv.Orders.RecordAccepted(signal, "retry-cooldown-source", srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orders.MarkFailed(source.SignalID, errors.New("exchange failed"), srv.now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := srv.recordCoinpairCooldown("retry-stop:1", "exchange_fill", trading.ExchangeOKX, "default", "49000", srv.now(), "BTC-USDT-SWAP"); err != nil {
+		t.Fatal(err)
+	}
+	marketRequests := 0
+	marketServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		marketRequests++
+		http.Error(w, "market request should have been blocked", http.StatusInternalServerError)
+	}))
+	defer marketServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = marketServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = marketServer.Client()
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+source.SignalID+"/retry", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Status   string `json:"status"`
+		Reason   string `json:"reason"`
+		SignalID string `json:"signal_id"`
+		RetryOf  string `json:"retry_of"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "ignored" || resp.Reason != "coinpair_cooldown" || resp.SignalID == "" || resp.RetryOf != source.SignalID {
+		t.Fatalf("bad cooldown retry response: %#v", resp)
+	}
+	if marketRequests != 0 {
+		t.Fatalf("cooldown retry made %d market requests", marketRequests)
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		t.Fatalf("cooldown retry should not execute: %#v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	rec, ok := srv.Orders.Get(resp.SignalID)
+	if !ok || rec.Status != storage.StatusIgnored || rec.ErrorCode != "coinpair_cooldown" {
+		t.Fatalf("bad cooldown retry record: %#v found=%v", rec, ok)
 	}
 }
 

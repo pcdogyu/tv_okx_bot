@@ -161,6 +161,7 @@ func runServe(args []string) error {
 	handler.StartPositionMonitor(context.Background())
 	handler.StartStalePendingOrderCancelMonitor(context.Background())
 	handler.StartTradeFillMonitor(context.Background())
+	handler.StartCoinpairBlockCleaner(context.Background())
 	handler.StartSymbolCatalogSyncer(context.Background())
 	logger.Info("tv okx bot listening", "addr", cfg.Server.Addr, "env", cfg.Trading.Env, "commit", buildInfo.CommitHash, "branch", buildInfo.CommitBranch)
 	return srv.ListenAndServe()

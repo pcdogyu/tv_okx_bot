@@ -745,6 +745,18 @@ const tvbotHTML = `<!doctype html>
       padding-top: 12px;
       border-top: 1px solid var(--line);
     }
+    .coinpair-filter-group {
+      flex: 1 0 100%;
+    }
+    .coinpair-filter-group-title {
+      margin: 0 0 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .coinpair-filter-group .coinpair-filter-list {
+      border-top: 0;
+      padding-top: 0;
+    }
     .coinpair-filter-item {
       position: relative;
       min-width: 112px;
@@ -775,6 +787,25 @@ const tvbotHTML = `<!doctype html>
     }
     .coinpair-filter-empty {
       padding: 6px 0;
+    }
+    .coinpair-cooldown-item {
+      min-width: 190px;
+      padding-right: 14px;
+      border-color: #efb968;
+      background: #fff8eb;
+    }
+    .coinpair-cooldown-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 5px;
+    }
+    .coinpair-cooldown-meta {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1.5;
     }
     .menu-hidden-check {
       display: flex;
@@ -1608,7 +1639,14 @@ const tvbotHTML = `<!doctype html>
           <input class="coinpair-filter-input" id="ignored-coinpair" autocomplete="off" spellcheck="false" placeholder="例如 ETH" aria-label="忽略币对关键字">
           <button class="btn primary" type="button" id="add-ignored-coinpair" disabled>添加过滤</button>
         </div>
-        <div class="coinpair-filter-list" id="ignored-coinpair-list"><span class="muted coinpair-filter-empty">暂无已添加的币对过滤</span></div>
+        <div class="coinpair-filter-group">
+          <h4 class="coinpair-filter-group-title">手动过滤</h4>
+          <div class="coinpair-filter-list" id="ignored-coinpair-list"><span class="muted coinpair-filter-empty">暂无已添加的币对过滤</span></div>
+        </div>
+        <div class="coinpair-filter-group">
+          <h4 class="coinpair-filter-group-title">止损冷却（锁定 24 小时）</h4>
+          <div class="coinpair-filter-list" id="coinpair-cooldown-list"><span class="muted coinpair-filter-empty">暂无止损冷却币对</span></div>
+        </div>
       </div>
     </section>
 
@@ -1707,6 +1745,7 @@ const tvbotHTML = `<!doctype html>
       ordersTotal: 0,
       ordersPage: 1,
       ordersSearch: "",
+      coinpairBlocks: null,
       retrying: {},
       positionClosing: {},
       pendingOrderActions: {},
@@ -1739,6 +1778,9 @@ const tvbotHTML = `<!doctype html>
     let positionEntryTimeSyncBusy = false;
     let analysisBalanceRefreshTimer = null;
     let analysisBalanceRefreshBusy = false;
+    let coinpairBlockPollTimer = null;
+    let coinpairBlockPollBusy = false;
+    let coinpairBlockCountdownTimer = null;
     let menuSettingsSynced = false;
     let tableColumnDrag = null;
     let tableColumnDropSuppressClick = false;
@@ -1747,6 +1789,7 @@ const tvbotHTML = `<!doctype html>
     const pendingLimitCloseOrderCacheMs = 90000;
     const missingPositionEntrySyncIntervalMs = 180000;
     const analysisBalanceRefreshIntervalMs = 60000;
+    const coinpairBlockPollIntervalMs = 20000;
     const defaultMenuItems = [
       { tab: "dashboard", label: "总览" },
       { tab: "positions", label: "持仓" },
@@ -2841,6 +2884,11 @@ const tvbotHTML = `<!doctype html>
       } else {
         stopAnalysisBalanceAutoRefresh();
       }
+      if (target === "orders") {
+        startCoinpairBlockPolling();
+      } else {
+        stopCoinpairBlockPolling();
+      }
       if (target === "analysis" && !state.analysis) {
         loadAnalysis(false).catch((err) => toast(err.message));
       }
@@ -2871,7 +2919,7 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function loadAll() {
-      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadUpgrade()]);
+      await Promise.allSettled([loadConfig(), loadAPIKeys(), loadOrders(), loadCoinpairBlocks(), loadUpgrade()]);
       const target = activeTabID();
       const tabLoads = [];
       if (target === "dashboard") {
@@ -2948,6 +2996,44 @@ const tvbotHTML = `<!doctype html>
       }
       renderOrders();
       updateMetrics();
+    }
+
+    async function loadCoinpairBlocks() {
+      const data = await api("/tvbot/coinpair-blocks");
+      state.coinpairBlocks = Array.isArray(data.blocks) ? data.blocks : [];
+      renderIgnoredCoinpairFilter();
+    }
+
+    function startCoinpairBlockPolling() {
+      if (!coinpairBlockPollTimer) {
+        coinpairBlockPollTimer = window.setInterval(async () => {
+          if (coinpairBlockPollBusy || activeTabID() !== "orders") return;
+          coinpairBlockPollBusy = true;
+          try {
+            await loadCoinpairBlocks();
+          } catch (err) {
+            toast(err.message);
+          } finally {
+            coinpairBlockPollBusy = false;
+          }
+        }, coinpairBlockPollIntervalMs);
+      }
+      if (!coinpairBlockCountdownTimer) {
+        coinpairBlockCountdownTimer = window.setInterval(() => renderCoinpairCooldownList(), 1000);
+      }
+      if (state.coinpairBlocks === null && !coinpairBlockPollBusy) {
+        coinpairBlockPollBusy = true;
+        loadCoinpairBlocks().catch((err) => toast(err.message)).finally(() => { coinpairBlockPollBusy = false; });
+      } else {
+        renderCoinpairCooldownList();
+      }
+    }
+
+    function stopCoinpairBlockPolling() {
+      if (coinpairBlockPollTimer) window.clearInterval(coinpairBlockPollTimer);
+      if (coinpairBlockCountdownTimer) window.clearInterval(coinpairBlockCountdownTimer);
+      coinpairBlockPollTimer = null;
+      coinpairBlockCountdownTimer = null;
     }
 
     async function loadUpgrade() {
@@ -4929,13 +5015,67 @@ const tvbotHTML = `<!doctype html>
       const list = $("ignored-coinpair-list");
       if (!status || !list) return;
       const keywords = configuredIgnoredCoinpairs();
-      status.textContent = keywords.length ? ("当前生效：" + keywords.length + " 个开仓过滤关键字") : "当前未启用";
+      const cooldowns = activeCoinpairBlocks();
+      status.textContent = (keywords.length || cooldowns.length)
+        ? ("当前生效：" + keywords.length + " 个手动过滤，" + cooldowns.length + " 个止损冷却")
+        : "当前未启用";
       list.innerHTML = keywords.map((keyword, index) => {
         const removeLabel = "删除过滤 " + keyword + "，恢复后续下单";
         return '<div class="coinpair-filter-item"><span>' + escapeHTML(keyword) + '</span>' +
           '<button class="coinpair-filter-remove" type="button" data-ignored-coinpair-index="' + index + '" title="' + escapeHTML(removeLabel) + '" aria-label="' + escapeHTML(removeLabel) + '">×</button></div>';
       }).join("") || '<span class="muted coinpair-filter-empty">暂无已添加的币对过滤</span>';
+      renderCoinpairCooldownList();
       syncIgnoredCoinpairControls();
+    }
+
+    function activeCoinpairBlocks() {
+      const now = Date.now();
+      return (Array.isArray(state.coinpairBlocks) ? state.coinpairBlocks : []).filter((block) => {
+        const expiresAt = Date.parse(block && block.expires_at ? block.expires_at : "");
+        return Number.isFinite(expiresAt) && expiresAt > now;
+      });
+    }
+
+    function coinpairCooldownRemaining(expiresAt) {
+      const remaining = Math.max(0, Math.ceil((Date.parse(expiresAt || "") - Date.now()) / 1000));
+      const hours = Math.floor(remaining / 3600);
+      const minutes = Math.floor((remaining % 3600) / 60);
+      const seconds = remaining % 60;
+      return String(hours).padStart(2, "0") + ":" + String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+    }
+
+    function coinpairCooldownSource(source) {
+      if (source === "stop_loss_webhook") return "止损信号";
+      if (source === "position_monitor") return "持仓监控";
+      if (source === "exchange_fill") return "亏损成交";
+      return source || "止损";
+    }
+
+    function renderCoinpairCooldownList() {
+      const list = $("coinpair-cooldown-list");
+      if (!list) return;
+      const blocks = activeCoinpairBlocks();
+      list.innerHTML = blocks.map((block) => {
+        const keyword = String(block.keyword || "-");
+        const price = String(block.trigger_price || "").trim();
+        const expiresAt = String(block.expires_at || "");
+        const source = coinpairCooldownSource(block.source);
+        const sourceExchange = block.exchange ? (" · " + exchangeLabel(block.exchange)) : "";
+        return '<div class="coinpair-filter-item coinpair-cooldown-item" title="24 小时内禁止新开仓，不能提前解除">' +
+          '<div class="coinpair-cooldown-title"><span aria-hidden="true">&#128274;</span><strong>' + escapeHTML(keyword) + '</strong></div>' +
+          '<span class="coinpair-cooldown-meta">止损价：' + escapeHTML(price || "价格待确认") + '</span>' +
+          '<span class="coinpair-cooldown-meta">来源：' + escapeHTML(source + sourceExchange) + '</span>' +
+          '<span class="coinpair-cooldown-meta">剩余：' + escapeHTML(coinpairCooldownRemaining(expiresAt)) + '</span>' +
+          '<span class="coinpair-cooldown-meta">到期：' + escapeHTML(shanghaiTime(expiresAt)) + '</span>' +
+          '</div>';
+      }).join("") || '<span class="muted coinpair-filter-empty">暂无止损冷却币对</span>';
+      const status = $("ignored-coinpair-status");
+      if (status) {
+        const manualCount = configuredIgnoredCoinpairs().length;
+        status.textContent = (manualCount || blocks.length)
+          ? ("当前生效：" + manualCount + " 个手动过滤，" + blocks.length + " 个止损冷却")
+          : "当前未启用";
+      }
     }
 
     async function persistIgnoredCoinpairs(keywords) {
@@ -5835,7 +5975,7 @@ const tvbotHTML = `<!doctype html>
       if (!cancelButton) return;
       cancelPendingOrder(cancelButton).catch((err) => toast(err.message));
     });
-    $("refresh-orders").addEventListener("click", () => loadOrders().then(() => toast("订单已刷新")).catch((err) => toast(err.message)));
+    $("refresh-orders").addEventListener("click", () => Promise.all([loadOrders(), loadCoinpairBlocks()]).then(() => toast("订单已刷新")).catch((err) => toast(err.message)));
     $("refresh-upgrade").addEventListener("click", () => loadUpgrade().then(() => toast("升级状态已刷新")).catch((err) => toast(err.message)));
     $("start-upgrade").addEventListener("click", () => startUpgrade().catch((err) => toast(err.message)));
     document.addEventListener("visibilitychange", () => {

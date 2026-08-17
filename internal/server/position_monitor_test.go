@@ -85,6 +85,13 @@ func TestPositionMonitorOKXStartsLimitCloseAtThresholds(t *testing.T) {
 	if orders[2]["instId"] != "ALGO-USDT-SWAP" || orders[2]["side"] != "buy" || orders[2]["ordType"] != "limit" || orders[2]["sz"] != "1098" {
 		t.Fatalf("bad OKX margin-derived take-profit close order: %#v", orders[2])
 	}
+	blocks, err := srv.Orders.ListActiveCoinpairBlocks(srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 || blocks[0].Keyword != "ETH" || blocks[0].TriggerPrice != "109" || blocks[0].Source != "position_monitor" {
+		t.Fatalf("OKX stop-loss cooldown not recorded correctly: %#v", blocks)
+	}
 }
 
 func TestPositionMonitorBinanceStartsLimitCloseAtThresholds(t *testing.T) {
@@ -165,6 +172,13 @@ func TestPositionMonitorBinanceStartsLimitCloseAtThresholds(t *testing.T) {
 	}
 	if orderForms[1].Get("symbol") != "ETHUSDT" || orderForms[1].Get("side") != "BUY" || orderForms[1].Get("type") != "LIMIT" || orderForms[1].Get("quantity") != "3" || orderForms[1].Get("reduceOnly") != "true" {
 		t.Fatalf("bad Binance stop-loss close order: %#v", orderForms[1])
+	}
+	blocks, err := srv.Orders.ListActiveCoinpairBlocks(srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 1 || blocks[0].Keyword != "ETH" || blocks[0].TriggerPrice != "109" || blocks[0].Source != "position_monitor" {
+		t.Fatalf("Binance stop-loss cooldown not recorded correctly: %#v", blocks)
 	}
 }
 
