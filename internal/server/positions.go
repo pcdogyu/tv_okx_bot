@@ -1312,11 +1312,7 @@ func pendingOrderUnfilled(order okx.PendingOrder) bool {
 }
 
 func positionMonitorUPLRatio(position okx.Position) (float64, bool) {
-	ratio, err := strconv.ParseFloat(strings.TrimSpace(position.UplRatio), 64)
-	if err != nil || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
-		return 0, false
-	}
-	return ratio, true
+	return positionReturnRatio(position)
 }
 
 func positionMonitorTrigger(ratio float64, monitor config.PositionMonitorConfig) (string, bool) {

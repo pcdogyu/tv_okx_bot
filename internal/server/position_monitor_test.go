@@ -30,7 +30,8 @@ func TestPositionMonitorOKXStartsLimitCloseAtThresholds(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
 				{"instType":"SWAP","instId":"BTC-USDT-SWAP","mgnMode":"isolated","posSide":"long","pos":"2","availPos":"2","avgPx":"100","markPx":"106","upl":"12","uplRatio":"0.06","lever":"5","notionalUsd":"212","margin":"42.4"},
 				{"instType":"SWAP","instId":"ETH-USDT-SWAP","mgnMode":"isolated","posSide":"short","pos":"3","availPos":"3","avgPx":"100","markPx":"109","upl":"-27","uplRatio":"-0.09","lever":"5","notionalUsd":"327","margin":"65.4"},
-				{"instType":"SWAP","instId":"DOGE-USDT-SWAP","mgnMode":"isolated","posSide":"long","pos":"100","availPos":"100","avgPx":"0.1","markPx":"0.101","upl":"0.1","uplRatio":"0.01","lever":"5","notionalUsd":"10.1","margin":"2.02"}
+				{"instType":"SWAP","instId":"DOGE-USDT-SWAP","mgnMode":"isolated","posSide":"long","pos":"100","availPos":"100","avgPx":"0.1","markPx":"0.101","upl":"0.1","uplRatio":"0.01","lever":"5","notionalUsd":"10.1","margin":"2.02"},
+				{"instType":"SWAP","instId":"ALGO-USDT-SWAP","mgnMode":"isolated","posSide":"net","pos":"-1098","availPos":"1098","avgPx":"0.0800","markPx":"0.0794","upl":"6.588","lever":"10","notionalUsd":"870.85","margin":"87.84"}
 			]}`))
 		case "/api/v5/public/instruments":
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"code":"0","msg":"","data":[{"instId":%q,"tickSz":"0.1","ctVal":"1","lotSz":"1","minSz":"1"}]}`, r.URL.Query().Get("instId"))))
@@ -72,14 +73,17 @@ func TestPositionMonitorOKXStartsLimitCloseAtThresholds(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(orders) != 2 {
-		t.Fatalf("expected two OKX auto close orders, got %#v", orders)
+	if len(orders) != 3 {
+		t.Fatalf("expected three OKX auto close orders, got %#v", orders)
 	}
 	if orders[0]["instId"] != "BTC-USDT-SWAP" || orders[0]["side"] != "sell" || orders[0]["ordType"] != "limit" || orders[0]["sz"] != "2" || orders[0]["posSide"] != "long" {
 		t.Fatalf("bad OKX take-profit close order: %#v", orders[0])
 	}
 	if orders[1]["instId"] != "ETH-USDT-SWAP" || orders[1]["side"] != "buy" || orders[1]["ordType"] != "limit" || orders[1]["sz"] != "3" || orders[1]["posSide"] != "short" {
 		t.Fatalf("bad OKX stop-loss close order: %#v", orders[1])
+	}
+	if orders[2]["instId"] != "ALGO-USDT-SWAP" || orders[2]["side"] != "buy" || orders[2]["ordType"] != "limit" || orders[2]["sz"] != "1098" {
+		t.Fatalf("bad OKX margin-derived take-profit close order: %#v", orders[2])
 	}
 }
 
