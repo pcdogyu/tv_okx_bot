@@ -98,6 +98,32 @@ type timedOKXFill struct {
 	time time.Time
 }
 
+type cooldownOrderFill struct {
+	exchange    string
+	apiID       string
+	symbol      string
+	orderID     string
+	tradeID     string
+	price       string
+	size        string
+	realizedPnL string
+	occurredAt  time.Time
+}
+
+type cooldownOrderAggregate struct {
+	exchange       string
+	apiID          string
+	symbol         string
+	orderID        string
+	eventID        string
+	triggerPrice   string
+	occurredAt     time.Time
+	realizedPnL    float64
+	pnlValid       bool
+	totalSize      float64
+	totalPriceSize float64
+}
+
 func (s *Server) scanOKXCoinpairCooldownFills(ctx context.Context, cfg config.Config, now time.Time) {
 	if s.OKXCredentials == nil {
 		return
@@ -192,22 +218,35 @@ func (s *Server) pollOKXCoinpairCooldownFills(ctx context.Context, client okx.Cl
 		}
 		return newFills[i].time.Before(newFills[j].time)
 	})
+	cooldownFills := make([]cooldownOrderFill, 0, len(newFills))
 	for _, timed := range newFills {
-		fill := timed.fill
-		if !negativeRealizedPnL(fill.FillPnl) {
+		cooldownFills = append(cooldownFills, cooldownOrderFill{
+			exchange:    trading.ExchangeOKX,
+			apiID:       apiID,
+			symbol:      timed.fill.InstID,
+			orderID:     timed.fill.OrdID,
+			tradeID:     timed.fill.TradeID,
+			price:       timed.fill.FillPx,
+			size:        timed.fill.FillSz,
+			realizedPnL: timed.fill.FillPnl,
+			occurredAt:  timed.time,
+		})
+	}
+	for _, order := range aggregateCooldownOrderFills(cooldownFills) {
+		if !order.pnlValid || order.realizedPnL >= 0 {
 			continue
 		}
 		_, _, blockErr := s.recordCoinpairCooldown(
-			strings.Join([]string{"exchange_fill", trading.ExchangeOKX, apiID, fill.InstID, fill.TradeID}, ":"),
+			order.eventID,
 			"exchange_fill",
-			trading.ExchangeOKX,
-			apiID,
-			fill.FillPx,
-			timed.time,
-			fill.InstID,
+			order.exchange,
+			order.apiID,
+			order.triggerPrice,
+			order.occurredAt,
+			order.symbol,
 		)
 		if blockErr != nil && s.Logger != nil {
-			s.Logger.Error("failed to record OKX loss-fill coinpair cooldown", "api_id", apiID, "inst_id", fill.InstID, "trade_id", fill.TradeID, "error", blockErr)
+			s.Logger.Error("failed to record OKX loss-order coinpair cooldown", "api_id", order.apiID, "inst_id", order.symbol, "order_id", order.orderID, "error", blockErr)
 		}
 		if blockErr != nil {
 			return blockErr
@@ -225,9 +264,76 @@ func (s *Server) pollOKXCoinpairCooldownFills(ctx context.Context, client okx.Cl
 	})
 }
 
+func aggregateCooldownOrderFills(fills []cooldownOrderFill) []cooldownOrderAggregate {
+	orderKeys := make([]string, 0, len(fills))
+	groups := make(map[string]*cooldownOrderAggregate, len(fills))
+	for _, fill := range fills {
+		exchange := trading.NormalizeExchange(fill.exchange)
+		apiID := strings.TrimSpace(fill.apiID)
+		symbol := strings.ToUpper(strings.TrimSpace(fill.symbol))
+		orderID := strings.TrimSpace(fill.orderID)
+		tradeID := strings.TrimSpace(fill.tradeID)
+		identity := orderID
+		if identity == "" {
+			identity = "trade:" + tradeID
+		}
+		if symbol == "" || identity == "trade:" {
+			continue
+		}
+		key := strings.Join([]string{exchange, apiID, symbol, identity}, "|")
+		group := groups[key]
+		if group == nil {
+			eventIdentity := orderID
+			if eventIdentity == "" {
+				eventIdentity = tradeID
+			}
+			group = &cooldownOrderAggregate{
+				exchange: exchange,
+				apiID:    apiID,
+				symbol:   symbol,
+				orderID:  orderID,
+				eventID:  strings.Join([]string{"exchange_order", exchange, apiID, symbol, eventIdentity}, ":"),
+				pnlValid: true,
+			}
+			groups[key] = group
+			orderKeys = append(orderKeys, key)
+		}
+		pnl, ok := realizedPnLValue(fill.realizedPnL)
+		if !ok {
+			group.pnlValid = false
+		} else {
+			group.realizedPnL += pnl
+		}
+		price, priceErr := strconv.ParseFloat(strings.TrimSpace(fill.price), 64)
+		size, sizeErr := strconv.ParseFloat(strings.TrimSpace(fill.size), 64)
+		if priceErr == nil && sizeErr == nil && price > 0 && size > 0 && !math.IsNaN(price) && !math.IsInf(price, 0) && !math.IsNaN(size) && !math.IsInf(size, 0) {
+			group.totalSize += size
+			group.totalPriceSize += price * size
+		}
+		if fill.occurredAt.After(group.occurredAt) || group.occurredAt.IsZero() {
+			group.occurredAt = fill.occurredAt
+			group.triggerPrice = strings.TrimSpace(fill.price)
+		}
+	}
+	out := make([]cooldownOrderAggregate, 0, len(orderKeys))
+	for _, key := range orderKeys {
+		group := groups[key]
+		if group.totalSize > 0 {
+			group.triggerPrice = trading.NormalizeFloat(group.totalPriceSize / group.totalSize)
+		}
+		out = append(out, *group)
+	}
+	return out
+}
+
 func negativeRealizedPnL(raw string) bool {
+	value, ok := realizedPnLValue(raw)
+	return ok && value < 0
+}
+
+func realizedPnLValue(raw string) (float64, bool) {
 	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	return err == nil && !math.IsNaN(value) && !math.IsInf(value, 0) && value < 0
+	return value, err == nil && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func tradeFillMonitorBinanceEnabled(cfg config.Config) bool {
@@ -361,28 +467,47 @@ func (s *Server) pollBinanceSymbolFills(ctx context.Context, cfg config.Config, 
 		}
 		return inserted[i].FillTime < inserted[j].FillTime
 	})
-	for _, fill := range inserted {
-		if found && negativeRealizedPnL(fill.RealizedPnl) {
-			occurredAt := time.UnixMilli(fill.FillTime).UTC()
-			if fill.FillTime <= 0 {
-				occurredAt = now
+	if found {
+		cooldownFills := make([]cooldownOrderFill, 0, len(inserted))
+		for _, fill := range inserted {
+			occurredAt := now
+			if fill.FillTime > 0 {
+				occurredAt = time.UnixMilli(fill.FillTime).UTC()
+			}
+			cooldownFills = append(cooldownFills, cooldownOrderFill{
+				exchange:    trading.ExchangeBinance,
+				apiID:       fill.APIID,
+				symbol:      fill.Symbol,
+				orderID:     fill.OrderID,
+				tradeID:     fill.TradeID,
+				price:       fill.Price,
+				size:        fill.Qty,
+				realizedPnL: fill.RealizedPnl,
+				occurredAt:  occurredAt,
+			})
+		}
+		for _, order := range aggregateCooldownOrderFills(cooldownFills) {
+			if !order.pnlValid || order.realizedPnL >= 0 {
+				continue
 			}
 			_, _, blockErr := s.recordCoinpairCooldown(
-				strings.Join([]string{"exchange_fill", trading.ExchangeBinance, fill.APIID, fill.Symbol, fill.TradeID}, ":"),
+				order.eventID,
 				"exchange_fill",
-				trading.ExchangeBinance,
-				fill.APIID,
-				fill.Price,
-				occurredAt,
-				fill.Symbol,
+				order.exchange,
+				order.apiID,
+				order.triggerPrice,
+				order.occurredAt,
+				order.symbol,
 			)
 			if blockErr != nil && s.Logger != nil {
-				s.Logger.Error("failed to record Binance loss-fill coinpair cooldown", "api_id", fill.APIID, "symbol", fill.Symbol, "trade_id", fill.TradeID, "error", blockErr)
+				s.Logger.Error("failed to record Binance loss-order coinpair cooldown", "api_id", order.apiID, "symbol", order.symbol, "order_id", order.orderID, "error", blockErr)
 			}
 			if blockErr != nil {
 				return blockErr
 			}
 		}
+	}
+	for _, fill := range inserted {
 		if processLifecycles {
 			if err := s.processBinanceFill(ctx, cfg, client, fill, now); err != nil && s.Logger != nil {
 				s.Logger.Warn("failed to process Binance fill", "api_id", apiID, "symbol", symbol, "trade_id", fill.TradeID, "error", err)

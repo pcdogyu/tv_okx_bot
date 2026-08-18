@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,6 +149,48 @@ func TestBinanceLossFillCreatesCooldownWithoutBackfill(t *testing.T) {
 	}
 }
 
+func TestBinanceProfitableOrderWithLossFillDoesNotCreateCooldown(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	call := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/userTrades" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		call++
+		oldFill := fmt.Sprintf(`{"symbol":"BTCUSDT","side":"SELL","positionSide":"BOTH","price":"49000","qty":"1","realizedPnl":"-5","commission":"0.1","commissionAsset":"USDT","time":%d,"id":100,"orderId":900}`, now.Add(-time.Minute).UnixMilli())
+		data := oldFill
+		if call > 1 {
+			lossFill := fmt.Sprintf(`{"symbol":"NOWUSDT","side":"SELL","positionSide":"BOTH","price":"116.27","qty":"1","realizedPnl":"-5","commission":"0.1","commissionAsset":"USDT","time":%d,"id":101,"orderId":901}`, now.Add(time.Minute).UnixMilli())
+			profitFill := fmt.Sprintf(`{"symbol":"NOWUSDT","side":"SELL","positionSide":"BOTH","price":"118.50","qty":"1","realizedPnl":"14.744","commission":"0.1","commissionAsset":"USDT","time":%d,"id":102,"orderId":901}`, now.Add(time.Minute).UnixMilli())
+			data = strings.Join([]string{oldFill, lossFill, profitFill}, ",")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `[%s]`, data)
+	}))
+	defer ts.Close()
+	client := binance.Client{
+		BaseURL:     ts.URL,
+		Credentials: binance.Credentials{APIKey: "key", SecretKey: "secret"},
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return now },
+	}
+	cfg := config.Default()
+	if err := srv.pollBinanceSymbolFills(context.Background(), cfg, client, "main", "NOWUSDT", now, 72*time.Hour, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.pollBinanceSymbolFills(context.Background(), cfg, client, "main", "NOWUSDT", now.Add(2*time.Minute), 72*time.Hour, false); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := srv.Orders.ListActiveCoinpairBlocks(now.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("profitable Binance order must not create cooldown: %#v", blocks)
+	}
+}
+
 func TestOKXLossFillCreatesCooldownWithoutBackfill(t *testing.T) {
 	srv := newTestServer(t)
 	now := srv.now()
@@ -196,6 +239,51 @@ func TestOKXLossFillCreatesCooldownWithoutBackfill(t *testing.T) {
 	}
 	if len(blocks) != 1 || blocks[0].Keyword != "ETH" || blocks[0].TriggerPrice != "2490" || blocks[0].Source != "exchange_fill" {
 		t.Fatalf("new OKX loss fill did not create cooldown: %#v", blocks)
+	}
+}
+
+func TestOKXProfitableOrderWithLossFillDoesNotCreateCooldown(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	call := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/trade/fills-history" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		call++
+		oldFill := fmt.Sprintf(`{"instType":"SWAP","instId":"BTC-USDT-SWAP","tradeId":"100","ordId":"900","side":"sell","fillPx":"49000","fillSz":"1","fillPnl":"-5","fillTime":"%d"}`, now.Add(-time.Minute).UnixMilli())
+		data := oldFill
+		if call > 1 {
+			lossFill := fmt.Sprintf(`{"instType":"SWAP","instId":"NOW-USDT-SWAP","tradeId":"101","ordId":"901","side":"sell","fillPx":"116.27","fillSz":"1","fillPnl":"-5","fillTime":"%d"}`, now.Add(time.Minute).UnixMilli())
+			profitFill := fmt.Sprintf(`{"instType":"SWAP","instId":"NOW-USDT-SWAP","tradeId":"102","ordId":"901","side":"sell","fillPx":"118.50","fillSz":"1","fillPnl":"14.744","fillTime":"%d"}`, now.Add(time.Minute).UnixMilli())
+			data = strings.Join([]string{profitFill, lossFill, oldFill}, ",")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"code":"0","msg":"","data":[%s]}`, data)
+	}))
+	defer ts.Close()
+	client := okx.Client{
+		BaseURL: ts.URL,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+		HTTPClient: ts.Client(),
+		Now:        func() time.Time { return now },
+	}
+	if err := srv.pollOKXCoinpairCooldownFills(context.Background(), client, "default", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.pollOKXCoinpairCooldownFills(context.Background(), client, "default", now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := srv.Orders.ListActiveCoinpairBlocks(now.Add(2 * time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 0 {
+		t.Fatalf("profitable OKX order must not create cooldown: %#v", blocks)
 	}
 }
 
