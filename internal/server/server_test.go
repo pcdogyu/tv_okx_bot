@@ -4662,6 +4662,78 @@ func TestTVBotPositionMarketClosePlacesReduceOnlyOrder(t *testing.T) {
 	}
 }
 
+func TestTVBotPositionMarketCloseRetriesAsProtectedLimitAfterOKX51006(t *testing.T) {
+	srv := newTestServer(t)
+	var orderReqs []map[string]any
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"H-USDT-SWAP","mgnMode":"isolated","posId":"1","posSide":"net","pos":"-4385.9","availPos":"4385.9","avgPx":"0.0676927579398658","markPx":"0.0645","upl":"140.03117048457415","uplRatio":"0.4716542857807704","lever":"10","notionalUsd":"282.9","margin":"29.7"}]}`))
+		case "/api/v5/public/instruments":
+			if r.URL.Query().Get("instId") != "H-USDT-SWAP" {
+				t.Fatalf("instrument query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"H-USDT-SWAP","ctVal":"100","tickSz":"0.0001","lotSz":"0.1","minSz":"0.1"}]}`))
+		case "/api/v5/market/ticker":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"H-USDT-SWAP","bidPx":"0.0643","askPx":"0.0644","last":"0.06435"}]}`))
+		case "/api/v5/trade/order":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			orderReqs = append(orderReqs, body)
+			if len(orderReqs) == 1 {
+				if body["side"] != "buy" || body["ordType"] != "market" || body["sz"] != "4385.9" || body["reduceOnly"] != true {
+					t.Fatalf("unexpected initial market close: %#v", body)
+				}
+				_, _ = w.Write([]byte(`{"code":"1","msg":"All operations failed","data":[{"sCode":"51006","sMsg":"Order price is not within the price limit (max buy price: 0.0644, min sell price: 0.0585)"}]}`))
+				return
+			}
+			if body["side"] != "buy" || body["ordType"] != "limit" || body["px"] != "0.0644" || body["sz"] != "4385.9" || body["reduceOnly"] != true {
+				t.Fatalf("unexpected protected limit close: %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"h-close-limit-1","clOrdId":"close-1","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/positions/close", bytes.NewReader([]byte(`{"api_id":"default","inst_id":"H-USDT-SWAP","pos_side":"net","mode":"market"}`)))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("market close status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if len(orderReqs) != 2 {
+		t.Fatalf("expected market plus protected limit order, got %#v", orderReqs)
+	}
+	var resp positionCloseResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.Status != "submitted" || resp.Mode != "market" || resp.Px != "0.0644" || resp.OrdID != "h-close-limit-1" || !strings.Contains(resp.Message, "price protection") {
+		t.Fatalf("bad protected market close response: %#v", resp)
+	}
+}
+
 func TestTVBotPositionLimitCloseRatioRoundsToLotSize(t *testing.T) {
 	oldPoll := positionClosePollInterval
 	oldTimeout := positionCloseLimitTimeout

@@ -1579,6 +1579,10 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, "position_close_failed", err.Error())
 			return
 		}
+		message := "market close order submitted"
+		if order.Px != "" {
+			message = fmt.Sprintf("market close hit OKX price protection; protected limit close order submitted at %s", order.Px)
+		}
 		writeJSON(w, http.StatusOK, positionCloseResponse{
 			OK:      true,
 			Status:  "submitted",
@@ -1589,7 +1593,8 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 			Sz:      order.CloseSz,
 			OrdID:   order.Ack.OrdID,
 			ClOrdID: order.Ack.ClOrdID,
-			Message: "market close order submitted",
+			Px:      order.Px,
+			Message: message,
 		})
 	case "limit":
 		order, started, err := s.startLimitPositionClose(ctx, apiID, cfg, client, position, closeSz)
@@ -4510,10 +4515,26 @@ func placeMarketPositionClose(ctx context.Context, cfg config.Config, client okx
 		return positionCloseOrder{}, err
 	}
 	ack, _, err := client.PlaceOrder(ctx, req)
-	if err != nil {
+	if err == nil {
+		return positionCloseOrder{Position: position, Ack: ack, CloseSz: req.Sz, Partial: partial}, nil
+	}
+	inst, instErr := client.SwapInstrument(ctx, position.InstID)
+	if instErr != nil {
 		return positionCloseOrder{}, err
 	}
-	return positionCloseOrder{Position: position, Ack: ack, CloseSz: req.Sz, Partial: partial}, nil
+	tickSz, tickErr := strconv.ParseFloat(strings.TrimSpace(inst.TickSz), 64)
+	if tickErr != nil || tickSz <= 0 {
+		return positionCloseOrder{}, err
+	}
+	fallbackReq, ok := okx.ProtectedMarketLimitFallbackRequest(ctx, client, req, tickSz, err)
+	if !ok {
+		return positionCloseOrder{}, err
+	}
+	fallbackAck, _, fallbackErr := client.PlaceOrder(ctx, fallbackReq)
+	if fallbackErr != nil {
+		return positionCloseOrder{}, fmt.Errorf("OKX market close rejected by price protection: %v; protected limit retry at %s failed: %w", err, fallbackReq.Px, fallbackErr)
+	}
+	return positionCloseOrder{Position: position, Ack: fallbackAck, Px: fallbackReq.Px, CloseSz: fallbackReq.Sz, Partial: partial}, nil
 }
 
 func placeLimitPositionClose(ctx context.Context, cfg config.Config, client okx.Client, position okx.Position, closeSz string) (positionCloseOrder, error) {

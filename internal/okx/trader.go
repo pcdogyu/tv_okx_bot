@@ -564,22 +564,11 @@ func isOKXInstrumentNotFoundError(err error) bool {
 }
 
 func marketPriceProtectionFallbackRequest(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, sym trading.SymbolInfo, orderErr error) (PlaceOrderRequest, float64, bool) {
-	if req.OrdType != string(trading.OrderTypeMarket) || !isOKXPriceProtectionError(orderErr) {
-		return PlaceOrderRequest{}, 0, false
-	}
-	limit, ok := okxPriceProtectionLimitFromError(orderErr)
+	fallbackReq, ok := ProtectedMarketLimitFallbackRequest(ctx, client, req, sym.TickSz, orderErr)
 	if !ok {
 		return PlaceOrderRequest{}, 0, false
 	}
-	price, roundUp, ok := protectedLimitPrice(ctx, client, req.Side, sym.InstID, limit)
-	if !ok {
-		return PlaceOrderRequest{}, 0, false
-	}
-	px := formatOKXPrice(price, sym.TickSz, roundUp)
-	if px == "" || px == "0" {
-		return PlaceOrderRequest{}, 0, false
-	}
-	sizingPx, err := strconv.ParseFloat(px, 64)
+	sizingPx, err := strconv.ParseFloat(fallbackReq.Px, 64)
 	if err != nil || sizingPx <= 0 {
 		return PlaceOrderRequest{}, 0, false
 	}
@@ -587,11 +576,34 @@ func marketPriceProtectionFallbackRequest(ctx context.Context, client Client, re
 	if err != nil {
 		return PlaceOrderRequest{}, 0, false
 	}
+	fallbackReq.Sz = sz
+	return fallbackReq, sizingPx, true
+}
+
+// ProtectedMarketLimitFallbackRequest converts an OKX market order rejected by
+// price protection into a limit order at a currently permitted price. It keeps
+// the request size and reduce-only/position-side semantics unchanged, so it is
+// safe for both entry and position-close callers.
+func ProtectedMarketLimitFallbackRequest(ctx context.Context, client Client, req PlaceOrderRequest, tickSz float64, orderErr error) (PlaceOrderRequest, bool) {
+	if !strings.EqualFold(strings.TrimSpace(req.OrdType), string(trading.OrderTypeMarket)) || !isOKXPriceProtectionError(orderErr) {
+		return PlaceOrderRequest{}, false
+	}
+	limit, ok := okxPriceProtectionLimitFromError(orderErr)
+	if !ok {
+		return PlaceOrderRequest{}, false
+	}
+	price, roundUp, ok := protectedLimitPrice(ctx, client, req.Side, req.InstID, limit)
+	if !ok {
+		return PlaceOrderRequest{}, false
+	}
+	px := formatOKXPrice(price, tickSz, roundUp)
+	if px == "" || px == "0" {
+		return PlaceOrderRequest{}, false
+	}
 	fallbackReq := req
 	fallbackReq.OrdType = string(trading.OrderTypeLimit)
 	fallbackReq.Px = px
-	fallbackReq.Sz = sz
-	return fallbackReq, sizingPx, true
+	return fallbackReq, true
 }
 
 func protectedLimitPrice(ctx context.Context, client Client, side, instID string, limit okxPriceProtectionLimit) (float64, bool, bool) {
