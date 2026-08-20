@@ -585,7 +585,17 @@ func marketPriceProtectionFallbackRequest(ctx context.Context, client Client, re
 // the request size and reduce-only/position-side semantics unchanged, so it is
 // safe for both entry and position-close callers.
 func ProtectedMarketLimitFallbackRequest(ctx context.Context, client Client, req PlaceOrderRequest, tickSz float64, orderErr error) (PlaceOrderRequest, bool) {
-	if !strings.EqualFold(strings.TrimSpace(req.OrdType), string(trading.OrderTypeMarket)) || !isOKXPriceProtectionError(orderErr) {
+	if !strings.EqualFold(strings.TrimSpace(req.OrdType), string(trading.OrderTypeMarket)) {
+		return PlaceOrderRequest{}, false
+	}
+	return ProtectedPriceLimitRetryRequest(ctx, client, req, tickSz, orderErr)
+}
+
+// ProtectedPriceLimitRetryRequest rebuilds a rejected market or limit order as
+// a limit order at a price permitted by the 51006 price-protection response.
+// The size, reduce-only flag, and position side are preserved.
+func ProtectedPriceLimitRetryRequest(ctx context.Context, client Client, req PlaceOrderRequest, tickSz float64, orderErr error) (PlaceOrderRequest, bool) {
+	if !isOKXPriceProtectionError(orderErr) {
 		return PlaceOrderRequest{}, false
 	}
 	limit, ok := okxPriceProtectionLimitFromError(orderErr)

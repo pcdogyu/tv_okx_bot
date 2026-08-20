@@ -5696,7 +5696,10 @@ const tvbotHTML = `<!doctype html>
           const clientID = result.cl_ord_id ? " " + asText(result.cl_ord_id) : "";
           toast("Binance 平仓状态同步中" + clientID + "，请刷新确认后再重试");
         } else {
-          toast(mode === "market" ? "市价平仓已提交" + ratioText : limitCloseText + asText(result.px) + ratioText);
+          const marketCloseText = result && result.px
+            ? "市价平仓受价格保护，已转限价平仓 " + asText(result.px)
+            : "市价平仓已提交";
+          toast(mode === "market" ? marketCloseText + ratioText : limitCloseText + asText(result.px) + ratioText);
         }
         rememberLimitClosePendingOrder(result, Object.assign({}, body, { pos: pos }));
         await loadPositionView();

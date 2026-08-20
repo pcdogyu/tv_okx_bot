@@ -4518,15 +4518,7 @@ func placeMarketPositionClose(ctx context.Context, cfg config.Config, client okx
 	if err == nil {
 		return positionCloseOrder{Position: position, Ack: ack, CloseSz: req.Sz, Partial: partial}, nil
 	}
-	inst, instErr := client.SwapInstrument(ctx, position.InstID)
-	if instErr != nil {
-		return positionCloseOrder{}, err
-	}
-	tickSz, tickErr := strconv.ParseFloat(strings.TrimSpace(inst.TickSz), 64)
-	if tickErr != nil || tickSz <= 0 {
-		return positionCloseOrder{}, err
-	}
-	fallbackReq, ok := okx.ProtectedMarketLimitFallbackRequest(ctx, client, req, tickSz, err)
+	fallbackReq, ok := protectedPositionCloseRetryRequest(ctx, client, position, req, err)
 	if !ok {
 		return positionCloseOrder{}, err
 	}
@@ -4547,10 +4539,30 @@ func placeLimitPositionClose(ctx context.Context, cfg config.Config, client okx.
 		return positionCloseOrder{}, err
 	}
 	ack, _, err := client.PlaceOrder(ctx, req)
-	if err != nil {
+	if err == nil {
+		return positionCloseOrder{Position: position, Ack: ack, Px: px, CloseSz: req.Sz, Partial: partial}, nil
+	}
+	fallbackReq, ok := protectedPositionCloseRetryRequest(ctx, client, position, req, err)
+	if !ok {
 		return positionCloseOrder{}, err
 	}
-	return positionCloseOrder{Position: position, Ack: ack, Px: px, CloseSz: req.Sz, Partial: partial}, nil
+	fallbackAck, _, fallbackErr := client.PlaceOrder(ctx, fallbackReq)
+	if fallbackErr != nil {
+		return positionCloseOrder{}, fmt.Errorf("OKX limit close rejected by price protection: %v; protected limit retry at %s failed: %w", err, fallbackReq.Px, fallbackErr)
+	}
+	return positionCloseOrder{Position: position, Ack: fallbackAck, Px: fallbackReq.Px, CloseSz: fallbackReq.Sz, Partial: partial}, nil
+}
+
+func protectedPositionCloseRetryRequest(ctx context.Context, client okx.Client, position okx.Position, req okx.PlaceOrderRequest, orderErr error) (okx.PlaceOrderRequest, bool) {
+	inst, instErr := client.SwapInstrument(ctx, position.InstID)
+	if instErr != nil {
+		return okx.PlaceOrderRequest{}, false
+	}
+	tickSz, tickErr := strconv.ParseFloat(strings.TrimSpace(inst.TickSz), 64)
+	if tickErr != nil || tickSz <= 0 {
+		return okx.PlaceOrderRequest{}, false
+	}
+	return okx.ProtectedPriceLimitRetryRequest(ctx, client, req, tickSz, orderErr)
 }
 
 func placeOKXPositionProtection(ctx context.Context, cfg config.Config, client okx.Client, apiID string, position okx.Position, kind string) (positionProtectionResponse, error) {
