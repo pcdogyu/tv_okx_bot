@@ -26,6 +26,8 @@ var (
 	errPendingOrderNoRemaining        = errors.New("pending order has no remaining size")
 	positionClosePollInterval         = 5 * time.Second
 	positionCloseLimitTimeout         = 60 * time.Second
+	marketClosePendingPollInterval    = 250 * time.Millisecond
+	marketClosePendingTimeout         = 3 * time.Second
 	binanceUnknownOrderLookupAttempts = 6
 	binanceUnknownOrderLookupDelay    = 500 * time.Millisecond
 	lowMarginPositionCheckInterval    = time.Minute
@@ -1581,7 +1583,7 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 		}
 		message := "market close order submitted"
 		if order.Px != "" {
-			message = fmt.Sprintf("market close hit OKX price protection; protected limit close order submitted at %s", order.Px)
+			message = fmt.Sprintf("market close converted to a protected limit close order at %s", order.Px)
 		}
 		writeJSON(w, http.StatusOK, positionCloseResponse{
 			OK:      true,
@@ -4516,7 +4518,7 @@ func placeMarketPositionClose(ctx context.Context, cfg config.Config, client okx
 	}
 	ack, _, err := client.PlaceOrder(ctx, req)
 	if err == nil {
-		return positionCloseOrder{Position: position, Ack: ack, CloseSz: req.Sz, Partial: partial}, nil
+		return recoverUnfilledMarketPositionClose(ctx, cfg, client, positionCloseOrder{Position: position, Ack: ack, CloseSz: req.Sz, Partial: partial})
 	}
 	fallbackReq, ok := protectedPositionCloseRetryRequest(ctx, client, position, req, err)
 	if !ok {
@@ -4527,6 +4529,71 @@ func placeMarketPositionClose(ctx context.Context, cfg config.Config, client okx
 		return positionCloseOrder{}, fmt.Errorf("OKX market close rejected by price protection: %v; protected limit retry at %s failed: %w", err, fallbackReq.Px, fallbackErr)
 	}
 	return positionCloseOrder{Position: position, Ack: fallbackAck, Px: fallbackReq.Px, CloseSz: fallbackReq.Sz, Partial: partial}, nil
+}
+
+// recoverUnfilledMarketPositionClose prevents an accepted OKX market close
+// from remaining live indefinitely under exchange price protection. If it is
+// still live after a short grace period, cancel it and submit a reduce-only
+// limit close for the remaining size.
+func recoverUnfilledMarketPositionClose(ctx context.Context, cfg config.Config, client okx.Client, active positionCloseOrder) (positionCloseOrder, error) {
+	pending, live, err := waitForUnfilledMarketPositionClose(ctx, client, active)
+	if err != nil || !live {
+		return active, nil
+	}
+	remaining, err := pendingOrderRemainingSize(pending)
+	if err != nil {
+		return active, nil
+	}
+	if err := cancelPendingOrder(ctx, client, pending); err != nil {
+		if _, stillOpen, checkErr := currentOKXPositionCloseOrder(ctx, client, active); checkErr == nil && !stillOpen {
+			return active, nil
+		}
+		return active, nil
+	}
+	position, err := currentOpenPosition(ctx, client, active.Position.InstID, active.Position.PosSide)
+	if err != nil {
+		if errors.Is(err, errPositionNotOpen) {
+			return active, nil
+		}
+		return positionCloseOrder{}, fmt.Errorf("market close stayed live and was canceled; refresh position before retrying: %w", err)
+	}
+	remaining = capCloseSizeToPosition(position.Pos, remaining)
+	if remaining == "" || remaining == "0" {
+		return active, nil
+	}
+	fallback, err := placeLimitPositionClose(ctx, cfg, client, position, remaining)
+	if err != nil {
+		return positionCloseOrder{}, fmt.Errorf("market close stayed live and was canceled; protected limit retry failed: %w", err)
+	}
+	return fallback, nil
+}
+
+func waitForUnfilledMarketPositionClose(ctx context.Context, client okx.Client, active positionCloseOrder) (okx.PendingOrder, bool, error) {
+	if marketClosePendingTimeout <= 0 || strings.TrimSpace(active.Ack.OrdID) == "" && strings.TrimSpace(active.Ack.ClOrdID) == "" {
+		return okx.PendingOrder{}, false, nil
+	}
+	pollInterval := marketClosePendingPollInterval
+	if pollInterval <= 0 {
+		pollInterval = 250 * time.Millisecond
+	}
+	poll := time.NewTicker(pollInterval)
+	defer poll.Stop()
+	timeout := time.NewTimer(marketClosePendingTimeout)
+	defer timeout.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return okx.PendingOrder{}, false, ctx.Err()
+		case <-poll.C:
+			if _, found, err := currentOKXPositionCloseOrder(ctx, client, active); err != nil {
+				return okx.PendingOrder{}, false, err
+			} else if !found {
+				return okx.PendingOrder{}, false, nil
+			}
+		case <-timeout.C:
+			return currentOKXPositionCloseOrder(ctx, client, active)
+		}
+	}
 }
 
 func placeLimitPositionClose(ctx context.Context, cfg config.Config, client okx.Client, position okx.Position, closeSz string) (positionCloseOrder, error) {
