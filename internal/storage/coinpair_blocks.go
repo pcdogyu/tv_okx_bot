@@ -268,6 +268,40 @@ func (s *OrderStore) DeleteExpiredCoinpairBlocks(now time.Time) (int, error) {
 	return before - len(s.state.CoinpairBlocks), nil
 }
 
+func (s *OrderStore) DeleteCoinpairBlock(keyword string) (bool, error) {
+	keyword = strings.ToUpper(strings.TrimSpace(keyword))
+	if keyword == "" {
+		return false, errors.New("coinpair block keyword is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		res, err := s.db.Exec(`DELETE FROM coinpair_blocks WHERE keyword = ?`, keyword)
+		if err != nil {
+			return false, err
+		}
+		count, _ := res.RowsAffected()
+		return count > 0, nil
+	}
+	out := s.state.CoinpairBlocks[:0]
+	removed := false
+	for _, block := range s.state.CoinpairBlocks {
+		if block.Keyword == keyword {
+			removed = true
+			continue
+		}
+		out = append(out, block)
+	}
+	if !removed {
+		return false, nil
+	}
+	s.state.CoinpairBlocks = out
+	if err := s.saveLocked(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *OrderStore) deleteExpiredCoinpairBlocksSQLiteLocked(now time.Time) (int, error) {
 	res, err := s.db.Exec(`DELETE FROM coinpair_blocks WHERE expires_at <= ?`, now.Format(time.RFC3339Nano))
 	if err != nil {

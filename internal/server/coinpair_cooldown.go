@@ -142,6 +142,35 @@ func (s *Server) handleCoinpairBlockCreate(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (s *Server) handleCoinpairBlockDelete(w http.ResponseWriter, r *http.Request, rawKeyword string) {
+	if s.Orders == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "order store is not configured")
+		return
+	}
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only DELETE is allowed")
+		return
+	}
+	keyword, _ := coinpairCooldownIdentity(rawKeyword)
+	if keyword == "" {
+		writeError(w, http.StatusBadRequest, "invalid_coinpair_block", "coinpair block keyword is required")
+		return
+	}
+	removed, err := s.Orders.DeleteCoinpairBlock(keyword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if !removed {
+		writeError(w, http.StatusNotFound, "not_found", "coinpair block was not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "removed",
+		"keyword": keyword,
+	})
+}
+
 func coinpairBlockCoveringSymbol(blocks []storage.CoinpairBlock, symbol string) (storage.CoinpairBlock, bool) {
 	candidate := normalizeCoinpairFilter(symbol)
 	if candidate == "" {

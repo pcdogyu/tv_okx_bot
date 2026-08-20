@@ -731,6 +731,46 @@ func (s *Server) maybeSubmitAutoReentry(ctx context.Context, cfg config.Config, 
 		})
 		return nil
 	}
+	rec, ok := s.Orders.Get(lifecycle.SourceSignalID)
+	if !ok {
+		return fmt.Errorf("source signal %s not found for auto reentry", lifecycle.SourceSignalID)
+	}
+	top30Probe := trading.Signal{
+		TargetExchange: trading.ExchangeBinance,
+		TradeEnv:       orderRecordTradeEnv(rec),
+		Coinpair:       firstNonEmptyString(rec.Coinpair, lifecycle.Symbol),
+		Ticker:         firstNonEmptyString(rec.Ticker, lifecycle.Symbol),
+		PositionEffect: trading.PositionEffectOpen,
+	}
+	decision, err := s.marketTop30Decision(top30Probe)
+	if err != nil {
+		return err
+	}
+	if !decision.Available || !decision.Allowed {
+		message := top30UnavailableMessage(decision)
+		if decision.Available {
+			message = fmt.Sprintf("coinpair is outside %s %s turnover top %d", decision.Exchange, decision.TradeEnv, marketTopSymbolLimit)
+		}
+		updated, err := s.Orders.UpdateTradeLifecycle(lifecycle.LifecycleID, storage.TradeLifecycleUpdate{
+			Status:    storage.TradeLifecycleBlocked,
+			UpdatedAt: now,
+		})
+		if err != nil {
+			return err
+		}
+		s.recordTradeMonitorEvent(storage.TradeMonitorEvent{
+			EventTime:      now,
+			Exchange:       lifecycle.Exchange,
+			APIID:          lifecycle.APIID,
+			Symbol:         lifecycle.Symbol,
+			LifecycleID:    lifecycle.LifecycleID,
+			SourceSignalID: lifecycle.SourceSignalID,
+			EventType:      "auto_reentry_top30_blocked",
+			Status:         updated.Status,
+			Message:        message,
+		})
+		return nil
+	}
 	positions, err := client.Positions(ctx, lifecycle.Symbol)
 	if err != nil {
 		return err
@@ -755,10 +795,6 @@ func (s *Server) maybeSubmitAutoReentry(ctx context.Context, cfg config.Config, 
 			Message:        "existing Binance position detected before auto reentry",
 		})
 		return nil
-	}
-	rec, ok := s.Orders.Get(lifecycle.SourceSignalID)
-	if !ok {
-		return fmt.Errorf("source signal %s not found for auto reentry", lifecycle.SourceSignalID)
 	}
 	signal, execCfg, err := s.autoReentrySignal(ctx, cfg, client, rec, lifecycle, now)
 	if err != nil {

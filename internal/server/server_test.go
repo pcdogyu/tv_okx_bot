@@ -282,9 +282,8 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-exchange")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("搜索币对")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("搜索 Top 30 币对")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("clear-symbol-search")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("BTC / BTCUSDT / BTC-USDT-SWAP")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("没有匹配的币对")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbolSearchCompact")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbolSearchMatches")) ||
@@ -567,6 +566,10 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`动态冷静期（锁定 24 小时）`),
 		[]byte(`function loadCoinpairBlocks()`),
 		[]byte(`function renderCoinpairCooldownList()`),
+		[]byte(`data-cooldown-keyword`),
+		[]byte(`function removeCoinpairCooldown(button)`),
+		[]byte(`method: "DELETE"`),
+		[]byte(`已移出冷静期`),
 		[]byte(`coinpairBlockPollIntervalMs = 20000`),
 		[]byte(`止损价`),
 		[]byte(`价格待确认`),
@@ -583,9 +586,6 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte(`id="clear-ignored-coinpair"`)) || bytes.Contains(body, []byte(`function clearIgnoredCoinpair()`)) {
 		t.Fatal("tvbot UI should only remove ignored coinpairs one at a time")
-	}
-	if bytes.Contains(body, []byte(`coinpair-cooldown-remove`)) || bytes.Contains(body, []byte(`data-coinpair-cooldown-remove`)) {
-		t.Fatal("stop-loss cooldown cards must not provide an early remove control")
 	}
 }
 
@@ -1070,11 +1070,11 @@ func TestTVBotSymbolsKeepsCatalogWhenTickerFetchFails(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.OKX.Live.Count != 1 || resp.OKX.Demo.Count != 1 {
-		t.Fatalf("ticker failure should keep instruments: %#v", resp.OKX)
+	if resp.OKX.Live.Count != 15 || resp.OKX.Demo.Count != 15 {
+		t.Fatalf("ticker failure should retain the previous OKX catalog: %#v", resp.OKX)
 	}
-	if resp.Binance.Live.Count != 1 || resp.Binance.Demo.Count != 1 {
-		t.Fatalf("Binance ticker failure should keep instruments: %#v", resp.Binance)
+	if resp.Binance.Live.Count != 15 || resp.Binance.Demo.Count != 15 {
+		t.Fatalf("ticker failure should retain the previous Binance catalog: %#v", resp.Binance)
 	}
 	if resp.OKX.Live.TickerError == "" || resp.OKX.Demo.TickerError == "" {
 		t.Fatalf("ticker failure should be reported: %#v", resp.OKX)
@@ -1082,11 +1082,11 @@ func TestTVBotSymbolsKeepsCatalogWhenTickerFetchFails(t *testing.T) {
 	if resp.Binance.Live.TickerError == "" || resp.Binance.Demo.TickerError == "" {
 		t.Fatalf("Binance ticker failure should be reported: %#v", resp.Binance)
 	}
-	if resp.OKX.Live.Instruments[0].TurnoverUSDT24h != "" {
-		t.Fatalf("turnover should be empty when ticker is unavailable: %#v", resp.OKX.Live.Instruments[0])
+	if resp.OKX.Live.Instruments[0].TurnoverUSDT24h == "" {
+		t.Fatalf("previous OKX turnover should be preserved when ticker is unavailable: %#v", resp.OKX.Live.Instruments[0])
 	}
-	if resp.Binance.Live.Instruments[0].TurnoverUSDT24h != "" {
-		t.Fatalf("Binance turnover should be empty when ticker is unavailable: %#v", resp.Binance.Live.Instruments[0])
+	if resp.Binance.Live.Instruments[0].TurnoverUSDT24h == "" {
+		t.Fatalf("previous Binance turnover should be preserved when ticker is unavailable: %#v", resp.Binance.Live.Instruments[0])
 	}
 }
 
@@ -1097,6 +1097,8 @@ func TestTVBotSymbolsGETReadsSQLiteCache(t *testing.T) {
 	binancePayload := `{"env":"demo","demo":true,"count":1,"instruments":[{"symbol":"DOGEUSDT","pair":"DOGEUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"DOGE","quoteAsset":"USDT","marginAsset":"USDT"}]}`
 	if err := srv.Orders.UpsertSymbolCatalogCaches([]storage.SymbolCatalogCache{
 		{Exchange: trading.ExchangeOKX, Env: config.EnvLive, PayloadJSON: okxPayload, Count: 1, SyncedAt: now, AttemptedAt: now},
+		{Exchange: trading.ExchangeOKX, Env: config.EnvDemo, PayloadJSON: `{"env":"demo","demo":true,"count":0,"instruments":[]}`, Count: 0, AttemptedAt: now},
+		{Exchange: trading.ExchangeBinance, Env: config.EnvLive, PayloadJSON: `{"env":"live","demo":false,"count":0,"instruments":[]}`, Count: 0, AttemptedAt: now},
 		{Exchange: trading.ExchangeBinance, Env: config.EnvDemo, PayloadJSON: binancePayload, Count: 1, SyncedAt: now, AttemptedAt: now},
 	}); err != nil {
 		t.Fatal(err)
@@ -5408,7 +5410,7 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Server{
+	srv := &Server{
 		ConfigStore:        config.NewStore("", cfg),
 		Orders:             orderStore,
 		Token:              security.NewTokenService("unit-test-secret"),
@@ -5423,6 +5425,41 @@ func newTestServer(t *testing.T) *Server {
 		Now: func() time.Time {
 			return time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
 		},
+	}
+	seedTestTop30Catalog(t, orderStore, srv.now())
+	return srv
+}
+
+func seedTestTop30Catalog(t *testing.T, store *storage.OrderStore, now time.Time) {
+	t.Helper()
+	bases := []string{"BTC", "ETH", "BNB", "SOL", "DOGE", "ESPORTS", "ETHFI", "SYRUP", "AAA", "BAD", "ZZZ", "PARTIAL", "SECOND", "EETH", "1000PEPE"}
+	resp := emptySymbolsResponse(map[string]config.SymbolConfig{})
+	for i, base := range bases {
+		turnover := trading.NormalizeFloat(float64(len(bases) - i))
+		okxView := symbolInstrument{
+			Instrument:      okx.Instrument{InstType: "SWAP", InstID: base + "-USDT-SWAP", BaseCcy: base, QuoteCcy: "USDT", SettleCcy: "USDT", State: "live"},
+			TurnoverUSDT24h: turnover,
+		}
+		binanceView := binanceSymbolInstrument{
+			SymbolInfo:      binance.SymbolInfo{Symbol: base + "USDT", Pair: base + "USDT", ContractType: "PERPETUAL", Status: "TRADING", BaseAsset: base, QuoteAsset: "USDT", MarginAsset: "USDT"},
+			TurnoverUSDT24h: turnover,
+		}
+		resp.OKX.Live.Instruments = append(resp.OKX.Live.Instruments, okxView)
+		resp.OKX.Demo.Instruments = append(resp.OKX.Demo.Instruments, okxView)
+		resp.Binance.Live.Instruments = append(resp.Binance.Live.Instruments, binanceView)
+		resp.Binance.Demo.Instruments = append(resp.Binance.Demo.Instruments, binanceView)
+	}
+	resp.OKX.Live.Count = len(resp.OKX.Live.Instruments)
+	resp.OKX.Demo.Count = len(resp.OKX.Demo.Instruments)
+	resp.Binance.Live.Count = len(resp.Binance.Live.Instruments)
+	resp.Binance.Demo.Count = len(resp.Binance.Demo.Instruments)
+	applyTop30Rankings(&resp)
+	items, err := symbolCatalogCacheItems(resp, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertSymbolCatalogCaches(items); err != nil {
+		t.Fatal(err)
 	}
 }
 

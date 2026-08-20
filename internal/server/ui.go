@@ -790,7 +790,7 @@ const tvbotHTML = `<!doctype html>
     }
     .coinpair-cooldown-item {
       min-width: 190px;
-      padding-right: 14px;
+      padding-right: 34px;
       border-color: #efb968;
       background: #fff8eb;
     }
@@ -1524,9 +1524,9 @@ const tvbotHTML = `<!doctype html>
       <div class="section-head">
         <h2>币对配置</h2>
         <div class="symbol-controls">
-          <label>交易所<select id="symbol-exchange"><option value="all">全部</option><option value="okx">OKX</option><option value="binance">Binance</option></select></label>
-          <label>环境<select id="symbol-env"><option value="all">全部</option><option value="live">生产</option><option value="demo">测试</option></select></label>
-          <label class="symbol-search-label">搜索币对<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="BTC / BTCUSDT / BTC-USDT-SWAP"></label>
+          <label>交易所<select id="symbol-exchange"><option value="okx">OKX</option><option value="binance">Binance</option></select></label>
+          <label>环境<select id="symbol-env"><option value="live">实盘</option><option value="demo">模拟</option></select></label>
+          <label class="symbol-search-label">搜索 Top 30 币对<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="例如 BTC"></label>
           <div class="symbol-search-actions">
             <button class="btn" type="button" id="clear-symbol-search" disabled>清除搜索</button>
             <button class="btn primary" type="button" id="refresh-symbols">刷新币对</button>
@@ -1534,8 +1534,8 @@ const tvbotHTML = `<!doctype html>
         </div>
       </div>
       <div class="analysis-metrics symbol-metrics">
-        <div class="analysis-card"><div class="label">生产币对</div><div class="value" id="symbol-live-count">-</div></div>
-        <div class="analysis-card"><div class="label">测试币对</div><div class="value" id="symbol-demo-count">-</div></div>
+        <div class="analysis-card"><div class="label">实盘币对</div><div class="value" id="symbol-live-count">-</div></div>
+        <div class="analysis-card"><div class="label">模拟币对</div><div class="value" id="symbol-demo-count">-</div></div>
         <div class="analysis-card"><div class="label">本地已配置</div><div class="value" id="symbol-configured-count">-</div></div>
         <div class="analysis-card"><div class="label">当前显示</div><div class="value" id="symbol-visible-count">-</div></div>
       </div>
@@ -1759,6 +1759,7 @@ const tvbotHTML = `<!doctype html>
       ordersSearch: "",
       coinpairBlocks: null,
       coinpairCooldownSubmitting: {},
+      coinpairCooldownRemoving: {},
       retrying: {},
       positionClosing: {},
       pendingOrderActions: {},
@@ -1781,6 +1782,7 @@ const tvbotHTML = `<!doctype html>
       symbols: null,
       symbolsError: "",
       symbolSort: null,
+      symbolMarketInitialized: false,
       tradeMonitor: null,
       tradeMonitorError: "",
       upgrade: null
@@ -2176,6 +2178,10 @@ const tvbotHTML = `<!doctype html>
     function setSelectedExchange(exchange) {
       const selected = normalizeExchange(exchange);
       if (selected === activeExchange()) {
+        if ($("symbol-exchange")) {
+          $("symbol-exchange").value = selected;
+          renderSymbols();
+        }
         renderGlobalExchangeSwitch();
         return;
       }
@@ -2192,6 +2198,10 @@ const tvbotHTML = `<!doctype html>
       try {
         window.localStorage.setItem(globalExchangeStorageKey, selected);
       } catch (_) {}
+      if ($("symbol-exchange")) {
+        $("symbol-exchange").value = selected;
+        renderSymbols();
+      }
       renderGlobalExchangeSwitch();
       renderDashboard();
       renderAnalysis();
@@ -2953,6 +2963,7 @@ const tvbotHTML = `<!doctype html>
       applyMenuSettings();
       syncActiveTabAfterMenuSettings();
       renderConfig();
+      initializeSymbolMarket();
       renderOrderSettings();
       renderPositionMonitor();
       renderMenuSettings();
@@ -3489,10 +3500,10 @@ const tvbotHTML = `<!doctype html>
       renderTableStructure("symbols");
       const errors = [];
       if (state.symbolsError) errors.push(state.symbolsError);
-      collectSymbolSetErrors(errors, "OKX 生产", okxLive);
-      collectSymbolSetErrors(errors, "OKX 测试", okxDemo);
-      collectSymbolSetErrors(errors, "Binance 生产", binanceLive);
-      collectSymbolSetErrors(errors, "Binance 测试", binanceDemo);
+      collectSymbolSetErrors(errors, "OKX 实盘", okxLive);
+      collectSymbolSetErrors(errors, "OKX 模拟", okxDemo);
+      collectSymbolSetErrors(errors, "Binance 实盘", binanceLive);
+      collectSymbolSetErrors(errors, "Binance 模拟", binanceDemo);
       $("symbol-errors").textContent = errors.join(" / ");
       const columns = currentTableColumnDefs("symbols");
       $("symbol-rows").innerHTML = rows.map((row) => "<tr>" + columns.map((col) => col.cell(row)).join("") + "</tr>").join("") || '<tr><td colspan="' + tableColumnCount("symbols") + '" class="muted">' + escapeHTML(symbolEmptyMessage(keyword)) + '</td></tr>';
@@ -3502,21 +3513,20 @@ const tvbotHTML = `<!doctype html>
       const data = state.symbols || {};
       const okxCatalog = data.okx || {};
       const binanceCatalog = data.binance || {};
-      const exchangeFilter = $("symbol-exchange") ? $("symbol-exchange").value : "all";
-      const envFilter = $("symbol-env") ? $("symbol-env").value : "all";
+      const exchangeFilter = $("symbol-exchange") ? normalizeExchange($("symbol-exchange").value) : activeExchange();
+      const envFilter = $("symbol-env") && $("symbol-env").value === "live" ? "live" : "demo";
       const terms = symbolSearchTerms(currentSymbolSearchKeyword());
       const configuredLookup = configuredSymbolMap();
       const groups = [
-        { exchange: "okx", exchangeLabel: "OKX", env: "live", envLabel: "生产", set: okxCatalog.live || {} },
-        { exchange: "okx", exchangeLabel: "OKX", env: "demo", envLabel: "测试", set: okxCatalog.demo || {} },
-        { exchange: "binance", exchangeLabel: "Binance", env: "live", envLabel: "生产", set: binanceCatalog.live || {} },
-        { exchange: "binance", exchangeLabel: "Binance", env: "demo", envLabel: "测试", set: binanceCatalog.demo || {} }
+        { exchange: "okx", exchangeLabel: "OKX", env: "live", envLabel: "实盘", set: okxCatalog.live || {} },
+        { exchange: "okx", exchangeLabel: "OKX", env: "demo", envLabel: "模拟", set: okxCatalog.demo || {} },
+        { exchange: "binance", exchangeLabel: "Binance", env: "live", envLabel: "实盘", set: binanceCatalog.live || {} },
+        { exchange: "binance", exchangeLabel: "Binance", env: "demo", envLabel: "模拟", set: binanceCatalog.demo || {} }
       ];
       const rows = [];
       groups.forEach((group) => {
-        if (exchangeFilter !== "all" && exchangeFilter !== group.exchange) return;
-        if (envFilter !== "all" && envFilter !== group.env) return;
-        const instruments = Array.isArray(group.set.instruments) ? group.set.instruments : [];
+        if (exchangeFilter !== group.exchange || envFilter !== group.env) return;
+        const instruments = Array.isArray(group.set.top_instruments) ? group.set.top_instruments : [];
         instruments.forEach((instrument) => {
           const configured = symbolConfiguredByLookup(instrument, configuredLookup);
           if (!symbolSearchMatches(symbolSearchFields(group, instrument, configured), terms)) return;
@@ -3533,6 +3543,15 @@ const tvbotHTML = `<!doctype html>
         });
       });
       return rows;
+    }
+
+    function initializeSymbolMarket() {
+      if (state.symbolMarketInitialized) return;
+      if ($("symbol-exchange")) $("symbol-exchange").value = activeExchange();
+      const trading = state.config && state.config.trading ? state.config.trading : {};
+      if ($("symbol-env")) $("symbol-env").value = trading.env === "live" ? "live" : "demo";
+      state.symbolMarketInitialized = true;
+      renderSymbols();
     }
 
     function currentSymbolSearchKeyword() {
@@ -3654,7 +3673,7 @@ const tvbotHTML = `<!doctype html>
     function symbolExchangeEnvText(row) {
       row = row || {};
       const exchange = row.exchangeLabel || (String(row.exchange || "").toLowerCase() === "binance" ? "Binance" : "OKX");
-      const env = row.envLabel || (row.env === "demo" ? "测试" : "生产");
+      const env = row.envLabel || (row.env === "demo" ? "模拟" : "实盘");
       return exchange + " " + env;
     }
 
@@ -3665,11 +3684,12 @@ const tvbotHTML = `<!doctype html>
 
     function symbolTemplateButtonCell(row) {
       const symbol = asText(symbolInstID(row));
+      const displaySymbol = asText(symbolBase(row && row.instrument ? row.instrument : {}));
       const exchange = normalizeExchange((row || {}).exchange || "okx");
       const env = (row || {}).env === "live" ? "live" : "demo";
       const disabled = symbol ? "" : " disabled";
       return tableCell(
-        '<div class="symbol-template-cell"><span class="symbol-template-text">' + escapeHTML(symbol) + '</span>' +
+        '<div class="symbol-template-cell"><span class="symbol-template-text">' + escapeHTML(displaySymbol) + '</span>' +
         '<button class="btn small symbol-template-btn" type="button" data-symbol-template="true" data-template-exchange="' + escapeHTML(exchange) + '" data-template-env="' + escapeHTML(env) + '" data-template-symbol="' + escapeHTML(symbol) + '"' + disabled + '>生成报警</button></div>'
       );
     }
@@ -3956,7 +3976,7 @@ const tvbotHTML = `<!doctype html>
       const env = templateTradeEnv();
       const catalog = data[exchange] || {};
       const set = catalog[env] || {};
-      const instruments = Array.isArray(set.instruments) ? set.instruments : [];
+      const instruments = Array.isArray(set.top_instruments) ? set.top_instruments : [];
       instruments.forEach((instrument) => add(symbolInstID({ instrument: instrument })));
       return out.sort((a, b) => a.localeCompare(b));
     }
@@ -5163,7 +5183,10 @@ const tvbotHTML = `<!doctype html>
         const source = coinpairCooldownSource(block.source);
         const sourceExchange = block.exchange ? (" · " + exchangeLabel(block.exchange)) : "";
         const priceLabel = block.source === "analysis_manual" ? "平仓价" : "止损价";
-        return '<div class="coinpair-filter-item coinpair-cooldown-item" title="24 小时内禁止新开仓，不能提前解除">' +
+        const removing = !!state.coinpairCooldownRemoving[ignoredCoinpairKey(keyword)];
+        const removeLabel = "提前解除 " + keyword + " 的 24 小时冷静期";
+        return '<div class="coinpair-filter-item coinpair-cooldown-item" title="24 小时内禁止新开仓">' +
+          '<button class="coinpair-filter-remove" type="button" data-cooldown-keyword="' + escapeHTML(keyword) + '" title="' + escapeHTML(removeLabel) + '" aria-label="' + escapeHTML(removeLabel) + '"' + (removing ? " disabled" : "") + '>×</button>' +
           '<div class="coinpair-cooldown-title"><span aria-hidden="true">&#128274;</span><strong>' + escapeHTML(keyword) + '</strong></div>' +
           '<span class="coinpair-cooldown-meta">' + escapeHTML(priceLabel) + '：' + escapeHTML(price || "价格待确认") + '</span>' +
           '<span class="coinpair-cooldown-meta">来源：' + escapeHTML(source + sourceExchange) + '</span>' +
@@ -5177,6 +5200,23 @@ const tvbotHTML = `<!doctype html>
         status.textContent = (manualCount || blocks.length)
           ? ("当前生效：" + manualCount + " 个手动过滤，" + blocks.length + " 个动态冷静期")
           : "当前未启用";
+      }
+    }
+
+    async function removeCoinpairCooldown(button) {
+      const keyword = String(button && button.dataset.cooldownKeyword || "").trim().toUpperCase();
+      const key = ignoredCoinpairKey(keyword);
+      if (!keyword || !key || state.coinpairCooldownRemoving[key]) return;
+      if (!window.confirm("确认提前解除 " + keyword + " 的 24 小时冷静期？\n\n解除后该币对可以重新开仓；后续若再次发生止损，仍会重新进入冷静期。")) return;
+      state.coinpairCooldownRemoving[key] = true;
+      renderCoinpairCooldownList();
+      try {
+        await api("/tvbot/coinpair-blocks/" + encodeURIComponent(keyword), { method: "DELETE" });
+        await loadCoinpairBlocks();
+        toast(keyword + " 已移出冷静期");
+      } finally {
+        delete state.coinpairCooldownRemoving[key];
+        renderCoinpairCooldownList();
       }
     }
 
@@ -6068,6 +6108,11 @@ const tvbotHTML = `<!doctype html>
       const button = event.target.closest("button[data-ignored-coinpair-index]");
       if (!button) return;
       removeIgnoredCoinpair(Number(button.dataset.ignoredCoinpairIndex)).catch((err) => toast(err.message));
+    });
+    $("coinpair-cooldown-list").addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-cooldown-keyword]");
+      if (!button) return;
+      removeCoinpairCooldown(button).catch((err) => toast(err.message));
     });
     $("refresh-trade-monitor").addEventListener("click", () => loadTradeMonitor().then(() => toast("成交监听已刷新")).catch((err) => toast(err.message)));
     $("position-rows").addEventListener("click", (event) => {

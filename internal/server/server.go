@@ -50,7 +50,7 @@ type Server struct {
 const (
 	adminSessionCookieName    = "tvbot_admin_session"
 	adminSessionTTL           = 12 * time.Hour
-	symbolCatalogSyncInterval = 12 * time.Hour
+	symbolCatalogSyncInterval = 24 * time.Hour
 )
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +135,29 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 				"signal_id": record.SignalID,
 			})
 			return
+		}
+		if signal.PositionEffect != trading.PositionEffectClose {
+			decision, err := s.marketTop30Decision(signal)
+			if err != nil {
+				s.recordTVOrderRejected(r, signal, "top30_check_failed", err, now)
+				writeError(w, http.StatusServiceUnavailable, "top30_check_failed", err.Error())
+				return
+			}
+			if !decision.Available {
+				err := errors.New(top30UnavailableMessage(decision))
+				s.recordTVOrderRejected(r, signal, "top30_unavailable", err, now)
+				writeError(w, http.StatusServiceUnavailable, "top30_unavailable", err.Error())
+				return
+			}
+			if !decision.Allowed {
+				record, err := s.recordTop30IgnoredSignal(signal, decision, now)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+					return
+				}
+				writeJSON(w, http.StatusAccepted, top30IgnoredResponse(record, decision))
+				return
+			}
 		}
 	}
 	dedupeKey := storage.DedupeKey(signal)
@@ -432,6 +455,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handleOrders(w, r)
 	case path == "/coinpair-blocks":
 		s.handleCoinpairBlocks(w, r)
+	case strings.HasPrefix(path, "/coinpair-blocks/"):
+		s.handleCoinpairBlockDelete(w, r, strings.TrimPrefix(path, "/coinpair-blocks/"))
 	case path == "/trade-monitor":
 		s.handleTradeMonitor(w, r)
 	case isOrderRetryPath(path):
@@ -860,14 +885,15 @@ type binanceSymbolsCatalog struct {
 }
 
 type okxInstrumentSet struct {
-	Env         string             `json:"env"`
-	Demo        bool               `json:"demo"`
-	Count       int                `json:"count"`
-	Instruments []symbolInstrument `json:"instruments"`
-	Error       string             `json:"error,omitempty"`
-	TickerError string             `json:"ticker_error,omitempty"`
-	SyncedAt    string             `json:"synced_at,omitempty"`
-	AttemptedAt string             `json:"attempted_at,omitempty"`
+	Env            string             `json:"env"`
+	Demo           bool               `json:"demo"`
+	Count          int                `json:"count"`
+	Instruments    []symbolInstrument `json:"instruments"`
+	TopInstruments []symbolInstrument `json:"top_instruments"`
+	Error          string             `json:"error,omitempty"`
+	TickerError    string             `json:"ticker_error,omitempty"`
+	SyncedAt       string             `json:"synced_at,omitempty"`
+	AttemptedAt    string             `json:"attempted_at,omitempty"`
 }
 
 type symbolInstrument struct {
@@ -877,14 +903,15 @@ type symbolInstrument struct {
 }
 
 type binanceInstrumentSet struct {
-	Env         string                    `json:"env"`
-	Demo        bool                      `json:"demo"`
-	Count       int                       `json:"count"`
-	Instruments []binanceSymbolInstrument `json:"instruments"`
-	Error       string                    `json:"error,omitempty"`
-	TickerError string                    `json:"ticker_error,omitempty"`
-	SyncedAt    string                    `json:"synced_at,omitempty"`
-	AttemptedAt string                    `json:"attempted_at,omitempty"`
+	Env            string                    `json:"env"`
+	Demo           bool                      `json:"demo"`
+	Count          int                       `json:"count"`
+	Instruments    []binanceSymbolInstrument `json:"instruments"`
+	TopInstruments []binanceSymbolInstrument `json:"top_instruments"`
+	Error          string                    `json:"error,omitempty"`
+	TickerError    string                    `json:"ticker_error,omitempty"`
+	SyncedAt       string                    `json:"synced_at,omitempty"`
+	AttemptedAt    string                    `json:"attempted_at,omitempty"`
 }
 
 type binanceSymbolInstrument struct {
@@ -972,6 +999,7 @@ func (s *Server) cachedSymbolsResponse(cfg config.Config) (symbolsResponse, erro
 			}
 		}
 	}
+	applyTop30Rankings(&resp)
 	return resp, nil
 }
 
@@ -981,15 +1009,22 @@ func (s *Server) syncSymbolCatalogs(ctx context.Context) (symbolsResponse, error
 	}
 	cfg := s.ConfigStore.Get()
 	resp := s.fetchSymbolCatalogs(ctx, cfg)
+	applyTop30Rankings(&resp)
+	markUnavailableFetchedRankings(&resp)
 	now := s.now()
 	items, err := symbolCatalogCacheItems(resp, now)
 	if err != nil {
 		return resp, err
 	}
+	previous, err := s.Orders.ListSymbolCatalogCaches()
+	if err != nil {
+		return resp, err
+	}
+	items = preserveSuccessfulSymbolCatalogCaches(items, previous)
 	if err := s.Orders.UpsertSymbolCatalogCaches(items); err != nil {
 		return resp, err
 	}
-	return resp, nil
+	return s.cachedSymbolsResponse(cfg)
 }
 
 func (s *Server) fetchSymbolCatalogs(ctx context.Context, cfg config.Config) symbolsResponse {
@@ -1023,6 +1058,7 @@ func (s *Server) fetchSymbolCatalogs(ctx context.Context, cfg config.Config) sym
 		}
 		resp.OKX.Live = result.okxSet
 	}
+	applyTop30Rankings(&resp)
 	return resp
 }
 
@@ -1088,7 +1124,7 @@ func symbolCatalogCacheItems(resp symbolsResponse, now time.Time) ([]storage.Sym
 			Error:       errorText,
 			TickerError: tickerError,
 		}
-		if strings.TrimSpace(errorText) == "" {
+		if strings.TrimSpace(errorText) == "" && strings.TrimSpace(tickerError) == "" {
 			item.SyncedAt = now
 		}
 		items = append(items, item)
@@ -1096,12 +1132,40 @@ func symbolCatalogCacheItems(resp symbolsResponse, now time.Time) ([]storage.Sym
 	return items, nil
 }
 
+func preserveSuccessfulSymbolCatalogCaches(fetched, previous []storage.SymbolCatalogCache) []storage.SymbolCatalogCache {
+	previousByMarket := make(map[string]storage.SymbolCatalogCache, len(previous))
+	for _, item := range previous {
+		previousByMarket[symbolCatalogMarketKey(item.Exchange, item.Env)] = item
+	}
+	out := make([]storage.SymbolCatalogCache, 0, len(fetched))
+	for _, item := range fetched {
+		if !item.SyncedAt.IsZero() {
+			out = append(out, item)
+			continue
+		}
+		old, ok := previousByMarket[symbolCatalogMarketKey(item.Exchange, item.Env)]
+		if !ok || old.SyncedAt.IsZero() {
+			out = append(out, item)
+			continue
+		}
+		item.PayloadJSON = old.PayloadJSON
+		item.Count = old.Count
+		item.SyncedAt = old.SyncedAt
+		out = append(out, item)
+	}
+	return out
+}
+
+func symbolCatalogMarketKey(exchange, env string) string {
+	return trading.NormalizeExchange(exchange) + ":" + trading.NormalizeTradeEnv(env)
+}
+
 func applyOKXSetSyncMeta(set *okxInstrumentSet, now time.Time) {
 	if set == nil {
 		return
 	}
 	set.AttemptedAt = now.UTC().Format(time.RFC3339Nano)
-	if strings.TrimSpace(set.Error) == "" {
+	if strings.TrimSpace(set.Error) == "" && strings.TrimSpace(set.TickerError) == "" && len(set.TopInstruments) > 0 {
 		set.SyncedAt = set.AttemptedAt
 	}
 }
@@ -1111,7 +1175,7 @@ func applyBinanceSetSyncMeta(set *binanceInstrumentSet, now time.Time) {
 		return
 	}
 	set.AttemptedAt = now.UTC().Format(time.RFC3339Nano)
-	if strings.TrimSpace(set.Error) == "" {
+	if strings.TrimSpace(set.Error) == "" && strings.TrimSpace(set.TickerError) == "" && len(set.TopInstruments) > 0 {
 		set.SyncedAt = set.AttemptedAt
 	}
 }
@@ -1498,6 +1562,8 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 	cfg := configForTradeEnv(s.ConfigStore.Get(), source.TradeEnv)
 	now := s.now()
 	probe := trading.Signal{
+		TargetExchange: source.TargetExchange,
+		TradeEnv:       orderRecordTradeEnv(source),
 		Coinpair:       source.Coinpair,
 		Ticker:         source.Ticker,
 		PositionEffect: source.PositionEffect,
@@ -1530,6 +1596,29 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 			"retry_of":  source.SignalID,
 		})
 		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(probe.PositionEffect), trading.PositionEffectClose) {
+		decision, err := s.marketTop30Decision(probe)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "top30_check_failed", err.Error())
+			return
+		}
+		if !decision.Available {
+			writeError(w, http.StatusServiceUnavailable, "top30_unavailable", top30UnavailableMessage(decision))
+			return
+		}
+		if !decision.Allowed {
+			signal := ignoredRetrySignalFromRecord(source, now)
+			record, err := s.recordTop30IgnoredSignal(signal, decision, now)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+				return
+			}
+			resp := top30IgnoredResponse(record, decision)
+			resp["retry_of"] = source.SignalID
+			writeJSON(w, http.StatusAccepted, resp)
+			return
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()

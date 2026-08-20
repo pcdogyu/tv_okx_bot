@@ -100,3 +100,50 @@ func TestMemoryCoinpairBlocksUseSameExpiryRules(t *testing.T) {
 		t.Fatalf("expired block not removed: count=%d err=%v", removed, err)
 	}
 }
+
+func TestDeleteCoinpairBlockKeepsEventHistoryForSQLiteAndMemory(t *testing.T) {
+	now := time.Date(2026, 8, 18, 4, 0, 0, 0, time.UTC)
+	for name, open := range map[string]func(*testing.T) *OrderStore{
+		"sqlite": func(t *testing.T) *OrderStore {
+			store, err := NewSQLiteOrderStore(filepath.Join(t.TempDir(), "tvbot.db"), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			return store
+		},
+		"memory": func(t *testing.T) *OrderStore {
+			store, err := NewOrderStore("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := open(t)
+			event := CoinpairBlockEvent{EventID: "loss:1", Keyword: "eth", Symbol: "ETHUSDT", Source: "exchange_fill", OccurredAt: now, ExpiresAt: now.Add(24 * time.Hour)}
+			if _, created, err := store.AddCoinpairBlockEvent(event, now); err != nil || !created {
+				t.Fatalf("add block: created=%v err=%v", created, err)
+			}
+			if removed, err := store.DeleteCoinpairBlock(" eth "); err != nil || !removed {
+				t.Fatalf("delete block: removed=%v err=%v", removed, err)
+			}
+			if blocks, err := store.ListActiveCoinpairBlocks(now); err != nil || len(blocks) != 0 {
+				t.Fatalf("deleted block still active: blocks=%#v err=%v", blocks, err)
+			}
+			if _, created, err := store.AddCoinpairBlockEvent(event, now); err != nil || created {
+				t.Fatalf("historical event should remain deduplicated: created=%v err=%v", created, err)
+			}
+			event.EventID = "loss:2"
+			event.OccurredAt = now.Add(time.Hour)
+			event.ExpiresAt = event.OccurredAt.Add(24 * time.Hour)
+			if _, created, err := store.AddCoinpairBlockEvent(event, event.OccurredAt); err != nil || !created {
+				t.Fatalf("new loss should recreate block: created=%v err=%v", created, err)
+			}
+			if removed, err := store.DeleteCoinpairBlock("BTC"); err != nil || removed {
+				t.Fatalf("missing block delete: removed=%v err=%v", removed, err)
+			}
+		})
+	}
+}

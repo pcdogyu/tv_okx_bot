@@ -158,6 +158,39 @@ func TestTVBotManualCoinpairCooldownValidatesAuthAndPayload(t *testing.T) {
 	}
 }
 
+func TestTVBotDeletesCoinpairCooldownWithAdminAuth(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	if _, _, err := srv.recordCoinpairCooldown("delete:1", "exchange_fill", trading.ExchangeOKX, "main", "2500", now, "ETHUSDT"); err != nil {
+		t.Fatal(err)
+	}
+	unauthorized := httptest.NewRecorder()
+	srv.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodDelete, "/tvbot/coinpair-blocks/ETH", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized delete status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	request := func(keyword string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodDelete, "/tvbot/coinpair-blocks/"+keyword, nil)
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr
+	}
+	rr := request("ETHUSDT")
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"status":"removed"`) || !strings.Contains(rr.Body.String(), `"keyword":"ETH"`) {
+		t.Fatalf("delete status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if blocks, err := srv.Orders.ListActiveCoinpairBlocks(now); err != nil || len(blocks) != 0 {
+		t.Fatalf("deleted cooldown remains active: blocks=%#v err=%v", blocks, err)
+	}
+	rr = request("ETH")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("missing delete status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestTVOrderCooldownBlocksBeforeExecutorAndListsRule(t *testing.T) {
 	srv := newTestServer(t)
 	now := srv.now()
