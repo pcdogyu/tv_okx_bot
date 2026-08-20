@@ -5207,7 +5207,6 @@ const tvbotHTML = `<!doctype html>
       const keyword = String(button && button.dataset.cooldownKeyword || "").trim().toUpperCase();
       const key = ignoredCoinpairKey(keyword);
       if (!keyword || !key || state.coinpairCooldownRemoving[key]) return;
-      if (!window.confirm("确认提前解除 " + keyword + " 的 24 小时冷静期？\n\n解除后该币对可以重新开仓；后续若再次发生止损，仍会重新进入冷静期。")) return;
       state.coinpairCooldownRemoving[key] = true;
       renderCoinpairCooldownList();
       try {

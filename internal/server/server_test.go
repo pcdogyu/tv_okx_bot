@@ -587,6 +587,9 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 	if bytes.Contains(body, []byte(`id="clear-ignored-coinpair"`)) || bytes.Contains(body, []byte(`function clearIgnoredCoinpair()`)) {
 		t.Fatal("tvbot UI should only remove ignored coinpairs one at a time")
 	}
+	if bytes.Contains(body, []byte(`确认提前解除`)) {
+		t.Fatal("cooldown remove should not show a confirmation prompt")
+	}
 }
 
 func TestTVBotUIAnalysisManualCooldownControls(t *testing.T) {
