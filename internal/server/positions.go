@@ -4512,6 +4512,9 @@ func currentOpenPosition(ctx context.Context, client okx.Client, instID, posSide
 }
 
 func placeMarketPositionClose(ctx context.Context, cfg config.Config, client okx.Client, position okx.Position, closeSz string) (positionCloseOrder, error) {
+	if strings.TrimSpace(closeSz) == "" {
+		return closeEntireOKXPosition(ctx, cfg, client, position)
+	}
 	req, partial, err := positionCloseOrderRequest(cfg, position, "market", "", closeSz)
 	if err != nil {
 		return positionCloseOrder{}, err
@@ -4529,6 +4532,35 @@ func placeMarketPositionClose(ctx context.Context, cfg config.Config, client okx
 		return positionCloseOrder{}, fmt.Errorf("OKX market close rejected by price protection: %v; protected limit retry at %s failed: %w", err, fallbackReq.Px, fallbackErr)
 	}
 	return positionCloseOrder{Position: position, Ack: fallbackAck, Px: fallbackReq.Px, CloseSz: fallbackReq.Sz, Partial: partial}, nil
+}
+
+// closeEntireOKXPosition uses OKX's dedicated whole-position market-close
+// endpoint. It avoids representing a manual full close as a normal market
+// order, which OKX may price-band and leave pending; autoCxl removes any
+// outstanding closing orders for this position as part of the request.
+func closeEntireOKXPosition(ctx context.Context, cfg config.Config, client okx.Client, position okx.Position) (positionCloseOrder, error) {
+	mgnMode := strings.ToLower(strings.TrimSpace(position.MgnMode))
+	if mgnMode == "" {
+		mgnMode = cfg.MarginMode()
+	}
+	req := okx.ClosePositionRequest{
+		InstID:  strings.ToUpper(strings.TrimSpace(position.InstID)),
+		MgnMode: mgnMode,
+		AutoCxl: true,
+		ClOrdID: nextPositionCloseClOrdID(),
+	}
+	if posSide := normalizePosSide(position.PosSide); posSide != "" {
+		req.PosSide = posSide
+	}
+	ack, _, err := client.ClosePosition(ctx, req)
+	if err != nil {
+		return positionCloseOrder{}, err
+	}
+	return positionCloseOrder{
+		Position: position,
+		Ack:      okx.OrderAck{ClOrdID: firstNonEmpty(ack.ClOrdID, req.ClOrdID)},
+		CloseSz:  absolutePositionSize(position.Pos),
+	}, nil
 }
 
 // recoverUnfilledMarketPositionClose prevents an accepted OKX market close

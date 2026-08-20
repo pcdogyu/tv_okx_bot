@@ -376,6 +376,23 @@ type PlaceOrderRequest struct {
 	AttachAlgoOrds []map[string]string `json:"attachAlgoOrds,omitempty"`
 }
 
+// ClosePositionRequest requests that OKX closes an entire futures or perpetual
+// position. Unlike a regular market order, this uses OKX's dedicated
+// close-position endpoint and can atomically cancel pending closing orders.
+type ClosePositionRequest struct {
+	InstID  string `json:"instId"`
+	MgnMode string `json:"mgnMode"`
+	PosSide string `json:"posSide,omitempty"`
+	AutoCxl bool   `json:"autoCxl,omitempty"`
+	ClOrdID string `json:"clOrdId,omitempty"`
+}
+
+type ClosePositionAck struct {
+	ClOrdID string `json:"clOrdId"`
+	InstID  string `json:"instId"`
+	PosSide string `json:"posSide"`
+}
+
 type PlaceAlgoOrderRequest struct {
 	InstID          string `json:"instId"`
 	TDMode          string `json:"tdMode"`
@@ -661,6 +678,21 @@ func (c Client) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (OrderAck
 	}
 	if data[0].SCode != "" && data[0].SCode != "0" {
 		return data[0], env, fmt.Errorf("okx order rejected %s: %s", data[0].SCode, data[0].SMsg)
+	}
+	return data[0], env, nil
+}
+
+func (c Client) ClosePosition(ctx context.Context, req ClosePositionRequest) (ClosePositionAck, Envelope, error) {
+	env, err := c.Do(ctx, http.MethodPost, "/api/v5/trade/close-position", nil, req, true)
+	if err != nil {
+		return ClosePositionAck{}, env, err
+	}
+	var data []ClosePositionAck
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return ClosePositionAck{}, env, err
+	}
+	if len(data) == 0 {
+		return ClosePositionAck{}, env, errors.New("okx close-position response data is empty")
 	}
 	return data[0], env, nil
 }

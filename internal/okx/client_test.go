@@ -436,6 +436,53 @@ func TestClientPlaceOrderSendsReduceOnly(t *testing.T) {
 	}
 }
 
+func TestClientClosePositionSignsPrivateRequest(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
+	secret := "secret"
+	reqBody := ClosePositionRequest{
+		InstID:  "H-USDT-SWAP",
+		MgnMode: "isolated",
+		AutoCxl: true,
+		ClOrdID: "PC1784880000000000001",
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/trade/close-position" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodyBytes, _ := json.Marshal(reqBody)
+		timestamp := fixedNow.UTC().Format("2006-01-02T15:04:05.000Z")
+		wantSign := sign(timestamp, http.MethodPost, "/api/v5/trade/close-position", string(bodyBytes), secret)
+		if r.Header.Get("OK-ACCESS-TIMESTAMP") != timestamp || r.Header.Get("OK-ACCESS-SIGN") != wantSign {
+			t.Fatal("invalid OKX signature headers")
+		}
+		if r.Header.Get("x-simulated-trading") != "1" || body["instId"] != "H-USDT-SWAP" || body["mgnMode"] != "isolated" || body["autoCxl"] != true || body["clOrdId"] != reqBody.ClOrdID {
+			t.Fatalf("unexpected close-position body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"H-USDT-SWAP","posSide":"net","clOrdId":"PC1784880000000000001"}]}`))
+	}))
+	defer ts.Close()
+
+	client := Client{
+		BaseURL:     ts.URL,
+		Credentials: Credentials{APIKey: "key", SecretKey: secret, Passphrase: "pass"},
+		Demo:        true,
+		HTTPClient:  ts.Client(),
+		Now:         func() time.Time { return fixedNow },
+	}
+	ack, _, err := client.ClosePosition(context.Background(), reqBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.InstID != reqBody.InstID || ack.PosSide != "net" || ack.ClOrdID != reqBody.ClOrdID {
+		t.Fatalf("bad close-position acknowledgement: %#v", ack)
+	}
+}
+
 func TestClientPlaceAlgoOrderSignsPrivateRequest(t *testing.T) {
 	fixedNow := time.Date(2026, 7, 24, 3, 0, 0, 123000000, time.UTC)
 	secret := "secret"
