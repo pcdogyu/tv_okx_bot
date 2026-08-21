@@ -225,25 +225,27 @@ func (s *Server) executePositionCloseSignal(signalID string, signal trading.Sign
 		}
 		return
 	}
-	if !isStopLossCloseSignal(signal) {
+	cooldownSource, shouldCreateCooldown := webhookCloseCooldownSource(signal)
+	if !shouldCreateCooldown {
 		return
 	}
 	triggerPrice := strings.TrimSpace(result.Px)
 	if triggerPrice == "" && signal.Price.Set {
 		triggerPrice = trading.NormalizeFloat(signal.Price.Value)
 	}
-	if _, _, err := s.recordCoinpairCooldown(
-		"stop_loss_webhook:"+signalID,
-		"stop_loss_webhook",
+	if _, _, err := s.recordCoinpairCooldownWithDuration(
+		cooldownSource+":"+signalID,
+		cooldownSource,
 		firstNonEmptyString(result.TargetExchange, signal.TargetExchange),
 		firstNonEmptyString(result.APIID, signal.APIID),
 		triggerPrice,
 		completedAt,
+		tvWebhookExitCooldownDuration,
 		result.InstID,
 		signal.Coinpair,
 		signal.Ticker,
 	); err != nil && s.Logger != nil {
-		s.Logger.Error("failed to record stop-loss coinpair cooldown", "signal_id", signalID, "coinpair", signal.Coinpair, "error", err)
+		s.Logger.Error("failed to record TP/SL webhook coinpair cooldown", "signal_id", signalID, "coinpair", signal.Coinpair, "source", cooldownSource, "error", err)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 
 const (
 	coinpairCooldownDuration        = 24 * time.Hour
+	tvWebhookExitCooldownDuration   = 6 * time.Hour
 	coinpairCooldownCleanupInterval = time.Minute
 )
 
@@ -208,8 +209,15 @@ func (s *Server) activeCoinpairCooldown(signal trading.Signal, now time.Time) (s
 }
 
 func (s *Server) recordCoinpairCooldown(eventID, source, exchange, apiID, triggerPrice string, occurredAt time.Time, symbolCandidates ...string) (storage.CoinpairBlock, bool, error) {
+	return s.recordCoinpairCooldownWithDuration(eventID, source, exchange, apiID, triggerPrice, occurredAt, coinpairCooldownDuration, symbolCandidates...)
+}
+
+func (s *Server) recordCoinpairCooldownWithDuration(eventID, source, exchange, apiID, triggerPrice string, occurredAt time.Time, duration time.Duration, symbolCandidates ...string) (storage.CoinpairBlock, bool, error) {
 	if s.Orders == nil {
 		return storage.CoinpairBlock{}, false, nil
+	}
+	if duration <= 0 {
+		return storage.CoinpairBlock{}, false, fmt.Errorf("cooldown duration must be positive")
 	}
 	keyword, symbol := coinpairCooldownIdentity(symbolCandidates...)
 	if keyword == "" {
@@ -228,7 +236,7 @@ func (s *Server) recordCoinpairCooldown(eventID, source, exchange, apiID, trigge
 		Exchange:     exchange,
 		APIID:        apiID,
 		OccurredAt:   occurredAt,
-		ExpiresAt:    occurredAt.Add(coinpairCooldownDuration),
+		ExpiresAt:    occurredAt.Add(duration),
 	}, s.now())
 }
 
@@ -259,19 +267,29 @@ func coinpairCooldownIdentity(values ...string) (string, string) {
 	return "", ""
 }
 
-func isStopLossCloseSignal(signal trading.Signal) bool {
+func webhookCloseCooldownSource(signal trading.Signal) (string, bool) {
 	if !strings.EqualFold(strings.TrimSpace(signal.PositionEffect), trading.PositionEffectClose) {
-		return false
+		return "", false
 	}
 	primary := strings.ToLower(strings.Join([]string{signal.OrderIntent, signal.Intent}, " "))
-	if containsStopLossMarker(primary) {
-		return true
-	}
-	if containsTakeProfitMarker(primary) {
-		return false
+	if source, ok := webhookCloseCooldownSourceFromText(primary); ok {
+		return source, true
 	}
 	fallback := strings.ToLower(strings.Join([]string{signal.Condition, signal.Text}, " "))
-	return containsStopLossMarker(fallback) && !containsTakeProfitMarker(fallback)
+	return webhookCloseCooldownSourceFromText(fallback)
+}
+
+func webhookCloseCooldownSourceFromText(text string) (string, bool) {
+	hasStopLoss := containsStopLossMarker(text)
+	hasTakeProfit := containsTakeProfitMarker(text)
+	switch {
+	case hasTakeProfit && !hasStopLoss:
+		return "take_profit_webhook", true
+	case hasStopLoss && !hasTakeProfit:
+		return "stop_loss_webhook", true
+	default:
+		return "", false
+	}
 }
 
 func containsStopLossMarker(text string) bool {

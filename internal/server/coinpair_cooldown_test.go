@@ -46,20 +46,22 @@ func TestNegativeRealizedPnLClassification(t *testing.T) {
 	}
 }
 
-func TestStopLossCloseSignalRequiresExplicitStopLoss(t *testing.T) {
+func TestWebhookCloseCooldownSourceRequiresUnambiguousTPSL(t *testing.T) {
 	cases := []struct {
 		signal trading.Signal
-		want   bool
+		want   string
 	}{
-		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, OrderIntent: "sl_short"}, want: true},
-		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止损"}, want: true},
-		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止盈"}, want: false},
-		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止盈止损"}, want: false},
-		{signal: trading.Signal{PositionEffect: trading.PositionEffectOpen, Condition: "多单止损"}, want: false},
+		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, OrderIntent: "sl_short"}, want: "stop_loss_webhook"},
+		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, OrderIntent: "tp_long"}, want: "take_profit_webhook"},
+		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止损"}, want: "stop_loss_webhook"},
+		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止盈"}, want: "take_profit_webhook"},
+		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止盈止损"}, want: ""},
+		{signal: trading.Signal{PositionEffect: trading.PositionEffectOpen, Condition: "多单止损"}, want: ""},
 	}
 	for _, tc := range cases {
-		if got := isStopLossCloseSignal(tc.signal); got != tc.want {
-			t.Fatalf("isStopLossCloseSignal(%#v)=%v want %v", tc.signal, got, tc.want)
+		got, ok := webhookCloseCooldownSource(tc.signal)
+		if got != tc.want || ok != (tc.want != "") {
+			t.Fatalf("webhookCloseCooldownSource(%#v)=(%q,%v) want %q", tc.signal, got, ok, tc.want)
 		}
 	}
 }

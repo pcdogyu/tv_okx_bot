@@ -1656,7 +1656,7 @@ const tvbotHTML = `<!doctype html>
           <div class="coinpair-filter-list" id="ignored-coinpair-list"><span class="muted coinpair-filter-empty">暂无已添加的币对过滤</span></div>
         </div>
         <div class="coinpair-filter-group">
-          <h4 class="coinpair-filter-group-title">动态冷静期（锁定 24 小时）</h4>
+          <h4 class="coinpair-filter-group-title">动态冷静期（按来源生效）</h4>
           <div class="coinpair-filter-list" id="coinpair-cooldown-list"><span class="muted coinpair-filter-empty">暂无冷静期币对</span></div>
         </div>
       </div>
@@ -5166,10 +5166,18 @@ const tvbotHTML = `<!doctype html>
 
     function coinpairCooldownSource(source) {
       if (source === "stop_loss_webhook") return "止损信号";
+      if (source === "take_profit_webhook") return "止盈信号";
       if (source === "position_monitor") return "持仓监控";
       if (source === "exchange_fill") return "亏损成交";
       if (source === "analysis_manual") return "手动冷静期";
       return source || "止损";
+    }
+
+    function coinpairCooldownPriceLabel(source) {
+      if (source === "analysis_manual") return "平仓价";
+      if (source === "take_profit_webhook") return "止盈触发价";
+      if (source === "stop_loss_webhook") return "止损触发价";
+      return "止损价";
     }
 
     function renderCoinpairCooldownList() {
@@ -5182,10 +5190,10 @@ const tvbotHTML = `<!doctype html>
         const expiresAt = String(block.expires_at || "");
         const source = coinpairCooldownSource(block.source);
         const sourceExchange = block.exchange ? (" · " + exchangeLabel(block.exchange)) : "";
-        const priceLabel = block.source === "analysis_manual" ? "平仓价" : "止损价";
+        const priceLabel = coinpairCooldownPriceLabel(block.source);
         const removing = !!state.coinpairCooldownRemoving[ignoredCoinpairKey(keyword)];
-        const removeLabel = "提前解除 " + keyword + " 的 24 小时冷静期";
-        return '<div class="coinpair-filter-item coinpair-cooldown-item" title="24 小时内禁止新开仓">' +
+        const removeLabel = "提前解除 " + keyword + " 的冷静期";
+        return '<div class="coinpair-filter-item coinpair-cooldown-item" title="冷静期内禁止新开仓">' +
           '<button class="coinpair-filter-remove" type="button" data-cooldown-keyword="' + escapeHTML(keyword) + '" title="' + escapeHTML(removeLabel) + '" aria-label="' + escapeHTML(removeLabel) + '"' + (removing ? " disabled" : "") + '>×</button>' +
           '<div class="coinpair-cooldown-title"><span aria-hidden="true">&#128274;</span><strong>' + escapeHTML(keyword) + '</strong></div>' +
           '<span class="coinpair-cooldown-meta">' + escapeHTML(priceLabel) + '：' + escapeHTML(price || "价格待确认") + '</span>' +

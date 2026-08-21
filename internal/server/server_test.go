@@ -563,7 +563,7 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`id="add-ignored-coinpair"`),
 		[]byte(`id="ignored-coinpair-list"`),
 		[]byte(`id="coinpair-cooldown-list"`),
-		[]byte(`动态冷静期（锁定 24 小时）`),
+		[]byte(`动态冷静期（按来源生效）`),
 		[]byte(`function loadCoinpairBlocks()`),
 		[]byte(`function renderCoinpairCooldownList()`),
 		[]byte(`data-cooldown-keyword`),
@@ -571,7 +571,7 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`method: "DELETE"`),
 		[]byte(`已移出冷静期`),
 		[]byte(`coinpairBlockPollIntervalMs = 20000`),
-		[]byte(`止损价`),
+		[]byte(`function coinpairCooldownPriceLabel(source)`),
 		[]byte(`价格待确认`),
 		[]byte(`data-ignored-coinpair-index`),
 		[]byte(`ignored_coinpairs: keywords`),
@@ -612,7 +612,7 @@ func TestTVBotUIAnalysisManualCooldownControls(t *testing.T) {
 		[]byte(`trigger_price: button.dataset.triggerPrice`),
 		[]byte(`冷静中`),
 		[]byte(`手动冷静期`),
-		[]byte(`priceLabel = block.source === "analysis_manual" ? "平仓价" : "止损价"`),
+		[]byte(`function coinpairCooldownPriceLabel(source)`),
 		[]byte(`activeTab !== "orders" && activeTab !== "analysis"`),
 	} {
 		if !bytes.Contains(body, marker) {

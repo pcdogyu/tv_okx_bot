@@ -16,7 +16,47 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
-func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
+func TestTVOrderTPSLSignalExecutesBinanceLimitClose(t *testing.T) {
+	cases := []struct {
+		name           string
+		positionAmount string
+		orderIntent    string
+		action         trading.Side
+		positionSide   string
+		orderSide      string
+		orderPrice     string
+		cooldownSource string
+	}{
+		{
+			name:           "stop loss short",
+			positionAmount: "-221512",
+			orderIntent:    "sl_short",
+			action:         trading.ActionLong,
+			positionSide:   trading.PositionSideShort,
+			orderSide:      "BUY",
+			orderPrice:     "0.022631",
+			cooldownSource: "stop_loss_webhook",
+		},
+		{
+			name:           "take profit long",
+			positionAmount: "221512",
+			orderIntent:    "tp_long",
+			action:         trading.ActionShort,
+			positionSide:   trading.PositionSideLong,
+			orderSide:      "SELL",
+			orderPrice:     "0.022629",
+			cooldownSource: "take_profit_webhook",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testTVOrderTPSLSignalExecutesBinanceLimitClose(t, tc.positionAmount, tc.orderIntent, tc.action, tc.positionSide, tc.orderSide, tc.orderPrice, tc.cooldownSource)
+		})
+	}
+}
+
+func testTVOrderTPSLSignalExecutesBinanceLimitClose(t *testing.T, positionAmount, orderIntent string, action trading.Side, positionSide, expectedOrderSide, expectedOrderPrice, cooldownSource string) {
+	t.Helper()
 	withSlowPositionCloseWatcher(t)
 
 	srv := newTestServer(t)
@@ -32,7 +72,7 @@ func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
 			if r.URL.Query().Get("symbol") != "ESPORTSUSDT" {
 				t.Fatalf("bad positions query: %s", r.URL.RawQuery)
 			}
-			_, _ = w.Write([]byte(`[{"symbol":"ESPORTSUSDT","positionSide":"BOTH","positionAmt":"-221512","entryPrice":"0.02261","markPrice":"0.02264","unRealizedProfit":"8.86","liquidationPrice":"0.03","isolatedMargin":"508.81","notional":"5013.06","marginAsset":"USDT","leverage":"10","marginType":"isolated","updateTime":1784880000000}]`))
+			_, _ = w.Write([]byte(`[{"symbol":"ESPORTSUSDT","positionSide":"BOTH","positionAmt":"` + positionAmount + `","entryPrice":"0.02261","markPrice":"0.02264","unRealizedProfit":"8.86","liquidationPrice":"0.03","isolatedMargin":"508.81","notional":"5013.06","marginAsset":"USDT","leverage":"10","marginType":"isolated","updateTime":1784880000000}]`))
 		case "/fapi/v1/exchangeInfo":
 			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"ESPORTSUSDT","status":"TRADING","pricePrecision":6,"quantityPrecision":0,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.000001"},{"filterType":"LOT_SIZE","minQty":"1","stepSize":"1"}]}]}`))
 		case "/fapi/v1/ticker/bookTicker":
@@ -68,7 +108,8 @@ func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
 	signal.Coinpair = "ESPORTSUSDT.P"
 	signal.Ticker = "ESPORTSUSDT.P"
 	signal.Price = trading.NewFlexibleFloat(0.02264)
-	signal.Condition = "空单止损"
+	signal.Action = action
+	signal.OrderIntent = orderIntent
 	signal.Token = srv.Token.Generate(signal.CanonicalWebhookTokenPayload())
 	resp := postTVOrderSignal(t, srv, signal)
 	if resp.Status != "accepted" {
@@ -81,18 +122,18 @@ func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
 		t.Fatalf("close signal should not use opening executor: %#v", got)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if rec.PositionEffect != trading.PositionEffectClose || rec.PositionSide != trading.PositionSideShort {
+	if rec.PositionEffect != trading.PositionEffectClose || rec.PositionSide != positionSide || rec.OrderIntent != orderIntent {
 		t.Fatalf("close semantics not stored: %#v", rec)
 	}
-	if rec.Result.PositionEffect != trading.PositionEffectClose || rec.Result.PositionSide != trading.PositionSideShort || rec.Result.TargetExchange != trading.ExchangeBinance {
+	if rec.Result.PositionEffect != trading.PositionEffectClose || rec.Result.PositionSide != positionSide || rec.Result.TargetExchange != trading.ExchangeBinance {
 		t.Fatalf("close result semantics not stored: %#v", rec.Result)
 	}
 	blocks, err := srv.Orders.ListActiveCoinpairBlocks(srv.now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(blocks) != 1 || blocks[0].Keyword != "ESPORTS" || blocks[0].TriggerPrice != "0.022631" || blocks[0].Source != "stop_loss_webhook" {
-		t.Fatalf("submitted stop-loss webhook did not create cooldown: %#v", blocks)
+	if len(blocks) != 1 || blocks[0].Keyword != "ESPORTS" || blocks[0].TriggerPrice != expectedOrderPrice || blocks[0].Source != cooldownSource || !blocks[0].ExpiresAt.Equal(srv.now().Add(tvWebhookExitCooldownDuration)) {
+		t.Fatalf("submitted TP/SL webhook did not create six-hour cooldown: %#v", blocks)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -101,11 +142,11 @@ func TestTVOrderCloseSignalExecutesBinanceLimitClose(t *testing.T) {
 	}
 	form := orderForms[0]
 	if form.Get("symbol") != "ESPORTSUSDT" ||
-		form.Get("side") != "BUY" ||
+		form.Get("side") != expectedOrderSide ||
 		form.Get("type") != "LIMIT" ||
 		form.Get("timeInForce") != "GTC" ||
 		form.Get("quantity") != "221512" ||
-		form.Get("price") != "0.022631" ||
+		form.Get("price") != expectedOrderPrice ||
 		form.Get("reduceOnly") != "true" ||
 		form.Get("positionSide") != "" {
 		t.Fatalf("bad Binance close form: %#v", form)
@@ -204,17 +245,27 @@ func TestTVOrderEntryIntentStillUsesOpeningExecutor(t *testing.T) {
 	}
 }
 
-func TestTVOrderPositionSemanticsSupportExplicitTPShort(t *testing.T) {
-	signal := trading.Signal{
-		Action:         trading.ActionLong,
-		PositionEffect: "tp",
-		PositionSide:   "空",
+func TestTVOrderPositionSemanticsSupportExplicitTPSLIntents(t *testing.T) {
+	cases := []struct {
+		intent string
+		action trading.Side
+		side   string
+	}{
+		{intent: "tp_long", action: trading.ActionShort, side: trading.PositionSideLong},
+		{intent: "sl_long", action: trading.ActionShort, side: trading.PositionSideLong},
+		{intent: "tp_short", action: trading.ActionLong, side: trading.PositionSideShort},
+		{intent: "sl_short", action: trading.ActionLong, side: trading.PositionSideShort},
 	}
-	if err := applyTVOrderPositionSemantics(&signal); err != nil {
-		t.Fatal(err)
-	}
-	if signal.PositionEffect != trading.PositionEffectClose || signal.PositionSide != trading.PositionSideShort {
-		t.Fatalf("tp short should normalize to close short: %#v", signal)
+	for _, tc := range cases {
+		t.Run(tc.intent, func(t *testing.T) {
+			signal := trading.Signal{Action: tc.action, OrderIntent: tc.intent}
+			if err := applyTVOrderPositionSemantics(&signal); err != nil {
+				t.Fatal(err)
+			}
+			if signal.PositionEffect != trading.PositionEffectClose || signal.PositionSide != tc.side {
+				t.Fatalf("%s should normalize to close %s: %#v", tc.intent, tc.side, signal)
+			}
+		})
 	}
 }
 
