@@ -10,4 +10,5 @@ tmp/
 pem/
 .cache/
 .config/
+/.analysis-output/
 /go/
