@@ -18,6 +18,7 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/binance"
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/okx"
+	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
@@ -77,16 +78,22 @@ type positionsResponse struct {
 
 type positionView struct {
 	okx.Position
-	PricePrecision    *int   `json:"price_precision,omitempty"`
-	QuantityPrecision *int   `json:"quantity_precision,omitempty"`
-	EntryFillTime     string `json:"entry_fill_time"`
-	HoldingSeconds    int64  `json:"holding_seconds"`
-	EntryTimeSource   string `json:"entry_time_source"`
-	EntryTimeError    string `json:"entry_time_error"`
+	PricePrecision    *int     `json:"price_precision,omitempty"`
+	QuantityPrecision *int     `json:"quantity_precision,omitempty"`
+	MarketStrategy    string   `json:"market_strategy,omitempty"`
+	EntryADX          *float64 `json:"entry_adx,omitempty"`
+	EntryFillTime     string   `json:"entry_fill_time"`
+	HoldingSeconds    int64    `json:"holding_seconds"`
+	EntryTimeSource   string   `json:"entry_time_source"`
+	EntryTimeError    string   `json:"entry_time_error"`
+	entryOrdID        string
+	entryClOrdID      string
 }
 
 type positionEntryFill struct {
 	InstID   string
+	OrdID    string
+	ClOrdID  string
 	PosSide  string
 	Side     string
 	Size     float64
@@ -1881,6 +1888,7 @@ func (s *Server) fetchPositions(ctx context.Context, cfg config.Config, requeste
 		},
 	)
 	views := positionViewsWithEntryTimes(positions, fills, now, entryTimeSourceOKXFills, fillErr)
+	s.enrichPositionViewsWithOrderMetadata(views, trading.ExchangeOKX, apiID)
 	applyPositionViewPrecisions(views, precisions)
 	return positionsResponse{
 		OK:          true,
@@ -1978,6 +1986,7 @@ func (s *Server) fetchBinancePositions(ctx context.Context, cfg config.Config, r
 		}
 	}
 	views := binancePositionViewsWithEntryTimes(out, fillsBySymbol, errorsBySymbol, now)
+	s.enrichPositionViewsWithOrderMetadata(views, trading.ExchangeBinance, apiID)
 	applyPositionViewPrecisions(views, precisions)
 	return positionsResponse{
 		OK:          true,
@@ -2118,6 +2127,8 @@ func fetchOKXPositionEntryFills(ctx context.Context, client okx.Client, instType
 			}
 			out = append(out, positionEntryFill{
 				InstID:   strings.ToUpper(strings.TrimSpace(fill.InstID)),
+				OrdID:    strings.TrimSpace(fill.OrdID),
+				ClOrdID:  strings.TrimSpace(fill.ClOrdID),
 				PosSide:  fill.PosSide,
 				Side:     fill.Side,
 				Size:     size,
@@ -2162,6 +2173,7 @@ func fetchBinancePositionEntryFills(ctx context.Context, client binance.Client, 
 			}
 			out = append(out, positionEntryFill{
 				InstID:   strings.ToUpper(strings.TrimSpace(trade.Symbol)),
+				OrdID:    strconv.FormatInt(trade.OrderID, 10),
 				PosSide:  trade.PositionSide,
 				Side:     trade.Side,
 				Size:     size,
@@ -2203,14 +2215,17 @@ func positionViewWithEntryTime(position okx.Position, fills []positionEntryFill,
 		applyPositionTimeFallback(&view, now)
 		return view
 	}
-	entryTime, ok, message := positionEntryFillTime(position, fills)
+	entryFill, ok, message := positionEntryFillForPosition(position, fills)
 	if !ok {
 		view.EntryTimeError = message
 		applyPositionTimeFallback(&view, now)
 		return view
 	}
+	entryTime := entryFill.FillTime
 	view.EntryFillTime = entryTime.UTC().Format(time.RFC3339Nano)
 	view.EntryTimeSource = source
+	view.entryOrdID = entryFill.OrdID
+	view.entryClOrdID = entryFill.ClOrdID
 	if seconds := int64(now.UTC().Sub(entryTime.UTC()).Seconds()); seconds > 0 {
 		view.HoldingSeconds = seconds
 	}
@@ -2264,9 +2279,14 @@ func allPositionEntryTimesFound(positions []okx.Position, fills []positionEntryF
 }
 
 func positionEntryFillTime(position okx.Position, fills []positionEntryFill) (time.Time, bool, string) {
+	fill, ok, message := positionEntryFillForPosition(position, fills)
+	return fill.FillTime, ok, message
+}
+
+func positionEntryFillForPosition(position okx.Position, fills []positionEntryFill) (positionEntryFill, bool, string) {
 	current, ok := signedPositionSize(position)
 	if !ok || nearlyZero(current) {
-		return time.Time{}, false, "当前持仓数量无效，无法计算成交起点"
+		return positionEntryFill{}, false, "当前持仓数量无效，无法计算成交起点"
 	}
 	currentSign := signOf(current)
 	relevant := make([]positionEntryFill, 0, len(fills))
@@ -2293,11 +2313,53 @@ func positionEntryFillTime(position okx.Position, fills []positionEntryFill) (ti
 		}
 		before := after - delta
 		if signOf(after) == currentSign && (nearlyZero(before) || signOf(before) != currentSign) {
-			return fill.FillTime, true, ""
+			return fill, true, ""
 		}
 		after = before
 	}
-	return time.Time{}, false, "90天内成交不足，无法重建当前持仓起点"
+	return positionEntryFill{}, false, "90天内成交不足，无法重建当前持仓起点"
+}
+
+func (s *Server) enrichPositionViewsWithOrderMetadata(views []positionView, exchange, apiID string) {
+	if s.Orders == nil || len(views) == 0 {
+		return
+	}
+	records := s.Orders.ListByTargetExchange(exchange, 5000)
+	for i := range views {
+		if views[i].entryOrdID == "" && views[i].entryClOrdID == "" {
+			continue
+		}
+		for _, rec := range records {
+			if rec.Status != storage.StatusSubmitted || rec.MarketStrategy == "" || rec.ADX == nil {
+				continue
+			}
+			if rec.PositionEffect != "" && rec.PositionEffect != trading.PositionEffectOpen {
+				continue
+			}
+			resolvedAPIID := firstNonEmptyString(rec.Result.APIID, rec.APIID)
+			if !strings.EqualFold(strings.TrimSpace(resolvedAPIID), strings.TrimSpace(apiID)) ||
+				!strings.EqualFold(strings.TrimSpace(rec.Result.InstID), strings.TrimSpace(views[i].InstID)) {
+				continue
+			}
+			if rec.PositionSide != "" && rec.PositionSide != positionDirectionKind(views[i].Position) {
+				continue
+			}
+			if !positionEntryOrderMatches(rec.Result, views[i].entryOrdID, views[i].entryClOrdID) {
+				continue
+			}
+			views[i].MarketStrategy = rec.MarketStrategy
+			entryADX := *rec.ADX
+			views[i].EntryADX = &entryADX
+			break
+		}
+	}
+}
+
+func positionEntryOrderMatches(result trading.OrderResult, ordID, clOrdID string) bool {
+	ordID = strings.TrimSpace(ordID)
+	clOrdID = strings.TrimSpace(clOrdID)
+	return ordID != "" && ordID == strings.TrimSpace(result.OrdID) ||
+		clOrdID != "" && clOrdID == strings.TrimSpace(result.ClOrdID)
 }
 
 func positionEntryFillMatches(position okx.Position, fill positionEntryFill) bool {

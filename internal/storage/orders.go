@@ -34,6 +34,7 @@ type OrderRecord struct {
 	DedupeKey      string              `json:"dedupe_key"`
 	Status         OrderStatus         `json:"status"`
 	Action         trading.Side        `json:"action"`
+	SourceAction   trading.Side        `json:"source_action,omitempty"`
 	APIID          string              `json:"api_id,omitempty"`
 	SourceExchange string              `json:"source_exchange,omitempty"`
 	TargetExchange string              `json:"target_exchange,omitempty"`
@@ -43,6 +44,8 @@ type OrderRecord struct {
 	Price          string              `json:"price"`
 	Leverage       int                 `json:"leverage"`
 	Amount         string              `json:"amount"`
+	ADX            *float64            `json:"adx,omitempty"`
+	MarketStrategy string              `json:"market_strategy,omitempty"`
 	Risk           trading.Risk        `json:"risk,omitempty"`
 	OrderIntent    string              `json:"order_intent,omitempty"`
 	PositionEffect string              `json:"position_effect,omitempty"`
@@ -460,6 +463,7 @@ func (s *OrderStore) migrateSQLite() error {
 			dedupe_key TEXT NOT NULL,
 			status TEXT NOT NULL,
 			action TEXT,
+			source_action TEXT,
 			api_id TEXT,
 			source_exchange TEXT,
 			target_exchange TEXT,
@@ -469,6 +473,8 @@ func (s *OrderStore) migrateSQLite() error {
 			price TEXT,
 			leverage INTEGER,
 			amount TEXT,
+			adx REAL,
+			market_strategy TEXT,
 			risk_json TEXT,
 			order_intent TEXT,
 			position_effect TEXT,
@@ -675,6 +681,11 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 			return err
 		}
 	}
+	if !columns["source_action"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN source_action TEXT`); err != nil {
+			return err
+		}
+	}
 	if !columns["target_exchange"] {
 		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN target_exchange TEXT`); err != nil {
 			return err
@@ -692,6 +703,16 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 	}
 	if !columns["risk_json"] {
 		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN risk_json TEXT`); err != nil {
+			return err
+		}
+	}
+	if !columns["adx"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN adx REAL`); err != nil {
+			return err
+		}
+	}
+	if !columns["market_strategy"] {
+		if _, err := s.db.Exec(`ALTER TABLE orders ADD COLUMN market_strategy TEXT`); err != nil {
 			return err
 		}
 	}
@@ -713,6 +734,9 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 	if _, err := s.db.Exec(`UPDATE orders SET source_exchange = '' WHERE source_exchange IS NULL`); err != nil {
 		return err
 	}
+	if _, err := s.db.Exec(`UPDATE orders SET source_action = '' WHERE source_action IS NULL`); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`UPDATE orders SET target_exchange = 'okx' WHERE target_exchange IS NULL OR target_exchange = ''`); err != nil {
 		return err
 	}
@@ -723,6 +747,9 @@ func (s *OrderStore) ensureOrderExchangeColumns() error {
 		return err
 	}
 	if _, err := s.db.Exec(`UPDATE orders SET risk_json = '' WHERE risk_json IS NULL`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`UPDATE orders SET market_strategy = '' WHERE market_strategy IS NULL`); err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(`UPDATE orders SET order_intent = '' WHERE order_intent IS NULL`); err != nil {
@@ -1021,13 +1048,14 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 		riskJSON = string(b)
 	}
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO orders (
-		signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
-		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		signal_id, dedupe_key, status, action, source_action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
+		leverage, amount, adx, market_strategy, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.SignalID,
 		rec.DedupeKey,
 		string(rec.Status),
 		string(rec.Action),
+		string(rec.SourceAction),
 		rec.APIID,
 		rec.SourceExchange,
 		rec.TargetExchange,
@@ -1037,6 +1065,8 @@ func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {
 		rec.Price,
 		rec.Leverage,
 		rec.Amount,
+		rec.ADX,
+		rec.MarketStrategy,
 		riskJSON,
 		rec.OrderIntent,
 		rec.PositionEffect,
@@ -1082,8 +1112,8 @@ func (s *OrderStore) listSQLiteSearchPageLocked(exchange, query string, limit, o
 		offset = 0
 	}
 	where, args := orderSQLiteSearchWhere(exchange, query)
-	sql := `SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
-		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+	sql := `SELECT signal_id, dedupe_key, status, action, source_action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
+		leverage, amount, adx, market_strategy, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders`
 	if where != "" {
 		sql += " WHERE " + where
@@ -1227,6 +1257,8 @@ func orderRecordSearchText(rec OrderRecord) string {
 		rec.TargetExchange,
 		string(rec.Status),
 		string(rec.Action),
+		string(rec.SourceAction),
+		rec.MarketStrategy,
 		rec.ErrorCode,
 		rec.Error,
 	}
@@ -1239,8 +1271,8 @@ func orderRecordSearchText(rec OrderRecord) string {
 }
 
 func (s *OrderStore) findSQLiteLocked(signalID string) (OrderRecord, error) {
-	row := s.db.QueryRow(`SELECT signal_id, dedupe_key, status, action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
-		leverage, amount, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
+	row := s.db.QueryRow(`SELECT signal_id, dedupe_key, status, action, source_action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
+		leverage, amount, adx, market_strategy, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders WHERE signal_id = ?`, signalID)
 	return scanOrder(row)
 }
@@ -1263,13 +1295,15 @@ type orderScanner interface {
 func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	var rec OrderRecord
 	var status, acceptedAt, updatedAt string
-	var action sql.NullString
-	var apiID, sourceExchange, targetExchange, tradeEnv, coinpair, ticker, price, amount, riskJSON, orderIntent, positionEffect, positionSide, tokenHash, resultJSON, errorCode, errorText, rawJSON sql.NullString
+	var action, sourceAction sql.NullString
+	var adx sql.NullFloat64
+	var apiID, sourceExchange, targetExchange, tradeEnv, coinpair, ticker, price, amount, marketStrategy, riskJSON, orderIntent, positionEffect, positionSide, tokenHash, resultJSON, errorCode, errorText, rawJSON sql.NullString
 	if err := scanner.Scan(
 		&rec.SignalID,
 		&rec.DedupeKey,
 		&status,
 		&action,
+		&sourceAction,
 		&apiID,
 		&sourceExchange,
 		&targetExchange,
@@ -1279,6 +1313,8 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 		&price,
 		&rec.Leverage,
 		&amount,
+		&adx,
+		&marketStrategy,
 		&riskJSON,
 		&orderIntent,
 		&positionEffect,
@@ -1295,6 +1331,7 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	}
 	rec.Status = OrderStatus(status)
 	rec.Action = trading.Side(nullableString(action))
+	rec.SourceAction = trading.Side(nullableString(sourceAction))
 	rec.APIID = nullableString(apiID)
 	rec.SourceExchange = nullableString(sourceExchange)
 	rec.TargetExchange = nullableString(targetExchange)
@@ -1306,6 +1343,10 @@ func scanOrder(scanner orderScanner) (OrderRecord, error) {
 	rec.Ticker = nullableString(ticker)
 	rec.Price = nullableString(price)
 	rec.Amount = nullableString(amount)
+	if adx.Valid {
+		rec.ADX = float64Pointer(adx.Float64)
+	}
+	rec.MarketStrategy = nullableString(marketStrategy)
 	rec.OrderIntent = nullableString(orderIntent)
 	rec.PositionEffect = nullableString(positionEffect)
 	rec.PositionSide = nullableString(positionSide)
@@ -1488,6 +1529,7 @@ func newOrderRecord(signal trading.Signal, dedupeKey string, status OrderStatus,
 		DedupeKey:      dedupeKey,
 		Status:         status,
 		Action:         signal.Action,
+		SourceAction:   signal.SourceAction,
 		APIID:          signal.APIID,
 		SourceExchange: strings.TrimSpace(signal.Exchange),
 		TargetExchange: trading.NormalizeExchange(signal.TargetExchange),
@@ -1495,6 +1537,8 @@ func newOrderRecord(signal trading.Signal, dedupeKey string, status OrderStatus,
 		Coinpair:       signal.Coinpair,
 		Ticker:         signal.Ticker,
 		Leverage:       signal.Leverage,
+		ADX:            cloneFloat64Pointer(signal.ADX),
+		MarketStrategy: strings.TrimSpace(signal.MarketStrategy),
 		Risk:           signal.Risk,
 		OrderIntent:    strings.TrimSpace(signal.OrderIntent),
 		PositionEffect: strings.TrimSpace(signal.PositionEffect),
@@ -1516,4 +1560,16 @@ func newOrderRecord(signal trading.Signal, dedupeKey string, status OrderStatus,
 		rec.TokenHash = ShortHash(signal.Token)
 	}
 	return rec
+}
+
+func cloneFloat64Pointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func float64Pointer(value float64) *float64 {
+	return &value
 }

@@ -72,16 +72,20 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
 	tp := trading.NewFlexibleFloat(3)
 	sl := trading.NewFlexibleFloat(1.5)
+	adx := 18.42
 	signal := trading.Signal{
-		Action:   trading.ActionShort,
-		APIID:    "backup",
-		TradeEnv: trading.TradeEnvLive,
-		Coinpair: "ETH",
-		Price:    trading.NewFlexibleFloat(2500),
-		SentAt:   "2026-07-24T03:00:00Z",
-		Ticker:   "ETHUSDT",
-		Leverage: 3,
-		Amount:   trading.NewFlexibleFloat(120),
+		Action:         trading.ActionShort,
+		SourceAction:   trading.ActionLong,
+		APIID:          "backup",
+		TradeEnv:       trading.TradeEnvLive,
+		Coinpair:       "ETH",
+		Price:          trading.NewFlexibleFloat(2500),
+		SentAt:         "2026-07-24T03:00:00Z",
+		Ticker:         "ETHUSDT",
+		Leverage:       3,
+		Amount:         trading.NewFlexibleFloat(120),
+		ADX:            &adx,
+		MarketStrategy: trading.MarketStrategyScalp,
 		Risk: trading.Risk{
 			Type:  trading.RiskTPSL,
 			TPPct: &tp,
@@ -128,6 +132,9 @@ func TestSQLiteOrderStoreRecordDuplicateAndMarkResults(t *testing.T) {
 	for _, rec := range records {
 		if rec.OrderIntent != "exit_long" || rec.PositionEffect != trading.PositionEffectClose || rec.PositionSide != trading.PositionSideLong || rec.TradeEnv != trading.TradeEnvLive {
 			t.Fatalf("position semantics should be preserved: %#v", rec)
+		}
+		if rec.SourceAction != trading.ActionLong || rec.ADX == nil || *rec.ADX != adx || rec.MarketStrategy != trading.MarketStrategyScalp {
+			t.Fatalf("ADX routing metadata should be preserved: %#v", rec)
 		}
 	}
 }
@@ -433,12 +440,13 @@ func TestSQLiteOrderStoreReadsLegacyRowsWithNullExchangeColumns(t *testing.T) {
 	if len(records) != 1 || records[0].SignalID != "sig-old" || records[0].TargetExchange != trading.ExchangeOKX {
 		t.Fatalf("legacy order should remain readable after exchange migration: %#v", records)
 	}
-	var sourceExchange, targetExchange, tradeEnv, rawJSON, riskJSON, orderIntent, positionEffect, positionSide string
-	if err := store.db.QueryRow(`SELECT source_exchange, target_exchange, trade_env, raw_json, risk_json, order_intent, position_effect, position_side FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceExchange, &targetExchange, &tradeEnv, &rawJSON, &riskJSON, &orderIntent, &positionEffect, &positionSide); err != nil {
+	var sourceAction, sourceExchange, targetExchange, tradeEnv, rawJSON, marketStrategy, riskJSON, orderIntent, positionEffect, positionSide string
+	var adx sql.NullFloat64
+	if err := store.db.QueryRow(`SELECT source_action, source_exchange, target_exchange, trade_env, raw_json, adx, market_strategy, risk_json, order_intent, position_effect, position_side FROM orders WHERE signal_id = 'sig-old'`).Scan(&sourceAction, &sourceExchange, &targetExchange, &tradeEnv, &rawJSON, &adx, &marketStrategy, &riskJSON, &orderIntent, &positionEffect, &positionSide); err != nil {
 		t.Fatal(err)
 	}
-	if sourceExchange != "" || targetExchange != trading.ExchangeOKX || tradeEnv != trading.TradeEnvDemo || rawJSON != "" || riskJSON != "" || orderIntent != "" || positionEffect != "" || positionSide != "" {
-		t.Fatalf("legacy order columns not backfilled source=%q target=%q trade_env=%q raw_json=%q risk_json=%q order_intent=%q position_effect=%q position_side=%q", sourceExchange, targetExchange, tradeEnv, rawJSON, riskJSON, orderIntent, positionEffect, positionSide)
+	if sourceAction != "" || sourceExchange != "" || targetExchange != trading.ExchangeOKX || tradeEnv != trading.TradeEnvDemo || rawJSON != "" || adx.Valid || marketStrategy != "" || riskJSON != "" || orderIntent != "" || positionEffect != "" || positionSide != "" {
+		t.Fatalf("legacy order columns not backfilled source_action=%q source=%q target=%q trade_env=%q raw_json=%q adx=%#v market_strategy=%q risk_json=%q order_intent=%q position_effect=%q position_side=%q", sourceAction, sourceExchange, targetExchange, tradeEnv, rawJSON, adx, marketStrategy, riskJSON, orderIntent, positionEffect, positionSide)
 	}
 }
 

@@ -906,6 +906,7 @@ func (s *Server) autoReentrySignal(ctx context.Context, cfg config.Config, clien
 	})
 	signal := trading.Signal{
 		Action:         rec.Action,
+		SourceAction:   rec.SourceAction,
 		APIID:          lifecycle.APIID,
 		TargetExchange: trading.ExchangeBinance,
 		TradeEnv:       orderRecordTradeEnv(rec),
@@ -917,6 +918,11 @@ func (s *Server) autoReentrySignal(ctx context.Context, cfg config.Config, clien
 		Leverage:       rec.Leverage,
 		Amount:         trading.NewFlexibleFloat(amount),
 		Risk:           rec.Risk,
+		OrderIntent:    rec.OrderIntent,
+		PositionEffect: trading.PositionEffectOpen,
+		PositionSide:   rec.PositionSide,
+		ADX:            rec.ADX,
+		MarketStrategy: rec.MarketStrategy,
 		RawJSON:        string(rawJSON),
 	}
 	signal.Normalize()

@@ -110,8 +110,28 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_token", "token validation failed")
 		return
 	}
+	signal.SourceAction = signal.Action
 	classErr := applyTVOrderPositionSemantics(&signal)
 	if classErr == nil {
+		adxDecision, adxErr := applyTVOrderADXRouting(&signal)
+		if adxErr != nil {
+			s.recordTVOrderRejected(r, signal, "invalid_adx_metadata", adxErr, now)
+			writeError(w, http.StatusBadRequest, "invalid_adx_metadata", adxErr.Error())
+			return
+		}
+		if adxDecision.IgnoreEntry {
+			record, err := s.Orders.RecordIgnoredReason(signal, "adx_transition", "ADX is in the 20 to 25 transition range", now)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":    "ignored",
+				"signal_id": record.SignalID,
+				"reason":    "adx_transition",
+			})
+			return
+		}
 		if block, blocked, err := s.activeCoinpairCooldown(signal, now); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "cooldown_check_failed", err.Error())
 			return
@@ -1658,6 +1678,7 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 func ignoredRetrySignalFromRecord(rec storage.OrderRecord, now time.Time) trading.Signal {
 	signal := trading.Signal{
 		Action:         rec.Action,
+		SourceAction:   rec.SourceAction,
 		APIID:          rec.APIID,
 		TargetExchange: rec.TargetExchange,
 		TradeEnv:       orderRecordTradeEnv(rec),
@@ -1667,8 +1688,11 @@ func ignoredRetrySignalFromRecord(rec storage.OrderRecord, now time.Time) tradin
 		SentAt:         now.UTC().Format(time.RFC3339Nano),
 		Leverage:       rec.Leverage,
 		Risk:           rec.Risk,
+		OrderIntent:    rec.OrderIntent,
 		PositionEffect: rec.PositionEffect,
 		PositionSide:   rec.PositionSide,
+		ADX:            rec.ADX,
+		MarketStrategy: rec.MarketStrategy,
 		RawJSON:        rec.RawJSON,
 	}
 	if price, err := strconv.ParseFloat(strings.TrimSpace(rec.Price), 64); err == nil && price > 0 {
@@ -1762,6 +1786,7 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 	}
 	signal := trading.Signal{
 		Action:         rec.Action,
+		SourceAction:   rec.SourceAction,
 		APIID:          rec.APIID,
 		TargetExchange: rec.TargetExchange,
 		TradeEnv:       orderRecordTradeEnv(rec),
@@ -1770,6 +1795,11 @@ func retrySignalFromRecord(rec storage.OrderRecord, cfg config.Config, now time.
 		Exchange:       rec.SourceExchange,
 		Price:          trading.NewFlexibleFloat(price),
 		SentAt:         now.UTC().Format(time.RFC3339Nano),
+		OrderIntent:    rec.OrderIntent,
+		PositionEffect: rec.PositionEffect,
+		PositionSide:   rec.PositionSide,
+		ADX:            rec.ADX,
+		MarketStrategy: rec.MarketStrategy,
 		RawJSON:        rec.RawJSON,
 	}
 	if strings.TrimSpace(rec.Amount) != "" {

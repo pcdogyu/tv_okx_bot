@@ -1651,8 +1651,9 @@ func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 	srv := newTestServer(t)
 	installOKXRetryTicker(t, srv, "BTC-USDT-SWAP", "50119", "50121", "50120")
 	signal := validSignal(t, srv)
-	signal.Action = trading.ActionShort
 	signal.APIID = "backup"
+	signal.OrderIntent = "entry_long|script=4.1.0|adx=18.42|adx_tf=60"
+	signal.Text = signal.OrderIntent
 	signal.Token = srv.Token.Generate(signal.CanonicalTokenPayload())
 	body, err := json.Marshal(signal)
 	if err != nil {
@@ -1709,6 +1710,9 @@ func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 		if got.Action != trading.ActionShort || got.APIID != "backup" || got.Coinpair != "BTC" || got.Price.Value != 50120 {
 			t.Fatalf("bad retry signal: %#v", got)
 		}
+		if got.SourceAction != trading.ActionLong || got.PositionSide != trading.PositionSideShort || got.MarketStrategy != trading.MarketStrategyScalp || got.ADX == nil || *got.ADX != 18.42 {
+			t.Fatalf("retry signal lost ADX routing metadata: %#v", got)
+		}
 		if got.Amount.Value != 100 || got.Risk.Type == "" {
 			t.Fatalf("retry signal lost order settings: %#v", got)
 		}
@@ -1728,6 +1732,9 @@ func TestOrderRetryCreatesNewOrderAndExecutes(t *testing.T) {
 	}
 	if gotRetry.Price != "50120" {
 		t.Fatalf("retry record should store refreshed market price: %#v", gotRetry)
+	}
+	if gotRetry.SourceAction != trading.ActionLong || gotRetry.MarketStrategy != trading.MarketStrategyScalp || gotRetry.ADX == nil || *gotRetry.ADX != 18.42 {
+		t.Fatalf("retry record lost ADX routing metadata: %#v", gotRetry)
 	}
 }
 

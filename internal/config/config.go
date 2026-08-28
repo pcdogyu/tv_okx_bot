@@ -135,6 +135,8 @@ var DefaultPositionTableColumns = []string{
 	"exchange",
 	"symbol",
 	"side",
+	"strategy",
+	"entry_adx",
 	"size",
 	"avg_price",
 	"margin",

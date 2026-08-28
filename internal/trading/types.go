@@ -51,6 +51,12 @@ const (
 	PositionSideShort   = "short"
 )
 
+const (
+	MarketStrategyTrend      = "trend"
+	MarketStrategyScalp      = "scalp"
+	MarketStrategyTransition = "transition"
+)
+
 type FlexibleFloat struct {
 	Value float64
 	Set   bool
@@ -103,6 +109,7 @@ type Risk struct {
 
 type Signal struct {
 	Action         Side          `json:"action"`
+	SourceAction   Side          `json:"-"`
 	APIID          string        `json:"api_id,omitempty"`
 	TargetExchange string        `json:"target_exchange,omitempty"`
 	TradeEnv       string        `json:"trade_env,omitempty"`
@@ -124,6 +131,8 @@ type Signal struct {
 	Risk           Risk          `json:"risk,omitempty"`
 	TokenNonce     string        `json:"token_nonce,omitempty"`
 	Token          string        `json:"token"`
+	ADX            *float64      `json:"-"`
+	MarketStrategy string        `json:"-"`
 	RawJSON        string        `json:"-"`
 }
 
@@ -227,6 +236,7 @@ func (s *Signal) Normalize() {
 	default:
 		s.Action = Side(strings.ToLower(strings.TrimSpace(string(s.Action))))
 	}
+	s.SourceAction = normalizeSide(s.SourceAction)
 	s.APIID = strings.TrimSpace(s.APIID)
 	s.TargetExchange = NormalizeExchange(s.TargetExchange)
 	s.TradeEnv = NormalizeTradeEnv(s.TradeEnv)
@@ -253,7 +263,19 @@ func (s *Signal) Normalize() {
 	}
 	s.TokenNonce = strings.TrimSpace(s.TokenNonce)
 	s.Token = strings.TrimSpace(s.Token)
+	s.MarketStrategy = strings.ToLower(strings.TrimSpace(s.MarketStrategy))
 	s.Risk.Normalize()
+}
+
+func normalizeSide(side Side) Side {
+	switch strings.ToLower(strings.TrimSpace(string(side))) {
+	case "buy", "long":
+		return ActionLong
+	case "sell", "short":
+		return ActionShort
+	default:
+		return Side(strings.ToLower(strings.TrimSpace(string(side))))
+	}
 }
 
 func normalizePositionEffect(raw string) string {

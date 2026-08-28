@@ -1096,6 +1096,8 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-exchange-col { width: 4.8%; }
     .positions-table .pos-symbol-col { width: 7.8%; }
     .positions-table .pos-side-col { width: 6.8%; }
+    .positions-table .pos-strategy-col { width: 7.2%; }
+    .positions-table .pos-adx-col { width: 5.2%; }
     .positions-table .pos-size-col { width: 6.1%; }
     .positions-table .pos-price-col { width: 5.6%; }
     .positions-table .pos-margin-col { width: 5.9%; }
@@ -1863,6 +1865,8 @@ const tvbotHTML = `<!doctype html>
       { id: "exchange", title: "交易所", colClass: "pos-exchange-col", cell: (row) => textTableCell(exchangeLabel(normalizeExchange(row._exchange || "okx"))) },
       { id: "symbol", title: "币对", colClass: "pos-symbol-col", cell: (row) => textTableCell(displayInstID(row.instId)) },
       { id: "side", title: "方向", colClass: "pos-side-col", cell: (row) => positionSideCell(row) },
+      { id: "strategy", title: "策略", colClass: "pos-strategy-col", cell: (row) => textTableCell(positionMarketStrategyText(row.market_strategy)) },
+      { id: "entry_adx", title: "入场 ADX", colClass: "pos-adx-col", cell: (row) => positionEntryADXCell(row) },
       { id: "size", title: "持仓量", colClass: "pos-size-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.pos)) },
       { id: "avg_price", title: "均价", colClass: "pos-price-col", cell: (row) => textTableCell(formatPriceAmount(row, row.avgPx)) },
       { id: "margin", title: "保证金", colClass: "pos-margin-col", cell: (row) => textTableCell(formatFixed2(row.margin)) },
@@ -4068,6 +4072,20 @@ const tvbotHTML = `<!doctype html>
       if (value === "short") return "空单";
       if (value === "net") return "持仓";
       return asText(side);
+    }
+
+    function positionMarketStrategyText(strategy) {
+      const value = String(strategy || "").toLowerCase();
+      if (value === "trend") return "趋势行情";
+      if (value === "scalp") return "剥头皮策略";
+      return "-";
+    }
+
+    function positionEntryADXCell(row) {
+      const raw = row ? row.entry_adx : null;
+      if (raw === null || raw === undefined || raw === "") return textTableCell("-");
+      const value = Number(raw);
+      return textTableCell(Number.isFinite(value) ? value.toFixed(2) : "-");
     }
 
     function positionSideFromAction(action, effect) {
