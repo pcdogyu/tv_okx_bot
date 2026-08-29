@@ -282,7 +282,7 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-exchange")) ||
-		!bytes.Contains(ui.Body.Bytes(), []byte("搜索 Top 30 币对")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("搜索 Top 50 币对")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("clear-symbol-search")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("没有匹配的币对")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbolSearchCompact")) ||
@@ -1514,7 +1514,7 @@ func TestHandleOrdersFiltersByStatus(t *testing.T) {
 	if _, err := srv.Orders.RecordIgnoredReason(signal("BTC-IGNORED", trading.ExchangeOKX), "adx_transition", "seed ignored", now.Add(6*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := srv.Orders.RecordIgnoredReason(signal("BTC-IGNORED", trading.ExchangeBinance), "outside_market_top30", "seed ignored", now.Add(7*time.Second)); err != nil {
+	if _, err := srv.Orders.RecordIgnoredReason(signal("BTC-IGNORED", trading.ExchangeBinance), "outside_market_top50", "seed ignored", now.Add(7*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	duplicateSignal := signal("DUPLICATE", trading.ExchangeOKX)
