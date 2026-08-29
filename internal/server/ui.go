@@ -450,15 +450,30 @@ const tvbotHTML = `<!doctype html>
     }
     th.order-status,
     td.order-status {
-      width: 8.6%;
+      width: 7%;
     }
     th.order-okx,
     td.order-okx {
-      width: 36.7%;
+      width: 24%;
     }
     th.order-target,
     td.order-target {
-      width: 9.46%;
+      width: 9%;
+    }
+    th.order-signal-route,
+    td.order-signal-route {
+      width: 8%;
+    }
+    th.order-adx,
+    td.order-adx {
+      width: 5%;
+    }
+    th.order-market,
+    td.order-market {
+      width: 8%;
+    }
+    #orders .orders-table {
+      min-width: 1500px;
     }
     th {
       color: var(--muted);
@@ -1644,12 +1659,14 @@ const tvbotHTML = `<!doctype html>
           <button class="btn" type="button" id="refresh-orders">刷新历史</button>
         </div>
       </div>
-      <table>
-        <thead>
-          <tr><th>时间</th><th class="order-status">状态</th><th>信号来源</th><th class="order-target">下单去向</th><th>方向</th><th>币对</th><th>价格</th><th>金额</th><th class="order-okx">交易所 / 返回</th></tr>
-        </thead>
-        <tbody id="order-rows"></tbody>
-      </table>
+      <div class="symbol-table-wrap">
+        <table class="orders-table">
+          <thead>
+            <tr><th>时间</th><th class="order-status">状态</th><th>信号来源</th><th class="order-target">下单去向</th><th>方向</th><th class="order-signal-route">信号执行</th><th class="order-adx">ADX</th><th class="order-market">市场类型</th><th>币对</th><th>价格</th><th>金额</th><th class="order-okx">交易所 / 返回</th></tr>
+          </thead>
+          <tbody id="order-rows"></tbody>
+        </table>
+      </div>
       <div class="analysis-pagination" style="margin-top:10px">
         <button class="btn small" type="button" id="order-prev">上一页</button>
         <span class="muted" id="order-page-info">-</span>
@@ -4127,6 +4144,41 @@ const tvbotHTML = `<!doctype html>
       return positionDirectionLabel(effect || "open", side, order ? order.action : "");
     }
 
+    function normalizedOrderRouteAction(action) {
+      const value = String(action || "").trim().toLowerCase();
+      if (value === "buy" || value === "long") return "long";
+      if (value === "sell" || value === "short") return "short";
+      return "";
+    }
+
+    function orderHistorySignalRouteText(order) {
+      const source = normalizedOrderRouteAction(order && order.source_action);
+      const executed = normalizedOrderRouteAction(order && order.action);
+      if (!source || !executed) return "-";
+      return source === executed ? "同步信号" : "反转信号";
+    }
+
+    function orderHistoryADXText(order) {
+      const raw = order ? order.adx : null;
+      if (raw === null || raw === undefined || raw === "") return "-";
+      const value = Number(raw);
+      return Number.isFinite(value) ? value.toFixed(2) : "-";
+    }
+
+    function orderHistoryMarketText(order) {
+      const strategy = String(order && order.market_strategy || "").trim().toLowerCase();
+      if (strategy === "trend") return "单边市场";
+      if (strategy === "scalp") return "震荡市场";
+      if (strategy === "transition") return "过渡市场";
+      const rawADX = order ? order.adx : null;
+      if (rawADX === null || rawADX === undefined || rawADX === "") return "-";
+      const adx = Number(rawADX);
+      if (!Number.isFinite(adx)) return "-";
+      if (adx > 25) return "单边市场";
+      if (adx < 20) return "震荡市场";
+      return "过渡市场";
+    }
+
     function isTrueValue(value) {
       if (value === true) return true;
       if (value === 1) return true;
@@ -5348,13 +5400,16 @@ const tvbotHTML = `<!doctype html>
           "<td>" + escapeHTML(sourceExchange) + "</td>" +
           '<td class="order-target">' + escapeHTML(targetText) + "</td>" +
           "<td>" + escapeHTML(orderHistoryDirectionText(order)) + "</td>" +
+          '<td class="order-signal-route">' + escapeHTML(orderHistorySignalRouteText(order)) + "</td>" +
+          '<td class="order-adx">' + escapeHTML(orderHistoryADXText(order)) + "</td>" +
+          '<td class="order-market">' + escapeHTML(orderHistoryMarketText(order)) + "</td>" +
           "<td>" + escapeHTML(asText(order.coinpair)) + "</td>" +
           "<td>" + escapeHTML(formatCachedSymbolPrice(targetExchange, precisionInstID, order.price)) + "</td>" +
           "<td>" + escapeHTML(asText(order.amount)) + "</td>" +
           '<td class="order-okx"><div class="okx-cell"><span class="okx-text">' + escapeHTML(exchangeResult) + "</span>" + retryButton + "</div></td>" +
           "</tr>";
       });
-      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">' + (filters.length ? "无匹配订单" : "-") + '</td></tr>';
+      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="12" class="muted">' + (filters.length ? "无匹配订单" : "-") + '</td></tr>';
       const status = $("order-history-status");
       const pageInfo = $("order-page-info");
       const prev = $("order-prev");
