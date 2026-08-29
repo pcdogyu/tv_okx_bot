@@ -379,6 +379,115 @@ func TestOrderStoreSearchPageAndCountMemoryAndSQLite(t *testing.T) {
 	})
 }
 
+func TestOrderStoreFilteredPageAndCountMemoryAndSQLite(t *testing.T) {
+	run := func(t *testing.T, store *OrderStore) {
+		t.Helper()
+		now := time.Date(2026, 8, 29, 1, 0, 0, 0, time.UTC)
+		next := 0
+		signal := func(coinpair, exchange string) trading.Signal {
+			return trading.Signal{
+				Action:         trading.ActionLong,
+				TargetExchange: exchange,
+				Coinpair:       coinpair,
+				Ticker:         coinpair + "USDT.P",
+			}
+		}
+		accepted, _, err := store.RecordAccepted(signal("ACCEPTED", trading.ExchangeOKX), "filter-accepted", now)
+		if err != nil || accepted.Status != StatusAccepted {
+			t.Fatalf("seed accepted: record=%#v err=%v", accepted, err)
+		}
+		next++
+		submitted, _, err := store.RecordAccepted(signal("SUBMITTED", trading.ExchangeOKX), "filter-submitted", now.Add(time.Duration(next)*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkSubmitted(submitted.SignalID, trading.OrderResult{OrdID: "submitted-1"}, now.Add(time.Duration(next+1)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		next += 2
+		failed, _, err := store.RecordAccepted(signal("FAILED", trading.ExchangeOKX), "filter-failed", now.Add(time.Duration(next)*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkFailed(failed.SignalID, errors.New("seed failure"), now.Add(time.Duration(next+1)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		next += 2
+		if _, err := store.RecordRejected(signal("REJECTED", trading.ExchangeOKX), "invalid_signal", errors.New("seed rejection"), now.Add(time.Duration(next)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		next++
+		if _, err := store.RecordIgnoredReason(signal("BTC-IGNORED", trading.ExchangeOKX), "adx_transition", "seed ignored", now.Add(time.Duration(next)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		next++
+		if _, err := store.RecordIgnoredReason(signal("ETH-IGNORED", trading.ExchangeOKX), "coinpair_filtered", "seed ignored", now.Add(time.Duration(next)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		next++
+		if _, err := store.RecordIgnoredReason(signal("BTC-IGNORED", trading.ExchangeBinance), "outside_market_top30", "seed ignored", now.Add(time.Duration(next)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		next++
+		duplicateSignal := signal("DUPLICATE", trading.ExchangeOKX)
+		if _, duplicate, err := store.RecordAccepted(duplicateSignal, "filter-duplicate", now.Add(time.Duration(next)*time.Second)); err != nil || duplicate {
+			t.Fatalf("seed duplicate source: duplicate=%v err=%v", duplicate, err)
+		}
+		next++
+		if record, duplicate, err := store.RecordAccepted(duplicateSignal, "filter-duplicate", now.Add(time.Duration(next)*time.Second)); err != nil || !duplicate || record.Status != StatusDuplicate {
+			t.Fatalf("seed duplicate: record=%#v duplicate=%v err=%v", record, duplicate, err)
+		}
+
+		expectedCounts := map[OrderStatus]int{
+			StatusAccepted:  2,
+			StatusDuplicate: 1,
+			StatusSubmitted: 1,
+			StatusFailed:    1,
+			StatusRejected:  1,
+			StatusIgnored:   3,
+		}
+		for status, expected := range expectedCounts {
+			page := store.ListFilteredPage("", status, "", 20, 0)
+			if len(page) != expected || store.CountFiltered("", status, "") != expected {
+				t.Fatalf("status %s: page=%#v count=%d expected=%d", status, page, store.CountFiltered("", status, ""), expected)
+			}
+			for _, record := range page {
+				if record.Status != status {
+					t.Fatalf("status %s returned %#v", status, record)
+				}
+			}
+		}
+
+		combined := store.ListFilteredPage(trading.ExchangeOKX, StatusIgnored, "btc", 10, 0)
+		if len(combined) != 1 || combined[0].Coinpair != "BTC-IGNORED" || store.CountFiltered(trading.ExchangeOKX, StatusIgnored, "btc") != 1 {
+			t.Fatalf("combined filter mismatch: %#v", combined)
+		}
+		ignoredPage := store.ListFilteredPage(trading.ExchangeOKX, StatusIgnored, "ignored", 1, 1)
+		if len(ignoredPage) != 1 || ignoredPage[0].Status != StatusIgnored || store.CountFiltered(trading.ExchangeOKX, StatusIgnored, "ignored") != 2 {
+			t.Fatalf("filtered pagination mismatch: %#v", ignoredPage)
+		}
+		if all := store.ListFilteredPage("", "", "", 20, 0); len(all) != store.Count() {
+			t.Fatalf("empty filters should return all: page=%d total=%d", len(all), store.Count())
+		}
+	}
+
+	t.Run("memory", func(t *testing.T) {
+		store, err := NewOrderStore("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run(t, store)
+	})
+	t.Run("sqlite", func(t *testing.T) {
+		store, err := NewSQLiteOrderStore(filepath.Join(t.TempDir(), "tvbot.db"), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		run(t, store)
+	})
+}
+
 func TestSQLiteOrderStoreReadsLegacyRowsWithNullExchangeColumns(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "tvbot.db")
 	db, err := sql.Open("sqlite", dbPath)

@@ -549,6 +549,14 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 	body := resp.Body.Bytes()
 	for _, marker := range [][]byte{
 		[]byte(`class="order-history-actions"`),
+		[]byte(`id="order-status-filter"`),
+		[]byte(`<option value="">全部状态</option>`),
+		[]byte(`<option value="submitted">已下单</option>`),
+		[]byte(`<option value="ignored">已忽略</option>`),
+		[]byte(`<option value="failed">下单失败</option>`),
+		[]byte(`<option value="rejected">已拒绝</option>`),
+		[]byte(`<option value="duplicate">重复信号</option>`),
+		[]byte(`<option value="accepted">处理中</option>`),
 		[]byte(`id="order-search"`),
 		[]byte(`placeholder="币对 / 金额 / 订单号"`),
 		[]byte(`id="search-orders"`),
@@ -557,8 +565,11 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`td class="order-target"`),
 		[]byte(`width: 9.46%;`),
 		[]byte(`ordersSearch: ""`),
+		[]byte(`ordersStatus: ""`),
 		[]byte(`qs.set("q", state.ordersSearch)`),
+		[]byte(`qs.set("status", state.ordersStatus)`),
 		[]byte(`function applyOrderSearch()`),
+		[]byte(`function applyOrderStatusFilter()`),
 		[]byte(`id="ignored-coinpair"`),
 		[]byte(`id="add-ignored-coinpair"`),
 		[]byte(`id="ignored-coinpair-list"`),
@@ -1467,6 +1478,105 @@ func TestHandleOrdersFiltersByTargetExchange(t *testing.T) {
 	}
 	if code, _, body := fetch("/tvbot/orders?exchange=bybit"); code != http.StatusBadRequest || !strings.Contains(body, "invalid_exchange") {
 		t.Fatalf("invalid exchange code=%d body=%s", code, body)
+	}
+}
+
+func TestHandleOrdersFiltersByStatus(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Date(2026, 8, 29, 1, 0, 0, 0, time.UTC)
+	signal := func(coinpair, exchange string) trading.Signal {
+		item := validSignal(t, srv)
+		item.TargetExchange = exchange
+		item.Coinpair = coinpair
+		item.Ticker = strings.ToUpper(exchange) + ":" + coinpair + "USDT.P"
+		return item
+	}
+	if _, _, err := srv.Orders.RecordAccepted(signal("ACCEPTED", trading.ExchangeOKX), "http-status-accepted", now); err != nil {
+		t.Fatal(err)
+	}
+	submitted, _, err := srv.Orders.RecordAccepted(signal("SUBMITTED", trading.ExchangeOKX), "http-status-submitted", now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orders.MarkSubmitted(submitted.SignalID, trading.OrderResult{OrdID: "submitted-1"}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	failed, _, err := srv.Orders.RecordAccepted(signal("FAILED", trading.ExchangeOKX), "http-status-failed", now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orders.MarkFailed(failed.SignalID, errors.New("seed failure"), now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Orders.RecordRejected(signal("REJECTED", trading.ExchangeOKX), "invalid_signal", errors.New("seed rejection"), now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Orders.RecordIgnoredReason(signal("BTC-IGNORED", trading.ExchangeOKX), "adx_transition", "seed ignored", now.Add(6*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Orders.RecordIgnoredReason(signal("BTC-IGNORED", trading.ExchangeBinance), "outside_market_top30", "seed ignored", now.Add(7*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	duplicateSignal := signal("DUPLICATE", trading.ExchangeOKX)
+	if _, duplicate, err := srv.Orders.RecordAccepted(duplicateSignal, "http-status-duplicate", now.Add(8*time.Second)); err != nil || duplicate {
+		t.Fatalf("seed duplicate source: duplicate=%v err=%v", duplicate, err)
+	}
+	if _, duplicate, err := srv.Orders.RecordAccepted(duplicateSignal, "http-status-duplicate", now.Add(9*time.Second)); err != nil || !duplicate {
+		t.Fatalf("seed duplicate: duplicate=%v err=%v", duplicate, err)
+	}
+
+	type ordersResponse struct {
+		Orders     []storage.OrderRecord `json:"orders"`
+		Total      int                   `json:"total"`
+		Limit      int                   `json:"limit"`
+		Offset     int                   `json:"offset"`
+		Page       int                   `json:"page"`
+		TotalPages int                   `json:"total_pages"`
+	}
+	fetch := func(target string) (int, ordersResponse, string) {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		var response ordersResponse
+		if rr.Code == http.StatusOK {
+			if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return rr.Code, response, rr.Body.String()
+	}
+
+	expectedCounts := map[storage.OrderStatus]int{
+		storage.StatusAccepted:  2,
+		storage.StatusDuplicate: 1,
+		storage.StatusSubmitted: 1,
+		storage.StatusFailed:    1,
+		storage.StatusRejected:  1,
+		storage.StatusIgnored:   2,
+	}
+	for status, expected := range expectedCounts {
+		code, response, body := fetch("/tvbot/orders?limit=50&status=" + string(status))
+		if code != http.StatusOK || response.Total != expected || len(response.Orders) != expected {
+			t.Fatalf("status %s code=%d response=%#v body=%s", status, code, response, body)
+		}
+		for _, order := range response.Orders {
+			if order.Status != status {
+				t.Fatalf("status %s returned %#v", status, order)
+			}
+		}
+	}
+	if code, response, body := fetch("/tvbot/orders?limit=50"); code != http.StatusOK || response.Total != 8 || len(response.Orders) != 8 {
+		t.Fatalf("all statuses code=%d response=%#v body=%s", code, response, body)
+	}
+	if code, response, body := fetch("/tvbot/orders?limit=10&exchange=okx&status=ignored&q=BTC"); code != http.StatusOK || response.Total != 1 || len(response.Orders) != 1 || response.Orders[0].Coinpair != "BTC-IGNORED" {
+		t.Fatalf("combined filter code=%d response=%#v body=%s", code, response, body)
+	}
+	if code, response, body := fetch("/tvbot/orders?limit=1&offset=1&status=accepted"); code != http.StatusOK || response.Total != 2 || response.Page != 2 || response.TotalPages != 2 || len(response.Orders) != 1 {
+		t.Fatalf("status pagination code=%d response=%#v body=%s", code, response, body)
+	}
+	if code, _, body := fetch("/tvbot/orders?status=unknown"); code != http.StatusBadRequest || !strings.Contains(body, "invalid_status") {
+		t.Fatalf("invalid status code=%d body=%s", code, body)
 	}
 }
 

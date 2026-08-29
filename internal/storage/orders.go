@@ -343,6 +343,23 @@ func (s *OrderStore) ListSearchByTargetExchangePage(exchange, query string, limi
 	return s.listSearchPageMemoryLocked(limit, offset, exchange, query)
 }
 
+func (s *OrderStore) ListFilteredPage(exchange string, status OrderStatus, query string, limit, offset int) []OrderRecord {
+	exchange = strings.TrimSpace(exchange)
+	if exchange != "" {
+		exchange = trading.NormalizeExchange(exchange)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		records, err := s.listSQLiteFilteredPageLocked(exchange, status, query, limit, offset)
+		if err == nil {
+			return records
+		}
+		return nil
+	}
+	return s.listFilteredPageMemoryLocked(limit, offset, exchange, status, query)
+}
+
 func (s *OrderStore) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -401,6 +418,32 @@ func (s *OrderStore) CountSearchByTargetExchange(exchange, query string) int {
 		return 0
 	}
 	return s.countSearchMemoryLocked(exchange, query)
+}
+
+func (s *OrderStore) CountFiltered(exchange string, status OrderStatus, query string) int {
+	exchange = strings.TrimSpace(exchange)
+	if exchange != "" {
+		exchange = trading.NormalizeExchange(exchange)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		n, err := s.countSQLiteFilteredLocked(exchange, status, query)
+		if err == nil {
+			return n
+		}
+		return 0
+	}
+	return s.countFilteredMemoryLocked(exchange, status, query)
+}
+
+func ValidOrderStatus(status OrderStatus) bool {
+	switch status {
+	case StatusAccepted, StatusDuplicate, StatusSubmitted, StatusFailed, StatusRejected, StatusIgnored:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *OrderStore) Get(signalID string) (OrderRecord, bool) {
@@ -1105,13 +1148,17 @@ func (s *OrderStore) listSQLiteByTargetExchangePageLocked(exchange string, limit
 }
 
 func (s *OrderStore) listSQLiteSearchPageLocked(exchange, query string, limit, offset int) ([]OrderRecord, error) {
+	return s.listSQLiteFilteredPageLocked(exchange, "", query, limit, offset)
+}
+
+func (s *OrderStore) listSQLiteFilteredPageLocked(exchange string, status OrderStatus, query string, limit, offset int) ([]OrderRecord, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	where, args := orderSQLiteSearchWhere(exchange, query)
+	where, args := orderSQLiteFilterWhere(exchange, status, query)
 	sql := `SELECT signal_id, dedupe_key, status, action, source_action, api_id, source_exchange, target_exchange, trade_env, coinpair, ticker, price,
 		leverage, amount, adx, market_strategy, risk_json, order_intent, position_effect, position_side, token_hash, accepted_at, updated_at, result_json, error_code, error, raw_json
 		FROM orders`
@@ -1141,7 +1188,11 @@ func (s *OrderStore) countSQLiteLocked(exchange string) (int, error) {
 }
 
 func (s *OrderStore) countSQLiteSearchLocked(exchange, query string) (int, error) {
-	where, args := orderSQLiteSearchWhere(exchange, query)
+	return s.countSQLiteFilteredLocked(exchange, "", query)
+}
+
+func (s *OrderStore) countSQLiteFilteredLocked(exchange string, status OrderStatus, query string) (int, error) {
+	where, args := orderSQLiteFilterWhere(exchange, status, query)
 	var n int
 	sql := `SELECT COUNT(*) FROM orders`
 	if where != "" {
@@ -1156,6 +1207,10 @@ func (s *OrderStore) listPageMemoryLocked(limit, offset int, exchange string) []
 }
 
 func (s *OrderStore) listSearchPageMemoryLocked(limit, offset int, exchange, query string) []OrderRecord {
+	return s.listFilteredPageMemoryLocked(limit, offset, exchange, "", query)
+}
+
+func (s *OrderStore) listFilteredPageMemoryLocked(limit, offset int, exchange string, status OrderStatus, query string) []OrderRecord {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -1168,6 +1223,9 @@ func (s *OrderStore) listSearchPageMemoryLocked(limit, offset int, exchange, que
 	for i := len(s.state.Orders) - 1; i >= 0 && len(out) < limit; i-- {
 		rec := s.state.Orders[i]
 		if exchange != "" && trading.NormalizeExchange(rec.TargetExchange) != exchange {
+			continue
+		}
+		if status != "" && rec.Status != status {
 			continue
 		}
 		if !orderRecordMatchesSearch(rec, terms) {
@@ -1183,11 +1241,18 @@ func (s *OrderStore) listSearchPageMemoryLocked(limit, offset int, exchange, que
 }
 
 func (s *OrderStore) countSearchMemoryLocked(exchange, query string) int {
+	return s.countFilteredMemoryLocked(exchange, "", query)
+}
+
+func (s *OrderStore) countFilteredMemoryLocked(exchange string, status OrderStatus, query string) int {
 	terms := orderSearchTerms(query)
 	n := 0
 	for i := range s.state.Orders {
 		rec := s.state.Orders[i]
 		if exchange != "" && trading.NormalizeExchange(rec.TargetExchange) != exchange {
+			continue
+		}
+		if status != "" && rec.Status != status {
 			continue
 		}
 		if orderRecordMatchesSearch(rec, terms) {
@@ -1200,11 +1265,19 @@ func (s *OrderStore) countSearchMemoryLocked(exchange, query string) int {
 const orderSQLiteSearchText = `LOWER(COALESCE(coinpair, '') || ' ' || COALESCE(ticker, '') || ' ' || COALESCE(amount, '') || ' ' || COALESCE(price, '') || ' ' || COALESCE(signal_id, '') || ' ' || COALESCE(dedupe_key, '') || ' ' || COALESCE(api_id, '') || ' ' || COALESCE(source_exchange, '') || ' ' || COALESCE(target_exchange, '') || ' ' || COALESCE(status, '') || ' ' || COALESCE(action, '') || ' ' || COALESCE(result_json, '') || ' ' || COALESCE(error_code, '') || ' ' || COALESCE(error, ''))`
 
 func orderSQLiteSearchWhere(exchange, query string) (string, []any) {
+	return orderSQLiteFilterWhere(exchange, "", query)
+}
+
+func orderSQLiteFilterWhere(exchange string, status OrderStatus, query string) (string, []any) {
 	var clauses []string
 	var args []any
 	if strings.TrimSpace(exchange) != "" {
 		clauses = append(clauses, "target_exchange = ?")
 		args = append(args, trading.NormalizeExchange(exchange))
+	}
+	if status != "" {
+		clauses = append(clauses, "status = ?")
+		args = append(args, status)
 	}
 	for _, term := range orderSearchTerms(query) {
 		clauses = append(clauses, orderSQLiteSearchText+` LIKE ? ESCAPE '\'`)

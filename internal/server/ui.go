@@ -710,6 +710,9 @@ const tvbotHTML = `<!doctype html>
       width: min(270px, 55vw);
       min-width: 190px;
     }
+    .order-status-filter {
+      min-width: 130px;
+    }
     .coinpair-filter-card {
       display: flex;
       justify-content: space-between;
@@ -1626,6 +1629,15 @@ const tvbotHTML = `<!doctype html>
           <span class="muted" id="order-history-status">-</span>
         </div>
         <div class="order-history-actions">
+          <select class="order-status-filter" id="order-status-filter" aria-label="筛选订单状态">
+            <option value="">全部状态</option>
+            <option value="submitted">已下单</option>
+            <option value="ignored">已忽略</option>
+            <option value="failed">下单失败</option>
+            <option value="rejected">已拒绝</option>
+            <option value="duplicate">重复信号</option>
+            <option value="accepted">处理中</option>
+          </select>
           <input class="order-search-input" id="order-search" autocomplete="off" spellcheck="false" placeholder="币对 / 金额 / 订单号" aria-label="搜索订单历史">
           <button class="btn" type="button" id="search-orders">搜索</button>
           <button class="btn" type="button" id="clear-order-search" disabled>清除</button>
@@ -1759,6 +1771,7 @@ const tvbotHTML = `<!doctype html>
       ordersTotal: 0,
       ordersPage: 1,
       ordersSearch: "",
+      ordersStatus: "",
       coinpairBlocks: null,
       coinpairCooldownSubmitting: {},
       coinpairCooldownRemoving: {},
@@ -3013,7 +3026,9 @@ const tvbotHTML = `<!doctype html>
       const offset = (state.ordersPage - 1) * ordersPageSize;
       const qs = new URLSearchParams({ limit: String(ordersPageSize), offset: String(offset), exchange: activeExchange() });
       state.ordersSearch = String(state.ordersSearch || "").trim();
+      state.ordersStatus = String(state.ordersStatus || "").trim().toLowerCase();
       if (state.ordersSearch) qs.set("q", state.ordersSearch);
+      if (state.ordersStatus) qs.set("status", state.ordersStatus);
       const data = await api("/tvbot/orders?" + qs.toString());
       state.orders = data.orders || [];
       state.ordersTotal = Number(data.total || 0);
@@ -5105,6 +5120,15 @@ const tvbotHTML = `<!doctype html>
       return $("order-search") ? $("order-search").value.trim() : "";
     }
 
+    function currentOrderStatusFilter() {
+      return $("order-status-filter") ? String($("order-status-filter").value || "").trim().toLowerCase() : "";
+    }
+
+    async function applyOrderStatusFilter() {
+      state.ordersStatus = currentOrderStatusFilter();
+      await loadOrders(true);
+    }
+
     function syncOrderSearchControls() {
       const clearButton = $("clear-order-search");
       if (!clearButton) return;
@@ -5281,7 +5305,15 @@ const tvbotHTML = `<!doctype html>
     }
 
     function orderHistoryStatusText(status) {
-      return status === "ignored" ? "已忽略" : status;
+      const labels = {
+        submitted: "已下单",
+        ignored: "已忽略",
+        failed: "下单失败",
+        rejected: "已拒绝",
+        duplicate: "重复信号",
+        accepted: "处理中"
+      };
+      return labels[status] || status;
     }
 
     function renderOrders() {
@@ -5289,6 +5321,10 @@ const tvbotHTML = `<!doctype html>
       const totalPages = ordersTotalPages();
       state.ordersPage = Math.min(Math.max(1, Number(state.ordersPage || 1)), totalPages);
       const search = String(state.ordersSearch || "").trim();
+      const statusFilter = String(state.ordersStatus || "").trim();
+      const filters = [];
+      if (statusFilter) filters.push("状态: " + orderHistoryStatusText(statusFilter));
+      if (search) filters.push("搜索: " + search);
       const rows = (state.orders || []).map((order, index) => {
         const targetExchange = normalizeExchange(order.target_exchange || (order.result && order.result.target_exchange));
         const precisionInstID = order.result && order.result.inst_id ? order.result.inst_id : order.coinpair;
@@ -5318,12 +5354,12 @@ const tvbotHTML = `<!doctype html>
           '<td class="order-okx"><div class="okx-cell"><span class="okx-text">' + escapeHTML(exchangeResult) + "</span>" + retryButton + "</div></td>" +
           "</tr>";
       });
-      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">' + (search ? "无匹配订单" : "-") + '</td></tr>';
+      $("order-rows").innerHTML = rows.join("") || '<tr><td colspan="9" class="muted">' + (filters.length ? "无匹配订单" : "-") + '</td></tr>';
       const status = $("order-history-status");
       const pageInfo = $("order-page-info");
       const prev = $("order-prev");
       const next = $("order-next");
-      if (status) status.textContent = total ? ("共 " + total + " 条" + (search ? " / 搜索: " + search : "")) : (search ? "无匹配 / 搜索: " + search : "-");
+      if (status) status.textContent = total ? ("共 " + total + " 条" + (filters.length ? " / " + filters.join(" / ") : "")) : (filters.length ? "无匹配 / " + filters.join(" / ") : "-");
       if (pageInfo) pageInfo.textContent = total ? ("第 " + state.ordersPage + " / " + totalPages + " 页") : "-";
       if (prev) prev.disabled = state.ordersPage <= 1;
       if (next) next.disabled = state.ordersPage >= totalPages;
@@ -6114,6 +6150,7 @@ const tvbotHTML = `<!doctype html>
     });
     $("order-prev").addEventListener("click", () => changeOrdersPage(-1));
     $("order-next").addEventListener("click", () => changeOrdersPage(1));
+    $("order-status-filter").addEventListener("change", () => applyOrderStatusFilter().catch((err) => toast(err.message)));
     $("order-search").addEventListener("input", () => syncOrderSearchControls());
     $("order-search").addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;

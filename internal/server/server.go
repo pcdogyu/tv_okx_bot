@@ -1514,27 +1514,19 @@ func (s *Server) handleOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	exchange := strings.TrimSpace(r.URL.Query().Get("exchange"))
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	var orders []storage.OrderRecord
-	var total int
+	status := storage.OrderStatus(strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status"))))
 	if exchange != "" {
 		if !trading.ValidTargetExchange(exchange) {
 			writeError(w, http.StatusBadRequest, "invalid_exchange", "exchange must be okx or binance")
 			return
 		}
-		if query != "" {
-			orders = s.Orders.ListSearchByTargetExchangePage(exchange, query, limit, offset)
-			total = s.Orders.CountSearchByTargetExchange(exchange, query)
-		} else {
-			orders = s.Orders.ListByTargetExchangePage(exchange, limit, offset)
-			total = s.Orders.CountByTargetExchange(exchange)
-		}
-	} else if query != "" {
-		orders = s.Orders.ListSearchPage(query, limit, offset)
-		total = s.Orders.CountSearch(query)
-	} else {
-		orders = s.Orders.ListPage(limit, offset)
-		total = s.Orders.Count()
 	}
+	if status != "" && !storage.ValidOrderStatus(status) {
+		writeError(w, http.StatusBadRequest, "invalid_status", "status must be accepted, duplicate, submitted, failed, rejected, or ignored")
+		return
+	}
+	orders := s.Orders.ListFilteredPage(exchange, status, query, limit, offset)
+	total := s.Orders.CountFiltered(exchange, status, query)
 	totalPages := 0
 	if limit > 0 && total > 0 {
 		totalPages = (total + limit - 1) / limit
