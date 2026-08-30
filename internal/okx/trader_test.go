@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/config"
@@ -353,6 +354,45 @@ func TestTraderExecuteSignalResolvesTradingViewTickerWithoutConfiguredSymbol(t *
 	}
 	if orderReq.InstID != "ETH-USDT-SWAP" || orderReq.Side != "sell" || orderReq.OrdType != "limit" || orderReq.Px != "2507.5" || orderReq.Sz != "0.39" {
 		t.Fatalf("bad dynamic order request: %#v", orderReq)
+	}
+}
+
+func TestTraderExecuteSignalRejectsMismatchedOKXUnderlyingBeforeOrder(t *testing.T) {
+	var unexpectedRequests []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v5/public/instruments" {
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"STRK-USDT-SWAP","uly":"TSLA-USDT","instFamily":"STRK-USDT","ctVal":"0.01","tickSz":"0.000002","lotSz":"1","minSz":"1"}]}`))
+			return
+		}
+		unexpectedRequests = append(unexpectedRequests, r.URL.Path)
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+	}))
+	defer ts.Close()
+
+	cfg := config.Default()
+	cfg.Symbols = map[string]config.SymbolConfig{}
+	cfg.Trading.BaseURL = ts.URL
+	signal := trading.Signal{
+		Action:         trading.ActionLong,
+		Coinpair:       "STRKUSDT.P",
+		Price:          trading.NewFlexibleFloat(0.02579),
+		SentAt:         "2026-08-30T04:10:00Z",
+		Ticker:         "OKX:STRKUSDT.P",
+		Leverage:       10,
+		Amount:         trading.NewFlexibleFloat(1000),
+		PositionEffect: trading.PositionEffectOpen,
+	}
+	trader := Trader{
+		Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"},
+		HTTPClient:  ts.Client(),
+	}
+	_, err := trader.ExecuteSignal(context.Background(), signal, cfg)
+	if err == nil || !strings.Contains(err.Error(), "unsafe OKX instrument mapping") || !strings.Contains(err.Error(), "TSLA-USDT") {
+		t.Fatalf("mismatched underlying error = %v", err)
+	}
+	if len(unexpectedRequests) != 0 {
+		t.Fatalf("mismatched underlying reached private/order endpoints: %#v", unexpectedRequests)
 	}
 }
 

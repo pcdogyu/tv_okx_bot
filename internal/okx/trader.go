@@ -304,6 +304,11 @@ func (t Trader) resolveSymbol(ctx context.Context, client Client, signal trading
 	if err != nil {
 		return trading.SymbolInfo{}, err
 	}
+	if !strings.EqualFold(strings.TrimSpace(signal.PositionEffect), trading.PositionEffectClose) {
+		if err := inst.ValidateUnderlyingFamily(); err != nil {
+			return trading.SymbolInfo{}, err
+		}
+	}
 	meta, err := inst.SymbolInfo()
 	if err != nil {
 		return trading.SymbolInfo{}, err
@@ -527,6 +532,9 @@ func refreshedInstrumentFallbackRequest(ctx context.Context, client Client, req 
 	}
 	inst, err := client.SwapInstrument(ctx, instID)
 	if err != nil {
+		return PlaceOrderRequest{}, trading.SymbolInfo{}, false
+	}
+	if !strings.EqualFold(strings.TrimSpace(signal.PositionEffect), trading.PositionEffectClose) && inst.ValidateUnderlyingFamily() != nil {
 		return PlaceOrderRequest{}, trading.SymbolInfo{}, false
 	}
 	meta, err := inst.SymbolInfo()

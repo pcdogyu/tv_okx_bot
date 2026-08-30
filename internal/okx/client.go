@@ -553,6 +553,24 @@ type Instrument struct {
 	State      string `json:"state,omitempty"`
 }
 
+func (i Instrument) UnderlyingMatchesFamily() bool {
+	underlying := strings.ToUpper(strings.TrimSpace(i.Uly))
+	family := strings.ToUpper(strings.TrimSpace(i.InstFamily))
+	return underlying == "" || family == "" || underlying == family
+}
+
+func (i Instrument) ValidateUnderlyingFamily() error {
+	if i.UnderlyingMatchesFamily() {
+		return nil
+	}
+	return fmt.Errorf(
+		"unsafe OKX instrument mapping: %s has underlying %s but instrument family %s",
+		strings.TrimSpace(i.InstID),
+		strings.TrimSpace(i.Uly),
+		strings.TrimSpace(i.InstFamily),
+	)
+}
+
 type MarketCandle struct {
 	TS      string
 	Open    string

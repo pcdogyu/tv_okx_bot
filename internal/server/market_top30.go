@@ -72,7 +72,7 @@ func topOKXInstruments(in []symbolInstrument, limit int) []symbolInstrument {
 	eligible := make([]symbolInstrument, 0, len(in))
 	for _, instrument := range in {
 		turnover, ok := positiveTurnover(instrument.TurnoverUSDT24h)
-		if !ok || !strings.EqualFold(strings.TrimSpace(instrument.State), "live") || excludedRankingBase(instrument.BaseCcy, instrument.InstID) {
+		if !ok || !strings.EqualFold(strings.TrimSpace(instrument.State), "live") || excludedRankingBase(instrument.BaseCcy, instrument.InstID) || !instrument.UnderlyingMatchesFamily() {
 			continue
 		}
 		instrument.TurnoverUSDT24h = trading.NormalizeFloat(turnover)
@@ -113,7 +113,7 @@ func topBinanceInstruments(in []binanceSymbolInstrument, limit int) []binanceSym
 func okxRankingCandidateCount(in []symbolInstrument) int {
 	count := 0
 	for _, instrument := range in {
-		if strings.EqualFold(strings.TrimSpace(instrument.State), "live") && !excludedRankingBase(instrument.BaseCcy, instrument.InstID) {
+		if strings.EqualFold(strings.TrimSpace(instrument.State), "live") && !excludedRankingBase(instrument.BaseCcy, instrument.InstID) && instrument.UnderlyingMatchesFamily() {
 			count++
 		}
 	}

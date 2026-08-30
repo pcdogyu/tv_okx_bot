@@ -19,6 +19,7 @@ func TestTop100RankingsSortLimitAndFilterMarkets(t *testing.T) {
 	okxRows := []symbolInstrument{
 		{Instrument: okx.Instrument{InstID: "BBB-USDT-SWAP", BaseCcy: "BBB", State: "live"}, TurnoverUSDT24h: "1000"},
 		{Instrument: okx.Instrument{InstID: "AAA-USDT-SWAP", BaseCcy: "AAA", State: "live"}, TurnoverUSDT24h: "1000"},
+		{Instrument: okx.Instrument{InstID: "MISMATCH-USDT-SWAP", Uly: "OTHER-USDT", InstFamily: "MISMATCH-USDT", BaseCcy: "MISMATCH", State: "live"}, TurnoverUSDT24h: "100000"},
 		{Instrument: okx.Instrument{InstID: "HALT-USDT-SWAP", BaseCcy: "HALT", State: "suspend"}, TurnoverUSDT24h: "99999"},
 		{Instrument: okx.Instrument{InstID: "ZERO-USDT-SWAP", BaseCcy: "ZERO", State: "live"}, TurnoverUSDT24h: "0"},
 		{Instrument: okx.Instrument{InstID: "USDC-USDT-SWAP", BaseCcy: "USDC", State: "live"}, TurnoverUSDT24h: "99998"},
@@ -59,7 +60,7 @@ func TestTop100RankingsSortLimitAndFilterMarkets(t *testing.T) {
 		t.Fatalf("Binance equal turnover ordering is not stable: %#v", binanceTop[:2])
 	}
 	for _, row := range okxTop {
-		if row.BaseCcy == "HALT" || row.BaseCcy == "ZERO" || row.BaseCcy == "S98" || excludedRankingBase(row.BaseCcy, row.InstID) {
+		if row.BaseCcy == "HALT" || row.BaseCcy == "ZERO" || row.BaseCcy == "MISMATCH" || row.BaseCcy == "S98" || excludedRankingBase(row.BaseCcy, row.InstID) {
 			t.Fatalf("ineligible or below-cutoff OKX symbol ranked: %#v", row)
 		}
 	}
@@ -71,15 +72,16 @@ func TestTop100RankingsSortLimitAndFilterMarkets(t *testing.T) {
 }
 
 func TestExcludedRankingBasesDoNotMakeCompleteRankingsUnavailable(t *testing.T) {
-	okxSet := okxInstrumentSet{Count: 3, Instruments: []symbolInstrument{
+	okxSet := okxInstrumentSet{Count: 4, Instruments: []symbolInstrument{
 		{Instrument: okx.Instrument{InstID: "BTC-USDT-SWAP", BaseCcy: "BTC", State: "live"}, TurnoverUSDT24h: "100"},
 		{Instrument: okx.Instrument{InstID: "USDC-USDT-SWAP", BaseCcy: "USDC", State: "live"}, TurnoverUSDT24h: "200"},
 		{Instrument: okx.Instrument{InstID: "XAUT-USDT-SWAP", BaseCcy: "XAUT", State: "live"}, TurnoverUSDT24h: "300"},
+		{Instrument: okx.Instrument{InstID: "STRK-USDT-SWAP", Uly: "TSLA-USDT", InstFamily: "STRK-USDT", BaseCcy: "STRK", State: "live"}, TurnoverUSDT24h: "400"},
 	}}
 	okxSet.TopInstruments = topOKXInstruments(okxSet.Instruments, marketTopSymbolLimit)
 	markOKXRankingUnavailable(&okxSet)
 	if okxSet.TickerError != "" || len(okxSet.TopInstruments) != 1 || okxSet.TopInstruments[0].BaseCcy != "BTC" {
-		t.Fatalf("excluded OKX bases should not make ranking unavailable: %#v", okxSet)
+		t.Fatalf("excluded OKX bases or mismatched underlyings should not make ranking unavailable: %#v", okxSet)
 	}
 
 	binanceSet := binanceInstrumentSet{Count: 3, Instruments: []binanceSymbolInstrument{
