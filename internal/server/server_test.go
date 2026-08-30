@@ -579,6 +579,7 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`if (strategy === "trend") return "单边市场"`),
 		[]byte(`if (strategy === "scalp") return "震荡市场"`),
 		[]byte(`if (strategy === "transition") return "过渡市场"`),
+		[]byte(`if (adx >= 25) return "单边市场"`),
 		[]byte(`ordersSearch: ""`),
 		[]byte(`ordersStatus: ""`),
 		[]byte(`qs.set("q", state.ordersSearch)`),

@@ -4109,7 +4109,7 @@ const tvbotHTML = `<!doctype html>
     function positionMarketStrategyText(strategy) {
       const value = String(strategy || "").toLowerCase();
       if (value === "trend") return "趋势行情";
-      if (value === "scalp") return "剥头皮策略";
+      if (value === "scalp") return "震荡行情";
       return "-";
     }
 
@@ -4174,9 +4174,8 @@ const tvbotHTML = `<!doctype html>
       if (rawADX === null || rawADX === undefined || rawADX === "") return "-";
       const adx = Number(rawADX);
       if (!Number.isFinite(adx)) return "-";
-      if (adx > 25) return "单边市场";
-      if (adx < 20) return "震荡市场";
-      return "过渡市场";
+      if (adx >= 25) return "单边市场";
+      return "震荡市场";
     }
 
     function isTrueValue(value) {

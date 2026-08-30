@@ -158,7 +158,7 @@ func TestTVBotUIIncludesPositionADXColumns(t *testing.T) {
 		`{ id: "strategy", title: "策略"`,
 		`{ id: "entry_adx", title: "入场 ADX"`,
 		`function positionMarketStrategyText(strategy)`,
-		`if (value === "scalp") return "剥头皮策略"`,
+		`if (value === "scalp") return "震荡行情"`,
 		`function positionEntryADXCell(row)`,
 	} {
 		if !strings.Contains(tvbotHTML, marker) {

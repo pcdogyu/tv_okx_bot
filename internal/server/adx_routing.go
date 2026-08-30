@@ -9,7 +9,10 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
-const adxAlertScriptVersion = "4.1.0"
+const (
+	adxAlertScriptVersion410 = "4.1.0"
+	adxAlertScriptVersion411 = "4.1.1"
+)
 
 type adxRoutingDecision struct {
 	Versioned   bool
@@ -18,6 +21,7 @@ type adxRoutingDecision struct {
 
 type adxAlertMetadata struct {
 	Versioned bool
+	Version   string
 	ADX       float64
 	Timeframe string
 }
@@ -39,21 +43,34 @@ func applyTVOrderADXRouting(signal *trading.Signal) (adxRoutingDecision, error) 
 
 	signal.ADX = float64Pointer(metadata.ADX)
 	decision := adxRoutingDecision{Versioned: true}
-	switch {
-	case metadata.ADX > 25:
-		signal.MarketStrategy = trading.MarketStrategyTrend
-	case metadata.ADX < 20:
-		signal.MarketStrategy = trading.MarketStrategyScalp
-		signal.Action = oppositeTradingSide(signal.Action)
-		signal.PositionSide = oppositePositionSide(signal.PositionSide)
-	default:
-		signal.MarketStrategy = trading.MarketStrategyTransition
-		if signal.PositionEffect == trading.PositionEffectClose {
-			return decision, fmt.Errorf("ADX %s is in the transition range and cannot determine a close direction", trading.NormalizeFloat(metadata.ADX))
+	switch metadata.Version {
+	case adxAlertScriptVersion411:
+		if metadata.ADX >= 25 {
+			signal.MarketStrategy = trading.MarketStrategyTrend
+		} else {
+			applyADXScalpRouting(signal)
 		}
-		decision.IgnoreEntry = true
+	case adxAlertScriptVersion410:
+		switch {
+		case metadata.ADX > 25:
+			signal.MarketStrategy = trading.MarketStrategyTrend
+		case metadata.ADX < 20:
+			applyADXScalpRouting(signal)
+		default:
+			signal.MarketStrategy = trading.MarketStrategyTransition
+			if signal.PositionEffect == trading.PositionEffectClose {
+				return decision, fmt.Errorf("ADX %s is in the transition range and cannot determine a close direction", trading.NormalizeFloat(metadata.ADX))
+			}
+			decision.IgnoreEntry = true
+		}
 	}
 	return decision, nil
+}
+
+func applyADXScalpRouting(signal *trading.Signal) {
+	signal.MarketStrategy = trading.MarketStrategyScalp
+	signal.Action = oppositeTradingSide(signal.Action)
+	signal.PositionSide = oppositePositionSide(signal.PositionSide)
 }
 
 func firstADXMetadataText(orderIntent, text string) string {
@@ -85,23 +102,25 @@ func parseTVOrderADXMetadata(raw string) (adxAlertMetadata, error) {
 		return adxAlertMetadata{}, nil
 	}
 	if len(scripts) != 1 {
-		return adxAlertMetadata{}, fmt.Errorf("4.1.0 alert must contain exactly one script value")
+		return adxAlertMetadata{}, fmt.Errorf("ADX alert must contain exactly one script value")
 	}
-	if scripts[0] != adxAlertScriptVersion {
+	version := scripts[0]
+	if version != adxAlertScriptVersion410 && version != adxAlertScriptVersion411 {
 		return adxAlertMetadata{}, nil
 	}
 	if len(values["adx"]) != 1 {
-		return adxAlertMetadata{}, fmt.Errorf("4.1.0 alert must contain exactly one ADX value")
+		return adxAlertMetadata{}, fmt.Errorf("%s alert must contain exactly one ADX value", version)
 	}
 	if len(values["adx_tf"]) != 1 || values["adx_tf"][0] == "" {
-		return adxAlertMetadata{}, fmt.Errorf("4.1.0 alert must contain exactly one ADX timeframe")
+		return adxAlertMetadata{}, fmt.Errorf("%s alert must contain exactly one ADX timeframe", version)
 	}
 	adx, err := strconv.ParseFloat(values["adx"][0], 64)
 	if err != nil || math.IsNaN(adx) || math.IsInf(adx, 0) || adx < 0 || adx > 100 {
-		return adxAlertMetadata{}, fmt.Errorf("4.1.0 alert ADX %q must be a number from 0 to 100", values["adx"][0])
+		return adxAlertMetadata{}, fmt.Errorf("%s alert ADX %q must be a number from 0 to 100", version, values["adx"][0])
 	}
 	return adxAlertMetadata{
 		Versioned: true,
+		Version:   version,
 		ADX:       adx,
 		Timeframe: values["adx_tf"][0],
 	}, nil
