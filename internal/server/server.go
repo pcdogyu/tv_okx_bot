@@ -159,14 +159,14 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 		if signal.PositionEffect != trading.PositionEffectClose {
 			decision, err := s.marketTop30Decision(signal)
 			if err != nil {
-				s.recordTVOrderRejected(r, signal, "top50_check_failed", err, now)
-				writeError(w, http.StatusServiceUnavailable, "top50_check_failed", err.Error())
+				s.recordTVOrderRejected(r, signal, "top100_check_failed", err, now)
+				writeError(w, http.StatusServiceUnavailable, "top100_check_failed", err.Error())
 				return
 			}
 			if !decision.Available {
 				err := errors.New(top30UnavailableMessage(decision))
-				s.recordTVOrderRejected(r, signal, "top50_unavailable", err, now)
-				writeError(w, http.StatusServiceUnavailable, "top50_unavailable", err.Error())
+				s.recordTVOrderRejected(r, signal, "top100_unavailable", err, now)
+				writeError(w, http.StatusServiceUnavailable, "top100_unavailable", err.Error())
 				return
 			}
 			if !decision.Allowed {
@@ -1612,11 +1612,11 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 	if !strings.EqualFold(strings.TrimSpace(probe.PositionEffect), trading.PositionEffectClose) {
 		decision, err := s.marketTop30Decision(probe)
 		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "top50_check_failed", err.Error())
+			writeError(w, http.StatusServiceUnavailable, "top100_check_failed", err.Error())
 			return
 		}
 		if !decision.Available {
-			writeError(w, http.StatusServiceUnavailable, "top50_unavailable", top30UnavailableMessage(decision))
+			writeError(w, http.StatusServiceUnavailable, "top100_unavailable", top30UnavailableMessage(decision))
 			return
 		}
 		if !decision.Allowed {

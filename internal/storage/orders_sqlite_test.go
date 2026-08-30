@@ -425,7 +425,7 @@ func TestOrderStoreFilteredPageAndCountMemoryAndSQLite(t *testing.T) {
 			t.Fatal(err)
 		}
 		next++
-		if _, err := store.RecordIgnoredReason(signal("BTC-IGNORED", trading.ExchangeBinance), "outside_market_top50", "seed ignored", now.Add(time.Duration(next)*time.Second)); err != nil {
+		if _, err := store.RecordIgnoredReason(signal("BTC-IGNORED", trading.ExchangeBinance), "outside_market_top100", "seed ignored", now.Add(time.Duration(next)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 		next++

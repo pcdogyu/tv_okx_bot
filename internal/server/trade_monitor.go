@@ -765,7 +765,7 @@ func (s *Server) maybeSubmitAutoReentry(ctx context.Context, cfg config.Config, 
 			Symbol:         lifecycle.Symbol,
 			LifecycleID:    lifecycle.LifecycleID,
 			SourceSignalID: lifecycle.SourceSignalID,
-			EventType:      "auto_reentry_top50_blocked",
+			EventType:      "auto_reentry_top100_blocked",
 			Status:         updated.Status,
 			Message:        message,
 		})

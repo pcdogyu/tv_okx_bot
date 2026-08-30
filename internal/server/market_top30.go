@@ -10,7 +10,7 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
-const marketTopSymbolLimit = 50
+const marketTopSymbolLimit = 100
 
 var excludedRankingStablecoinBases = map[string]bool{
 	"BUSD": true, "DAI": true, "FDUSD": true, "FRAX": true, "PYUSD": true,
@@ -235,13 +235,13 @@ func marketSymbolBase(base, instrument string) string {
 
 func (s *Server) recordTop30IgnoredSignal(signal trading.Signal, decision marketTop30Decision, now time.Time) (storage.OrderRecord, error) {
 	message := fmt.Sprintf("coinpair is outside %s %s turnover top %d", decision.Exchange, decision.TradeEnv, marketTopSymbolLimit)
-	return s.Orders.RecordIgnoredReason(signal, "outside_market_top50", message, now)
+	return s.Orders.RecordIgnoredReason(signal, "outside_market_top100", message, now)
 }
 
 func top30IgnoredResponse(record storage.OrderRecord, decision marketTop30Decision) map[string]any {
 	return map[string]any{
 		"status":          "ignored",
-		"reason":          "outside_market_top50",
+		"reason":          "outside_market_top100",
 		"signal_id":       record.SignalID,
 		"target_exchange": decision.Exchange,
 		"trade_env":       decision.TradeEnv,

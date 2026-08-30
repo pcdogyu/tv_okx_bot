@@ -15,7 +15,7 @@ import (
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
-func TestTop50RankingsSortLimitAndFilterMarkets(t *testing.T) {
+func TestTop100RankingsSortLimitAndFilterMarkets(t *testing.T) {
 	okxRows := []symbolInstrument{
 		{Instrument: okx.Instrument{InstID: "BBB-USDT-SWAP", BaseCcy: "BBB", State: "live"}, TurnoverUSDT24h: "1000"},
 		{Instrument: okx.Instrument{InstID: "AAA-USDT-SWAP", BaseCcy: "AAA", State: "live"}, TurnoverUSDT24h: "1000"},
@@ -41,7 +41,7 @@ func TestTop50RankingsSortLimitAndFilterMarkets(t *testing.T) {
 		{SymbolInfo: binance.SymbolInfo{Symbol: "FDUSDUSDT", BaseAsset: "FDUSD", Status: "TRADING"}, TurnoverUSDT24h: "99993"},
 		{SymbolInfo: binance.SymbolInfo{Symbol: "PAXGUSDT", BaseAsset: "PAXG", Status: "TRADING"}, TurnoverUSDT24h: "99992"},
 	}
-	for i := 0; i < 60; i++ {
+	for i := 0; i < 120; i++ {
 		base := fmt.Sprintf("S%02d", i)
 		turnover := fmt.Sprintf("%d", 900-i)
 		okxRows = append(okxRows, symbolInstrument{Instrument: okx.Instrument{InstID: base + "-USDT-SWAP", BaseCcy: base, State: "live"}, TurnoverUSDT24h: turnover})
@@ -49,7 +49,7 @@ func TestTop50RankingsSortLimitAndFilterMarkets(t *testing.T) {
 	}
 	okxTop := topOKXInstruments(okxRows, marketTopSymbolLimit)
 	binanceTop := topBinanceInstruments(binanceRows, marketTopSymbolLimit)
-	if len(okxTop) != 50 || len(binanceTop) != 50 {
+	if len(okxTop) != 100 || len(binanceTop) != 100 {
 		t.Fatalf("top sizes okx=%d binance=%d", len(okxTop), len(binanceTop))
 	}
 	if okxTop[0].InstID != "AAA-USDT-SWAP" || okxTop[1].InstID != "BBB-USDT-SWAP" {
@@ -59,12 +59,12 @@ func TestTop50RankingsSortLimitAndFilterMarkets(t *testing.T) {
 		t.Fatalf("Binance equal turnover ordering is not stable: %#v", binanceTop[:2])
 	}
 	for _, row := range okxTop {
-		if row.BaseCcy == "HALT" || row.BaseCcy == "ZERO" || row.BaseCcy == "S48" || excludedRankingBase(row.BaseCcy, row.InstID) {
+		if row.BaseCcy == "HALT" || row.BaseCcy == "ZERO" || row.BaseCcy == "S98" || excludedRankingBase(row.BaseCcy, row.InstID) {
 			t.Fatalf("ineligible or below-cutoff OKX symbol ranked: %#v", row)
 		}
 	}
 	for _, row := range binanceTop {
-		if row.BaseAsset == "HALT" || row.BaseAsset == "S48" || excludedRankingBase(row.BaseAsset, row.Symbol) {
+		if row.BaseAsset == "HALT" || row.BaseAsset == "S98" || excludedRankingBase(row.BaseAsset, row.Symbol) {
 			t.Fatalf("ineligible or below-cutoff Binance symbol ranked: %#v", row)
 		}
 	}
@@ -117,9 +117,9 @@ func TestMarketTop30DecisionUsesExactTargetMarketAndSymbolFormats(t *testing.T) 
 	}
 }
 
-func TestMarketTop50DecisionAllowsRanks31To50AndRejectsRank51(t *testing.T) {
+func TestMarketTop100DecisionAllowsRanks51To100AndRejectsRank101(t *testing.T) {
 	srv := newTestServer(t)
-	bases := make([]string, 60)
+	bases := make([]string, 110)
 	for i := range bases {
 		bases[i] = fmt.Sprintf("R%02d", i)
 	}
@@ -131,12 +131,12 @@ func TestMarketTop50DecisionAllowsRanks31To50AndRejectsRank51(t *testing.T) {
 		signal  trading.Signal
 		allowed bool
 	}{
-		{name: "OKX rank 40", signal: trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "R39"}, allowed: true},
-		{name: "OKX rank 50", signal: trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "R49"}, allowed: true},
-		{name: "OKX rank 51", signal: trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "R50"}, allowed: false},
-		{name: "Binance rank 40", signal: trading.Signal{TargetExchange: trading.ExchangeBinance, TradeEnv: trading.TradeEnvLive, Coinpair: "R39"}, allowed: true},
-		{name: "Binance rank 50", signal: trading.Signal{TargetExchange: trading.ExchangeBinance, TradeEnv: trading.TradeEnvLive, Coinpair: "R49"}, allowed: true},
-		{name: "Binance rank 51", signal: trading.Signal{TargetExchange: trading.ExchangeBinance, TradeEnv: trading.TradeEnvLive, Coinpair: "R50"}, allowed: false},
+		{name: "OKX rank 60", signal: trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "R59"}, allowed: true},
+		{name: "OKX rank 100", signal: trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "R99"}, allowed: true},
+		{name: "OKX rank 101", signal: trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "R100"}, allowed: false},
+		{name: "Binance rank 60", signal: trading.Signal{TargetExchange: trading.ExchangeBinance, TradeEnv: trading.TradeEnvLive, Coinpair: "R59"}, allowed: true},
+		{name: "Binance rank 100", signal: trading.Signal{TargetExchange: trading.ExchangeBinance, TradeEnv: trading.TradeEnvLive, Coinpair: "R99"}, allowed: true},
+		{name: "Binance rank 101", signal: trading.Signal{TargetExchange: trading.ExchangeBinance, TradeEnv: trading.TradeEnvLive, Coinpair: "R100"}, allowed: false},
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
@@ -156,12 +156,12 @@ func TestTVOrderTop30IgnoresOutsideEntryAllowsCloseAndFailsClosedWithoutRanking(
 	outside.Ticker = "OKX:NOTTOPUSDT.P"
 	outside.Token = srv.Token.Generate(outside.CanonicalTokenPayload())
 	rr := postTVOrder(t, srv, outside)
-	if rr.Code != http.StatusAccepted || !bytes.Contains(rr.Body.Bytes(), []byte(`"reason":"outside_market_top50"`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"trade_env":"demo"`)) {
-		t.Fatalf("outside top 50 response status=%d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusAccepted || !bytes.Contains(rr.Body.Bytes(), []byte(`"reason":"outside_market_top100"`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"trade_env":"demo"`)) {
+		t.Fatalf("outside top 100 response status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	select {
 	case signal := <-srv.Executor.(fakeExecutor).calls:
-		t.Fatalf("outside top 50 signal reached executor: %#v", signal)
+		t.Fatalf("outside top 100 signal reached executor: %#v", signal)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -172,13 +172,13 @@ func TestTVOrderTop30IgnoresOutsideEntryAllowsCloseAndFailsClosedWithoutRanking(
 	closeSignal.Token = srv.Token.Generate(closeSignal.CanonicalTokenPayload())
 	rr = postTVOrder(t, srv, closeSignal)
 	if rr.Code != http.StatusAccepted || !bytes.Contains(rr.Body.Bytes(), []byte(`"status":"accepted"`)) {
-		t.Fatalf("close signal should bypass top 50 status=%d body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("close signal should bypass top 100 status=%d body=%s", rr.Code, rr.Body.String())
 	}
 
 	clearTestMarket(t, srv, trading.ExchangeOKX, trading.TradeEnvDemo)
 	unavailable := validSignal(t, srv)
 	rr = postTVOrder(t, srv, unavailable)
-	if rr.Code != http.StatusServiceUnavailable || !bytes.Contains(rr.Body.Bytes(), []byte(`"error":"top50_unavailable"`)) {
+	if rr.Code != http.StatusServiceUnavailable || !bytes.Contains(rr.Body.Bytes(), []byte(`"error":"top100_unavailable"`)) {
 		t.Fatalf("missing ranking should fail closed status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	if symbolCatalogSyncInterval != 24*time.Hour {
@@ -207,7 +207,7 @@ func TestOrderRetryOutsideTop30StopsBeforePriceLookup(t *testing.T) {
 	req.SetBasicAuth("admin", "Admin123")
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
-	if rr.Code != http.StatusAccepted || !bytes.Contains(rr.Body.Bytes(), []byte(`"reason":"outside_market_top50"`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"retry_of":"`+record.SignalID+`"`)) {
+	if rr.Code != http.StatusAccepted || !bytes.Contains(rr.Body.Bytes(), []byte(`"reason":"outside_market_top100"`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"retry_of":"`+record.SignalID+`"`)) {
 		t.Fatalf("outside retry status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
@@ -250,15 +250,15 @@ func TestAutoReentryOutsideTop30StopsBeforeExchange(t *testing.T) {
 		t.Fatal(err)
 	}
 	if exchangeCalls != 0 {
-		t.Fatalf("outside top 50 auto reentry made %d exchange calls", exchangeCalls)
+		t.Fatalf("outside top 100 auto reentry made %d exchange calls", exchangeCalls)
 	}
 	updated, found, err := srv.Orders.FindTradeLifecycle(record.SignalID)
 	if err != nil || !found || updated.Status != storage.TradeLifecycleBlocked {
 		t.Fatalf("auto reentry lifecycle not blocked: found=%v lifecycle=%#v err=%v", found, updated, err)
 	}
 	events, err := srv.Orders.ListTradeMonitorEvents(storage.TradeMonitorFilter{Symbol: "NOTTOPUSDT"}, 20)
-	if err != nil || len(events) == 0 || events[0].EventType != "auto_reentry_top50_blocked" {
-		t.Fatalf("missing top 50 blocked event: events=%#v err=%v", events, err)
+	if err != nil || len(events) == 0 || events[0].EventType != "auto_reentry_top100_blocked" {
+		t.Fatalf("missing top 100 blocked event: events=%#v err=%v", events, err)
 	}
 }
 

@@ -1546,7 +1546,7 @@ const tvbotHTML = `<!doctype html>
         <div class="symbol-controls">
           <label>交易所<select id="symbol-exchange"><option value="okx">OKX</option><option value="binance">Binance</option></select></label>
           <label>环境<select id="symbol-env"><option value="live">实盘</option><option value="demo">模拟</option></select></label>
-          <label class="symbol-search-label">搜索 Top 50 币对<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="例如 BTC"></label>
+          <label class="symbol-search-label">搜索成交量前 100 币对<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="例如 BTC"></label>
           <div class="symbol-search-actions">
             <button class="btn" type="button" id="clear-symbol-search" disabled>清除搜索</button>
             <button class="btn primary" type="button" id="refresh-symbols">刷新币对</button>
