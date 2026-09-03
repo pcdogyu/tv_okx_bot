@@ -23,6 +23,10 @@
     "trailing_pct": 1,
     "long_limit_price_multiplier": 0.997,
     "short_limit_price_multiplier": 1.003,
+    "loss_cooldown": {
+      "enabled": true,
+      "hours": 24
+    },
     "fill_monitor": {
       "enabled": true,
       "poll_interval_seconds": 20,

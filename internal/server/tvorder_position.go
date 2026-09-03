@@ -233,14 +233,14 @@ func (s *Server) executePositionCloseSignal(signalID string, signal trading.Sign
 	if triggerPrice == "" && signal.Price.Set {
 		triggerPrice = trading.NormalizeFloat(signal.Price.Value)
 	}
-	if _, _, err := s.recordCoinpairCooldownWithDuration(
+	if _, _, err := s.recordLossCoinpairCooldown(
+		cfg,
 		cooldownSource+":"+signalID,
 		cooldownSource,
 		firstNonEmptyString(result.TargetExchange, signal.TargetExchange),
 		firstNonEmptyString(result.APIID, signal.APIID),
 		triggerPrice,
 		completedAt,
-		tvWebhookExitCooldownDuration,
 		result.InstID,
 		signal.Coinpair,
 		signal.Ticker,

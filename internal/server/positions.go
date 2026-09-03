@@ -1054,7 +1054,8 @@ func (s *Server) scanOKXPositionMonitorForAPI(ctx context.Context, cfg config.Co
 			if eventOrderID == "" {
 				eventOrderID = detectedAt.Format(time.RFC3339Nano)
 			}
-			_, _, blockErr := s.recordCoinpairCooldown(
+			_, _, blockErr := s.recordLossCoinpairCooldown(
+				cfg,
 				strings.Join([]string{"position_monitor", trading.ExchangeOKX, apiID, position.InstID, position.PosSide, eventOrderID}, ":"),
 				"position_monitor",
 				trading.ExchangeOKX,
@@ -1132,7 +1133,8 @@ func (s *Server) scanBinancePositionMonitorForAPI(ctx context.Context, cfg confi
 			if eventOrderID == "" {
 				eventOrderID = detectedAt.Format(time.RFC3339Nano)
 			}
-			_, _, blockErr := s.recordCoinpairCooldown(
+			_, _, blockErr := s.recordLossCoinpairCooldown(
+				cfg,
 				strings.Join([]string{"position_monitor", trading.ExchangeBinance, apiID, position.InstID, position.PosSide, eventOrderID}, ":"),
 				"position_monitor",
 				trading.ExchangeBinance,

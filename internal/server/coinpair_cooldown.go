@@ -9,13 +9,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
 
 const (
 	coinpairCooldownDuration        = 24 * time.Hour
-	tvWebhookExitCooldownDuration   = 6 * time.Hour
 	coinpairCooldownCleanupInterval = time.Minute
 )
 
@@ -186,6 +186,17 @@ func coinpairBlockCoveringSymbol(blocks []storage.CoinpairBlock, symbol string) 
 	return storage.CoinpairBlock{}, false
 }
 
+func (s *Server) lossCooldownEnabled() bool {
+	if s.ConfigStore == nil {
+		return true
+	}
+	return s.ConfigStore.Get().Trading.LossCooldown.Enabled
+}
+
+func isAutomaticCoinpairCooldown(block storage.CoinpairBlock) bool {
+	return strings.ToLower(strings.TrimSpace(block.Source)) != "analysis_manual"
+}
+
 func (s *Server) activeCoinpairCooldown(signal trading.Signal, now time.Time) (storage.CoinpairBlock, bool, error) {
 	if strings.EqualFold(strings.TrimSpace(signal.PositionEffect), trading.PositionEffectClose) || s.Orders == nil {
 		return storage.CoinpairBlock{}, false, nil
@@ -195,6 +206,9 @@ func (s *Server) activeCoinpairCooldown(signal trading.Signal, now time.Time) (s
 		return storage.CoinpairBlock{}, false, err
 	}
 	for _, block := range blocks {
+		if !s.lossCooldownEnabled() && isAutomaticCoinpairCooldown(block) {
+			continue
+		}
 		filter := normalizeCoinpairFilter(block.Keyword)
 		if filter == "" {
 			continue
@@ -210,6 +224,15 @@ func (s *Server) activeCoinpairCooldown(signal trading.Signal, now time.Time) (s
 
 func (s *Server) recordCoinpairCooldown(eventID, source, exchange, apiID, triggerPrice string, occurredAt time.Time, symbolCandidates ...string) (storage.CoinpairBlock, bool, error) {
 	return s.recordCoinpairCooldownWithDuration(eventID, source, exchange, apiID, triggerPrice, occurredAt, coinpairCooldownDuration, symbolCandidates...)
+}
+
+func (s *Server) recordLossCoinpairCooldown(cfg config.Config, eventID, source, exchange, apiID, triggerPrice string, occurredAt time.Time, symbolCandidates ...string) (storage.CoinpairBlock, bool, error) {
+	cooldown := cfg.Trading.LossCooldown
+	if !cooldown.Enabled {
+		return storage.CoinpairBlock{}, false, nil
+	}
+	duration := time.Duration(cooldown.Hours) * time.Hour
+	return s.recordCoinpairCooldownWithDuration(eventID, source, exchange, apiID, triggerPrice, occurredAt, duration, symbolCandidates...)
 }
 
 func (s *Server) recordCoinpairCooldownWithDuration(eventID, source, exchange, apiID, triggerPrice string, occurredAt time.Time, duration time.Duration, symbolCandidates ...string) (storage.CoinpairBlock, bool, error) {
@@ -281,15 +304,10 @@ func webhookCloseCooldownSource(signal trading.Signal) (string, bool) {
 
 func webhookCloseCooldownSourceFromText(text string) (string, bool) {
 	hasStopLoss := containsStopLossMarker(text)
-	hasTakeProfit := containsTakeProfitMarker(text)
-	switch {
-	case hasTakeProfit && !hasStopLoss:
-		return "take_profit_webhook", true
-	case hasStopLoss && !hasTakeProfit:
+	if hasStopLoss {
 		return "stop_loss_webhook", true
-	default:
-		return "", false
 	}
+	return "", false
 }
 
 func containsStopLossMarker(text string) bool {
@@ -298,18 +316,6 @@ func containsStopLossMarker(text string) bool {
 	}
 	for _, token := range tvOrderIntentTokens(text) {
 		if token == "sl" || token == "stoploss" {
-			return true
-		}
-	}
-	return false
-}
-
-func containsTakeProfitMarker(text string) bool {
-	if strings.Contains(text, "止盈") || strings.Contains(text, "take_profit") || strings.Contains(text, "take-profit") || strings.Contains(text, "take profit") {
-		return true
-	}
-	for _, token := range tvOrderIntentTokens(text) {
-		if token == "tp" || token == "takeprofit" {
 			return true
 		}
 	}

@@ -56,9 +56,18 @@ type TradingConfig struct {
 	TrailingPct               float64               `json:"trailing_pct"`
 	LongLimitPriceMultiplier  float64               `json:"long_limit_price_multiplier"`
 	ShortLimitPriceMultiplier float64               `json:"short_limit_price_multiplier"`
+	LossCooldown              LossCooldownConfig    `json:"loss_cooldown"`
 	FillMonitor               FillMonitorConfig     `json:"fill_monitor"`
 	AutoReentry               AutoReentryConfig     `json:"auto_reentry"`
 	PositionMonitor           PositionMonitorConfig `json:"position_monitor"`
+}
+
+// LossCooldownConfig controls the global block applied to a coinpair after a
+// confirmed losing exit. It is separate from auto_reentry, whose cooldown only
+// governs the reentry lifecycle.
+type LossCooldownConfig struct {
+	Enabled bool `json:"enabled"`
+	Hours   int  `json:"hours"`
 }
 
 type FillMonitorConfig struct {
@@ -219,6 +228,10 @@ func Default() Config {
 			TrailingPct:               1,
 			LongLimitPriceMultiplier:  0.997,
 			ShortLimitPriceMultiplier: 1.003,
+			LossCooldown: LossCooldownConfig{
+				Enabled: true,
+				Hours:   24,
+			},
 			FillMonitor: FillMonitorConfig{
 				Enabled:             true,
 				PollIntervalSeconds: 20,
@@ -372,6 +385,9 @@ func (c *Config) Normalize() {
 	if c.Trading.ShortLimitPriceMultiplier <= 0 {
 		c.Trading.ShortLimitPriceMultiplier = 1.003
 	}
+	if c.Trading.LossCooldown.Hours <= 0 {
+		c.Trading.LossCooldown.Hours = 24
+	}
 	if c.Trading.FillMonitor.PollIntervalSeconds <= 0 {
 		c.Trading.FillMonitor.PollIntervalSeconds = 20
 	}
@@ -459,6 +475,9 @@ func (c Config) Validate() error {
 	}
 	if c.Trading.LongLimitPriceMultiplier <= 0 || c.Trading.ShortLimitPriceMultiplier <= 0 {
 		return errors.New("limit price multipliers must be positive")
+	}
+	if c.Trading.LossCooldown.Hours < 1 || c.Trading.LossCooldown.Hours > 8760 {
+		return errors.New("loss_cooldown.hours must be between 1 and 8760")
 	}
 	if c.Trading.FillMonitor.PollIntervalSeconds <= 0 {
 		return errors.New("fill_monitor.poll_interval_seconds must be positive")

@@ -146,6 +146,10 @@ func (s *Server) scanOKXCoinpairCooldownFills(ctx context.Context, cfg config.Co
 }
 
 func (s *Server) pollOKXCoinpairCooldownFills(ctx context.Context, client okx.Client, apiID string, now time.Time) error {
+	cfg := config.Default()
+	if s.ConfigStore != nil {
+		cfg = s.ConfigStore.Get()
+	}
 	cp, found, err := s.Orders.TradeMonitorCheckpoint(trading.ExchangeOKX, apiID, coinpairCooldownOKXCheckpoint)
 	if err != nil {
 		return err
@@ -236,7 +240,8 @@ func (s *Server) pollOKXCoinpairCooldownFills(ctx context.Context, client okx.Cl
 		if !order.pnlValid || order.realizedPnL >= 0 {
 			continue
 		}
-		_, _, blockErr := s.recordCoinpairCooldown(
+		_, _, blockErr := s.recordLossCoinpairCooldown(
+			cfg,
 			order.eventID,
 			"exchange_fill",
 			order.exchange,
@@ -490,7 +495,8 @@ func (s *Server) pollBinanceSymbolFills(ctx context.Context, cfg config.Config, 
 			if !order.pnlValid || order.realizedPnL >= 0 {
 				continue
 			}
-			_, _, blockErr := s.recordCoinpairCooldown(
+			_, _, blockErr := s.recordLossCoinpairCooldown(
+				cfg,
 				order.eventID,
 				"exchange_fill",
 				order.exchange,

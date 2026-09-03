@@ -754,6 +754,24 @@ const tvbotHTML = `<!doctype html>
       width: min(260px, 60vw);
       min-width: 180px;
     }
+    .coinpair-cooldown-settings {
+      justify-content: flex-start;
+    }
+    .coinpair-cooldown-settings label {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .coinpair-cooldown-hours {
+      width: 96px;
+      min-width: 96px;
+    }
+    .coinpair-cooldown-status {
+      margin-top: 8px;
+    }
     .coinpair-filter-list {
       display: flex;
       align-items: stretch;
@@ -1685,6 +1703,15 @@ const tvbotHTML = `<!doctype html>
         <div class="coinpair-filter-group">
           <h4 class="coinpair-filter-group-title">手动过滤</h4>
           <div class="coinpair-filter-list" id="ignored-coinpair-list"><span class="muted coinpair-filter-empty">暂无已添加的币对过滤</span></div>
+        </div>
+        <div class="coinpair-filter-group">
+          <h4 class="coinpair-filter-group-title">亏损平仓后冷静期</h4>
+          <div class="coinpair-filter-actions coinpair-cooldown-settings">
+            <label><input id="loss-cooldown-enabled" type="checkbox">启用亏损平仓后同币对冷静期</label>
+            <label>时长（小时）<input class="coinpair-cooldown-hours" id="loss-cooldown-hours" type="number" min="1" max="8760" step="1" inputmode="numeric"></label>
+            <button class="btn primary" type="button" id="save-loss-cooldown">保存冷静期设置</button>
+          </div>
+          <div class="muted coinpair-cooldown-status" id="loss-cooldown-status">-</div>
         </div>
         <div class="coinpair-filter-group">
           <h4 class="coinpair-filter-group-title">动态冷静期（按来源生效）</h4>
@@ -5217,6 +5244,56 @@ const tvbotHTML = `<!doctype html>
       return String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
     }
 
+    function lossCooldownConfig() {
+      const trading = state.config && state.config.trading ? state.config.trading : {};
+      const cooldown = trading.loss_cooldown || {};
+      const hours = Number(cooldown.hours);
+      return {
+        enabled: cooldown.enabled !== false,
+        hours: Number.isInteger(hours) && hours >= 1 && hours <= 8760 ? hours : 24
+      };
+    }
+
+    function syncLossCooldownControls() {
+      const enabled = $("loss-cooldown-enabled");
+      const hours = $("loss-cooldown-hours");
+      const status = $("loss-cooldown-status");
+      if (!enabled || !hours || !status) return;
+      hours.disabled = !enabled.checked;
+      status.textContent = enabled.checked
+        ? ("已开启：确认亏损平仓后阻止同币对新开仓 " + hours.value + " 小时")
+        : "已关闭：不会创建或执行自动亏损冷静期；手动过滤和手动冷静期不受影响。";
+    }
+
+    function renderLossCooldownSettings() {
+      const enabled = $("loss-cooldown-enabled");
+      const hours = $("loss-cooldown-hours");
+      if (!enabled || !hours) return;
+      const cooldown = lossCooldownConfig();
+      enabled.checked = cooldown.enabled;
+      hours.value = cooldown.hours;
+      syncLossCooldownControls();
+    }
+
+    async function saveLossCooldownSettings() {
+      const enabled = $("loss-cooldown-enabled");
+      const hours = $("loss-cooldown-hours");
+      if (!enabled || !hours) return;
+      const value = Number(hours.value);
+      if (!Number.isInteger(value) || value < 1 || value > 8760) {
+        throw new Error("冷静时长必须是 1 到 8760 的整数小时");
+      }
+      state.config = await api("/tvbot/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trading: { loss_cooldown: { enabled: enabled.checked, hours: value } } })
+      });
+      renderConfig();
+      renderDashboard();
+      await loadCoinpairBlocks();
+      toast(enabled.checked ? ("亏损冷静期已保存：" + value + " 小时") : "亏损冷静期已关闭，自动冷静期已解除");
+    }
+
     function syncIgnoredCoinpairControls() {
       const addButton = $("add-ignored-coinpair");
       if (!addButton) return;
@@ -5237,6 +5314,7 @@ const tvbotHTML = `<!doctype html>
         return '<div class="coinpair-filter-item"><span>' + escapeHTML(keyword) + '</span>' +
           '<button class="coinpair-filter-remove" type="button" data-ignored-coinpair-index="' + index + '" title="' + escapeHTML(removeLabel) + '" aria-label="' + escapeHTML(removeLabel) + '">×</button></div>';
       }).join("") || '<span class="muted coinpair-filter-empty">暂无已添加的币对过滤</span>';
+      renderLossCooldownSettings();
       renderCoinpairCooldownList();
       syncIgnoredCoinpairControls();
     }
@@ -5259,18 +5337,17 @@ const tvbotHTML = `<!doctype html>
 
     function coinpairCooldownSource(source) {
       if (source === "stop_loss_webhook") return "止损信号";
-      if (source === "take_profit_webhook") return "止盈信号";
-      if (source === "position_monitor") return "持仓监控";
-      if (source === "exchange_fill") return "亏损成交";
+      if (source === "take_profit_webhook") return "历史止盈冷静期";
+      if (source === "position_monitor") return "持仓监控止损";
+      if (source === "exchange_fill") return "亏损平仓";
       if (source === "analysis_manual") return "手动冷静期";
       return source || "止损";
     }
 
     function coinpairCooldownPriceLabel(source) {
       if (source === "analysis_manual") return "平仓价";
-      if (source === "take_profit_webhook") return "止盈触发价";
-      if (source === "stop_loss_webhook") return "止损触发价";
-      return "止损价";
+      if (source === "exchange_fill") return "亏损平仓价";
+      return "止损触发价";
     }
 
     function renderCoinpairCooldownList() {
@@ -6220,6 +6297,9 @@ const tvbotHTML = `<!doctype html>
       addIgnoredCoinpair().catch((err) => toast(err.message));
     });
     $("add-ignored-coinpair").addEventListener("click", () => addIgnoredCoinpair().catch((err) => toast(err.message)));
+    $("loss-cooldown-enabled").addEventListener("change", () => syncLossCooldownControls());
+    $("loss-cooldown-hours").addEventListener("input", () => syncLossCooldownControls());
+    $("save-loss-cooldown").addEventListener("click", () => saveLossCooldownSettings().catch((err) => toast(err.message)));
     $("ignored-coinpair-list").addEventListener("click", (event) => {
       const button = event.target.closest("button[data-ignored-coinpair-index]");
       if (!button) return;

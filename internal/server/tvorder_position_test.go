@@ -45,7 +45,7 @@ func TestTVOrderTPSLSignalExecutesBinanceLimitClose(t *testing.T) {
 			positionSide:   trading.PositionSideLong,
 			orderSide:      "SELL",
 			orderPrice:     "0.022629",
-			cooldownSource: "take_profit_webhook",
+			cooldownSource: "",
 		},
 	}
 	for _, tc := range cases {
@@ -132,8 +132,12 @@ func testTVOrderTPSLSignalExecutesBinanceLimitClose(t *testing.T, positionAmount
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(blocks) != 1 || blocks[0].Keyword != "ESPORTS" || blocks[0].TriggerPrice != expectedOrderPrice || blocks[0].Source != cooldownSource || !blocks[0].ExpiresAt.Equal(srv.now().Add(tvWebhookExitCooldownDuration)) {
-		t.Fatalf("submitted TP/SL webhook did not create six-hour cooldown: %#v", blocks)
+	if cooldownSource == "" {
+		if len(blocks) != 0 {
+			t.Fatalf("take-profit webhook must not create cooldown: %#v", blocks)
+		}
+	} else if len(blocks) != 1 || blocks[0].Keyword != "ESPORTS" || blocks[0].TriggerPrice != expectedOrderPrice || blocks[0].Source != cooldownSource || !blocks[0].ExpiresAt.Equal(srv.now().Add(24*time.Hour)) {
+		t.Fatalf("submitted stop-loss webhook did not create default cooldown: %#v", blocks)
 	}
 	mu.Lock()
 	defer mu.Unlock()

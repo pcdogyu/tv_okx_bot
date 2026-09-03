@@ -46,16 +46,32 @@ func TestNegativeRealizedPnLClassification(t *testing.T) {
 	}
 }
 
-func TestWebhookCloseCooldownSourceRequiresUnambiguousTPSL(t *testing.T) {
+func TestConfiguredLossCooldownDurationAndDisable(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	cfg := config.Default()
+	cfg.Trading.LossCooldown.Hours = 3
+	block, created, err := srv.recordLossCoinpairCooldown(cfg, "loss:1", "exchange_fill", trading.ExchangeOKX, "main", "2500", now, "ETHUSDT")
+	if err != nil || !created || !block.ExpiresAt.Equal(now.Add(3*time.Hour)) {
+		t.Fatalf("custom loss cooldown was not created: created=%v block=%#v err=%v", created, block, err)
+	}
+
+	cfg.Trading.LossCooldown.Enabled = false
+	if block, created, err := srv.recordLossCoinpairCooldown(cfg, "loss:2", "exchange_fill", trading.ExchangeOKX, "main", "2600", now, "BTCUSDT"); err != nil || created || block.Keyword != "" {
+		t.Fatalf("disabled loss cooldown should not create a block: created=%v block=%#v err=%v", created, block, err)
+	}
+}
+
+func TestWebhookCloseCooldownSourceRequiresStopLoss(t *testing.T) {
 	cases := []struct {
 		signal trading.Signal
 		want   string
 	}{
 		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, OrderIntent: "sl_short"}, want: "stop_loss_webhook"},
-		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, OrderIntent: "tp_long"}, want: "take_profit_webhook"},
+		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, OrderIntent: "tp_long"}, want: ""},
 		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止损"}, want: "stop_loss_webhook"},
-		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止盈"}, want: "take_profit_webhook"},
-		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止盈止损"}, want: ""},
+		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止盈"}, want: ""},
+		{signal: trading.Signal{PositionEffect: trading.PositionEffectClose, Condition: "空单止盈止损"}, want: "stop_loss_webhook"},
 		{signal: trading.Signal{PositionEffect: trading.PositionEffectOpen, Condition: "多单止损"}, want: ""},
 	}
 	for _, tc := range cases {

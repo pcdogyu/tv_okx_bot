@@ -95,6 +95,44 @@ func TestNormalizeBinanceBaseURLs(t *testing.T) {
 	}
 }
 
+func TestLossCooldownDefaultsMigrationAndValidation(t *testing.T) {
+	cfg := Default()
+	if !cfg.Trading.LossCooldown.Enabled || cfg.Trading.LossCooldown.Hours != 24 {
+		t.Fatalf("unexpected loss cooldown defaults: %#v", cfg.Trading.LossCooldown)
+	}
+
+	legacyPath := filepath.Join(t.TempDir(), "legacy.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"trading":{"order_amount_usdt":100}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := Load(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !legacy.Trading.LossCooldown.Enabled || legacy.Trading.LossCooldown.Hours != 24 {
+		t.Fatalf("legacy config did not receive loss cooldown defaults: %#v", legacy.Trading.LossCooldown)
+	}
+
+	cfg.Trading.LossCooldown.Enabled = false
+	cfg.Trading.LossCooldown.Hours = 48
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Trading.LossCooldown.Enabled || loaded.Trading.LossCooldown.Hours != 48 {
+		t.Fatalf("loss cooldown setting did not persist: %#v", loaded.Trading.LossCooldown)
+	}
+
+	cfg.Trading.LossCooldown.Hours = 8761
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("loss cooldown above the maximum should be rejected")
+	}
+}
+
 func TestIgnoredCoinpairsMigratePersistAndDeduplicate(t *testing.T) {
 	dir := t.TempDir()
 	legacyPath := filepath.Join(dir, "legacy.json")

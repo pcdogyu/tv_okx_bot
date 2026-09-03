@@ -818,6 +818,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_config", err.Error())
 			return
 		}
+		previous := s.ConfigStore.Get()
 		cfg, err := s.ConfigStore.Update(func(c *config.Config) error {
 			applyConfigPatch(c, patch)
 			return nil
@@ -826,6 +827,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_config", err.Error())
 			return
 		}
+		if previous.Trading.LossCooldown.Enabled && !cfg.Trading.LossCooldown.Enabled && s.Orders != nil {
+			if _, clearErr := s.Orders.DeleteAutomaticCoinpairBlocks(); clearErr != nil && s.Logger != nil {
+				s.Logger.Error("failed to clear automatic coinpair cooldowns after disabling loss cooldown", "error", clearErr)
+			}
+		}
 		writeJSON(w, http.StatusOK, cfg)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only GET and PUT are allowed")
@@ -833,7 +839,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func validateConfigPatch(patch configPatch) error {
-	if patch.Trading == nil || patch.Trading.PositionMonitor == nil {
+	if patch.Trading == nil {
+		return nil
+	}
+	if cooldown := patch.Trading.LossCooldown; cooldown != nil && cooldown.Hours != nil {
+		if *cooldown.Hours < 1 || *cooldown.Hours > 8760 {
+			return errors.New("loss_cooldown.hours must be between 1 and 8760")
+		}
+	}
+	if patch.Trading.PositionMonitor == nil {
 		return nil
 	}
 	monitor := patch.Trading.PositionMonitor
@@ -2207,9 +2221,15 @@ type tradingPatch struct {
 	TrailingPct               *float64                      `json:"trailing_pct"`
 	LongLimitPriceMultiplier  *float64                      `json:"long_limit_price_multiplier"`
 	ShortLimitPriceMultiplier *float64                      `json:"short_limit_price_multiplier"`
+	LossCooldown              *lossCooldownPatch            `json:"loss_cooldown"`
 	FillMonitor               *config.FillMonitorConfig     `json:"fill_monitor"`
 	AutoReentry               *config.AutoReentryConfig     `json:"auto_reentry"`
 	PositionMonitor           *config.PositionMonitorConfig `json:"position_monitor"`
+}
+
+type lossCooldownPatch struct {
+	Enabled *bool `json:"enabled"`
+	Hours   *int  `json:"hours"`
 }
 
 type uiPatch struct {
@@ -2299,6 +2319,14 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.Trading.ShortLimitPriceMultiplier != nil {
 		c.Trading.ShortLimitPriceMultiplier = *patch.Trading.ShortLimitPriceMultiplier
+	}
+	if patch.Trading.LossCooldown != nil {
+		if patch.Trading.LossCooldown.Enabled != nil {
+			c.Trading.LossCooldown.Enabled = *patch.Trading.LossCooldown.Enabled
+		}
+		if patch.Trading.LossCooldown.Hours != nil {
+			c.Trading.LossCooldown.Hours = *patch.Trading.LossCooldown.Hours
+		}
 	}
 	if patch.Trading.FillMonitor != nil {
 		c.Trading.FillMonitor = *patch.Trading.FillMonitor

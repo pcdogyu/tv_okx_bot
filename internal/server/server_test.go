@@ -683,6 +683,61 @@ func TestTVBotConfigSavesIgnoredCoinpairListAndSupportsLegacyPatch(t *testing.T)
 	}
 }
 
+func TestTVBotConfigUpdatesLossCooldownAndClearsAutomaticBlocks(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	if _, _, err := srv.recordCoinpairCooldown("manual:1", "analysis_manual", trading.ExchangeOKX, "main", "2500", now, "ETHUSDT"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := srv.recordCoinpairCooldown("loss:1", "exchange_fill", trading.ExchangeOKX, "main", "49000", now, "BTCUSDT"); err != nil {
+		t.Fatal(err)
+	}
+
+	put := func(payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/tvbot/config", strings.NewReader(payload))
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		return rr
+	}
+	rr := put(`{"trading":{"loss_cooldown":{"enabled":false,"hours":12}}}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("disable loss cooldown status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(rr.Body.Bytes(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Trading.LossCooldown.Enabled || cfg.Trading.LossCooldown.Hours != 12 {
+		t.Fatalf("bad saved loss cooldown config: %#v", cfg.Trading.LossCooldown)
+	}
+	blocks, err := srv.Orders.ListActiveCoinpairBlocks(now)
+	if err != nil || len(blocks) != 1 || blocks[0].Keyword != "ETH" || blocks[0].Source != "analysis_manual" {
+		t.Fatalf("disabling loss cooldown should retain only manual blocks: blocks=%#v err=%v", blocks, err)
+	}
+	if _, blocked, err := srv.activeCoinpairCooldown(trading.Signal{Coinpair: "BTCUSDT", PositionEffect: trading.PositionEffectOpen}, now); err != nil || blocked {
+		t.Fatalf("disabled loss cooldown should not block automatic rules: blocked=%v err=%v", blocked, err)
+	}
+	if invalid := put(`{"trading":{"loss_cooldown":{"hours":8761}}}`); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid loss cooldown hours status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func TestTVBotUIIncludesLossCooldownControls(t *testing.T) {
+	for _, marker := range []string{
+		`id="loss-cooldown-enabled"`,
+		`id="loss-cooldown-hours"`,
+		`id="save-loss-cooldown"`,
+		`function saveLossCooldownSettings()`,
+		`loss_cooldown: { enabled: enabled.checked, hours: value }`,
+	} {
+		if !strings.Contains(tvbotHTML, marker) {
+			t.Fatalf("tvbot UI missing loss cooldown marker %q", marker)
+		}
+	}
+}
+
 func TestPositionActionsExcludeProtectionButtons(t *testing.T) {
 	start := strings.Index(tvbotHTML, "function positionActionCell(row)")
 	end := strings.Index(tvbotHTML, "function positionEntryTimeTitle(row)")
