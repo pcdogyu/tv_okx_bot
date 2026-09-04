@@ -1584,8 +1584,12 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		writeError(w, http.StatusNotFound, "not_found", "order record not found")
 		return
 	}
-	if source.Status != storage.StatusFailed {
-		writeError(w, http.StatusConflict, "not_retriable", "only failed orders can be retried")
+	if source.Status != storage.StatusFailed && source.Status != storage.StatusIgnored {
+		writeError(w, http.StatusConflict, "not_retriable", "only failed or ignored orders can be retried")
+		return
+	}
+	if source.Status == storage.StatusIgnored && !ignoredOrderCanRetry(source) {
+		writeError(w, http.StatusConflict, "not_retriable", fmt.Sprintf("ignored order reason %q cannot be safely retried", source.ErrorCode))
 		return
 	}
 	cfg := configForTradeEnv(s.ConfigStore.Get(), source.TradeEnv)
@@ -1621,33 +1625,11 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":    "ignored",
+			"reason":    "coinpair_filtered",
 			"signal_id": record.SignalID,
 			"retry_of":  source.SignalID,
 		})
 		return
-	}
-	if !strings.EqualFold(strings.TrimSpace(probe.PositionEffect), trading.PositionEffectClose) {
-		decision, err := s.marketScopeDecision(probe)
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, marketScopeCheckFailedCode(decision), err.Error())
-			return
-		}
-		if !decision.Available {
-			writeError(w, http.StatusServiceUnavailable, marketScopeUnavailableCode(decision), marketScopeUnavailableMessage(decision))
-			return
-		}
-		if !decision.Allowed {
-			signal := ignoredRetrySignalFromRecord(source, now)
-			record, err := s.recordMarketScopeIgnoredSignal(signal, decision, now)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "store_error", err.Error())
-				return
-			}
-			resp := marketScopeIgnoredResponse(record, decision)
-			resp["retry_of"] = source.SignalID
-			writeJSON(w, http.StatusAccepted, resp)
-			return
-		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -1682,6 +1664,11 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		"retry_of":  source.SignalID,
 		"price":     trading.NormalizeFloat(signal.Price.Value),
 	})
+}
+
+func ignoredOrderCanRetry(rec storage.OrderRecord) bool {
+	code := strings.ToLower(strings.TrimSpace(rec.ErrorCode))
+	return strings.HasPrefix(code, "outside_market_") || code == "coinpair_filtered" || code == "coinpair_cooldown"
 }
 
 func ignoredRetrySignalFromRecord(rec storage.OrderRecord, now time.Time) trading.Signal {

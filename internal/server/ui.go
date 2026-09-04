@@ -5486,6 +5486,10 @@ const tvbotHTML = `<!doctype html>
       return labels[status] || status;
     }
 
+    function orderCanRetry(order) {
+      return !!(order && order.signal_id && (order.status === "failed" || order.status === "ignored"));
+    }
+
     function renderOrders() {
       const total = Number(state.ordersTotal || 0);
       const totalPages = ordersTotalPages();
@@ -5507,7 +5511,7 @@ const tvbotHTML = `<!doctype html>
         const tradeEnvText = order.trade_env === "live" ? "实盘" : "模拟";
         const targetText = exchangeLabel(targetExchange) + " " + tradeEnvText + " / " + apiDisplayName(apiID, targetExchange);
         const tone = order.status === "submitted" ? "ok" : (order.status === "failed" || order.status === "rejected" ? "bad" : "warn");
-        const canRetry = order.status === "failed" && order.signal_id;
+        const canRetry = orderCanRetry(order);
         const retrying = canRetry && state.retrying[order.signal_id];
         const retryButton = canRetry ? '<button class="btn small" type="button" data-retry-id="' + escapeHTML(order.signal_id) + '"' + (retrying ? " disabled" : "") + ">" + (retrying ? "重试中" : "重试") + "</button>" : "";
         const rawJSONButton = orderRawJSONText(order) ? '<button class="btn small order-json-button" type="button" data-order-json-index="' + index + '">JSON</button>' : "";
@@ -5929,7 +5933,13 @@ const tvbotHTML = `<!doctype html>
       try {
         const result = await api("/tvbot/orders/" + encodeURIComponent(signalID) + "/retry", { method: "POST" });
         const retryPrice = result && result.price ? (" @ " + asText(result.price)) : "";
-        toast("按现价重试已触发 " + asText(result.signal_id) + retryPrice);
+        if (result && result.status === "ignored") {
+          toast("重试仍被忽略: " + asText(result.reason || "当前安全规则"));
+        } else if (result && result.status === "duplicate") {
+          toast("重试信号重复: " + asText(result.signal_id));
+        } else {
+          toast("按现价重试已触发 " + asText(result.signal_id) + retryPrice);
+        }
         await loadOrders();
         window.setTimeout(() => loadOrders().catch((err) => toast(err.message)), 1600);
       } finally {

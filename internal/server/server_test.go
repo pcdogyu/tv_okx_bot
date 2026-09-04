@@ -615,6 +615,10 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`function removeIgnoredCoinpair(index)`),
 		[]byte(`只过滤开仓信号`),
 		[]byte(`orderHistoryStatusText`),
+		[]byte(`function orderCanRetry(order)`),
+		[]byte(`order.status === "failed" || order.status === "ignored"`),
+		[]byte(`重试仍被忽略`),
+		[]byte(`重试信号重复`),
 	} {
 		if !bytes.Contains(body, marker) {
 			t.Fatalf("tvbot ui missing order search marker %q", marker)
@@ -625,6 +629,14 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte(`确认提前解除`)) {
 		t.Fatal("cooldown remove should not show a confirmation prompt")
+	}
+	retryStart := bytes.Index(body, []byte(`async function retryOrder(signalID)`))
+	retryEnd := bytes.Index(body, []byte(`async function closePosition(button)`))
+	if retryStart < 0 || retryEnd <= retryStart {
+		t.Fatal("retry function boundaries are missing")
+	}
+	if bytes.Contains(body[retryStart:retryEnd], []byte(`confirm(`)) {
+		t.Fatal("order retry should execute without a confirmation dialog")
 	}
 }
 
@@ -1960,11 +1972,8 @@ func TestOrderRetryMatchingFilterIsIgnoredBeforeMarketRequest(t *testing.T) {
 	srv := newTestServer(t)
 	signal := validSignal(t, srv)
 	signal.PositionEffect = trading.PositionEffectOpen
-	source, _, err := srv.Orders.RecordAccepted(signal, "retry-filter-source", srv.now())
+	source, err := srv.Orders.RecordIgnored(signal, "BTC", srv.now())
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := srv.Orders.MarkFailed(source.SignalID, errors.New("exchange failed"), srv.now()); err != nil {
 		t.Fatal(err)
 	}
 	marketRequests := 0
@@ -1988,13 +1997,14 @@ func TestOrderRetryMatchingFilterIsIgnoredBeforeMarketRequest(t *testing.T) {
 	}
 	var resp struct {
 		Status   string `json:"status"`
+		Reason   string `json:"reason"`
 		SignalID string `json:"signal_id"`
 		RetryOf  string `json:"retry_of"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != "ignored" || resp.SignalID == "" || resp.RetryOf != source.SignalID {
+	if resp.Status != "ignored" || resp.Reason != "coinpair_filtered" || resp.SignalID == "" || resp.RetryOf != source.SignalID {
 		t.Fatalf("bad ignored retry response: %#v", resp)
 	}
 	if marketRequests != 0 {
@@ -2011,15 +2021,39 @@ func TestOrderRetryMatchingFilterIsIgnoredBeforeMarketRequest(t *testing.T) {
 	}
 }
 
+func TestOrderRetryIgnoredFilterExecutesAfterFilterRemoval(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.PositionEffect = trading.PositionEffectOpen
+	source, err := srv.Orders.RecordIgnored(signal, "BTC", srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	installOKXRetryTicker(t, srv, "BTC-USDT-SWAP", "49999", "50001", "50000")
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+source.SignalID+"/retry", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted || !bytes.Contains(rr.Body.Bytes(), []byte(`"status":"accepted"`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"retry_of":"`+source.SignalID+`"`)) {
+		t.Fatalf("removed-filter retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		if got.Coinpair != "BTC" || got.Price.Value != 50000 {
+			t.Fatalf("bad removed-filter retry signal: %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("removed-filter retry did not reach executor")
+	}
+}
+
 func TestOrderRetryActiveCooldownIsIgnoredBeforeMarketRequest(t *testing.T) {
 	srv := newTestServer(t)
 	signal := validSignal(t, srv)
 	signal.PositionEffect = trading.PositionEffectOpen
-	source, _, err := srv.Orders.RecordAccepted(signal, "retry-cooldown-source", srv.now())
+	source, err := srv.Orders.RecordIgnoredReason(signal, "coinpair_cooldown", "seed cooldown", srv.now())
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := srv.Orders.MarkFailed(source.SignalID, errors.New("exchange failed"), srv.now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := srv.recordCoinpairCooldown("retry-stop:1", "exchange_fill", trading.ExchangeOKX, "default", "49000", srv.now(), "BTC-USDT-SWAP"); err != nil {
@@ -2069,7 +2103,7 @@ func TestOrderRetryActiveCooldownIsIgnoredBeforeMarketRequest(t *testing.T) {
 	}
 }
 
-func TestOrderRetryRejectsNonFailedRecord(t *testing.T) {
+func TestOrderRetryRejectsSubmittedRecord(t *testing.T) {
 	srv := newTestServer(t)
 	signal := validSignal(t, srv)
 	body, err := json.Marshal(signal)
@@ -2098,11 +2132,53 @@ func TestOrderRetryRejectsNonFailedRecord(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)
 	if rr.Code != http.StatusConflict {
-		t.Fatalf("retry non-failed status=%d body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("retry submitted status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	select {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		t.Fatalf("non-failed order should not retry: %#v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestOrderRetryRejectsAcceptedDuplicateRejectedAndUnsafeIgnoredRecords(t *testing.T) {
+	srv := newTestServer(t)
+	now := srv.now()
+	signal := validSignal(t, srv)
+
+	accepted, duplicate, err := srv.Orders.RecordAccepted(signal, "retry-status-source", now)
+	if err != nil || duplicate {
+		t.Fatalf("seed accepted: duplicate=%v err=%v", duplicate, err)
+	}
+	duplicateRecord, duplicate, err := srv.Orders.RecordAccepted(signal, "retry-status-source", now.Add(time.Second))
+	if err != nil || !duplicate {
+		t.Fatalf("seed duplicate: duplicate=%v err=%v", duplicate, err)
+	}
+	rejected, err := srv.Orders.RecordRejected(signal, "invalid_signal", errors.New("seed rejection"), now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adxIgnored, err := srv.Orders.RecordIgnoredReason(signal, "adx_transition", "seed transition", now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownIgnored, err := srv.Orders.RecordIgnoredReason(signal, "future_safety_gate", "seed unknown gate", now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, source := range []storage.OrderRecord{accepted, duplicateRecord, rejected, adxIgnored, unknownIgnored} {
+		req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+source.SignalID+"/retry", nil)
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusConflict || !bytes.Contains(rr.Body.Bytes(), []byte(`"error":"not_retriable"`)) {
+			t.Fatalf("source status=%s code=%s retry status=%d body=%s", source.Status, source.ErrorCode, rr.Code, rr.Body.String())
+		}
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		t.Fatalf("non-retriable order reached executor: %#v", got)
 	case <-time.After(50 * time.Millisecond):
 	}
 }

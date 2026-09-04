@@ -315,29 +315,58 @@ func TestTVOrderUsesConfiguredMarketScopeErrorCodes(t *testing.T) {
 	}
 }
 
-func TestOrderRetryOutsideMarketScopeStopsBeforePriceLookup(t *testing.T) {
-	srv := newTestServer(t)
-	now := srv.now()
-	signal := validSignal(t, srv)
-	signal.Coinpair = "NOTTOP"
-	signal.Ticker = "OKX:NOTTOPUSDT.P"
-	signal.TargetExchange = trading.ExchangeOKX
-	signal.TradeEnv = trading.TradeEnvDemo
-	signal.PositionEffect = trading.PositionEffectOpen
-	signal.Normalize()
-	record, duplicate, err := srv.Orders.RecordAccepted(signal, "outside-retry", now)
-	if err != nil || duplicate {
-		t.Fatalf("seed failed order: duplicate=%v err=%v", duplicate, err)
-	}
-	if err := srv.Orders.MarkFailed(record.SignalID, fmt.Errorf("seed failure"), now); err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+record.SignalID+"/retry", nil)
-	req.SetBasicAuth("admin", "Admin123")
-	rr := httptest.NewRecorder()
-	srv.ServeHTTP(rr, req)
-	if rr.Code != http.StatusAccepted || !bytes.Contains(rr.Body.Bytes(), []byte(`"reason":"outside_market_top100"`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"retry_of":"`+record.SignalID+`"`)) {
-		t.Fatalf("outside retry status=%d body=%s", rr.Code, rr.Body.String())
+func TestOrderRetryBypassesMarketScopeForFailedAndIgnoredSources(t *testing.T) {
+	for _, sourceStatus := range []storage.OrderStatus{storage.StatusFailed, storage.StatusIgnored} {
+		t.Run(string(sourceStatus), func(t *testing.T) {
+			srv := newTestServer(t)
+			now := srv.now()
+			signal := validSignal(t, srv)
+			signal.Coinpair = "NOTTOP"
+			signal.Ticker = "OKX:NOTTOPUSDT.P"
+			signal.TargetExchange = trading.ExchangeOKX
+			signal.TradeEnv = trading.TradeEnvDemo
+			signal.PositionEffect = trading.PositionEffectOpen
+			signal.Normalize()
+
+			var record storage.OrderRecord
+			var err error
+			if sourceStatus == storage.StatusFailed {
+				var duplicate bool
+				record, duplicate, err = srv.Orders.RecordAccepted(signal, "outside-retry-failed", now)
+				if err == nil && !duplicate {
+					err = srv.Orders.MarkFailed(record.SignalID, fmt.Errorf("seed failure"), now)
+				}
+			} else {
+				record, err = srv.Orders.RecordIgnoredReason(signal, "outside_market_top100", "outside configured market scope", now)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			installOKXRetryTicker(t, srv, "NOTTOP-USDT-SWAP", "100", "102", "101")
+			req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+record.SignalID+"/retry", nil)
+			req.SetBasicAuth("admin", "Admin123")
+			rr := httptest.NewRecorder()
+			srv.ServeHTTP(rr, req)
+			if rr.Code != http.StatusAccepted || !bytes.Contains(rr.Body.Bytes(), []byte(`"status":"accepted"`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"retry_of":"`+record.SignalID+`"`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"price":"101"`)) {
+				t.Fatalf("outside retry status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			var response struct {
+				SignalID string `json:"signal_id"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got := <-srv.Executor.(fakeExecutor).calls:
+				if got.Coinpair != "NOTTOP" || got.Price.Value != 101 {
+					t.Fatalf("bad outside-scope retry signal: %#v", got)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("outside-scope retry did not reach executor")
+			}
+			waitOrderStatus(t, srv.Orders, response.SignalID, storage.StatusSubmitted)
+		})
 	}
 }
 
