@@ -616,7 +616,9 @@ func TestTVBotUIOrderHistorySearchControls(t *testing.T) {
 		[]byte(`只过滤开仓信号`),
 		[]byte(`orderHistoryStatusText`),
 		[]byte(`function orderCanRetry(order)`),
+		[]byte(`function unsupportedOKXInstrumentMessage(order)`),
 		[]byte(`order.status === "failed" || order.status === "ignored"`),
+		[]byte(`OKX " + tradeEnv + "不支持 " + instID + "，无法重试`),
 		[]byte(`重试仍被忽略`),
 		[]byte(`重试信号重复`),
 	} {
@@ -2138,6 +2140,74 @@ func TestOrderRetryRejectsSubmittedRecord(t *testing.T) {
 	case got := <-srv.Executor.(fakeExecutor).calls:
 		t.Fatalf("non-failed order should not retry: %#v", got)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestOrderRetryRejectsUnsupportedOKXDemoInstrument(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.Coinpair = "PUMPUSDT.P"
+	signal.Ticker = "OKX:PUMPUSDT.P"
+	signal.TradeEnv = trading.TradeEnvDemo
+	source, _, err := srv.Orders.RecordAccepted(signal, "retry-unsupported-okx-source", srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orders.MarkFailedCode(source.SignalID, "51001", errors.New("Instrument ID, Instrument ID code, or Spread ID doesn't exist."), srv.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+source.SignalID+"/retry", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "OKX 模拟盘不支持 PUMP-USDT-SWAP，无法重试") {
+		t.Fatalf("unsupported instrument retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		t.Fatalf("unsupported instrument reached executor: %#v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestOrderRetryMarksInstrumentUnsupportedWhenPriceRefreshReturns51001(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.Coinpair = "PUMPUSDT.P"
+	signal.Ticker = "OKX:PUMPUSDT.P"
+	signal.TradeEnv = trading.TradeEnvDemo
+	source, _, err := srv.Orders.RecordAccepted(signal, "retry-price-unsupported-okx-source", srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Orders.MarkFailed(source.SignalID, errors.New("seed failure"), srv.now()); err != nil {
+		t.Fatal(err)
+	}
+
+	marketServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/market/ticker" || r.URL.Query().Get("instId") != "PUMP-USDT-SWAP" {
+			t.Fatalf("unexpected OKX retry ticker request %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":"1","msg":"Instrument ID doesn't exist.","data":[{"sCode":"51001","sMsg":"Instrument ID, Instrument ID code, or Spread ID doesn't exist."}]}`))
+	}))
+	t.Cleanup(marketServer.Close)
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = marketServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = marketServer.Client()
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/orders/"+source.SignalID+"/retry", nil)
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "OKX 模拟盘不支持 PUMP-USDT-SWAP，无法重试") {
+		t.Fatalf("unsupported price refresh status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	updated, ok := srv.Orders.Get(source.SignalID)
+	if !ok || updated.ErrorCode != "okx_instrument_unsupported" || updated.Error != "OKX 模拟盘不支持 PUMP-USDT-SWAP，无法重试" {
+		t.Fatalf("unsupported source was not marked non-retriable: %#v", updated)
 	}
 }
 

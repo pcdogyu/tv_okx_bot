@@ -5487,7 +5487,19 @@ const tvbotHTML = `<!doctype html>
     }
 
     function orderCanRetry(order) {
-      return !!(order && order.signal_id && (order.status === "failed" || order.status === "ignored"));
+      return !!(order && order.signal_id && (order.status === "failed" || order.status === "ignored") && !unsupportedOKXInstrumentMessage(order));
+    }
+
+    function unsupportedOKXInstrumentMessage(order) {
+      if (!order) return "";
+      const result = order.result || {};
+      const targetExchange = normalizeExchange(order.target_exchange || result.target_exchange);
+      if (targetExchange !== "okx") return "";
+      const details = [order.error_code, order.error, result.okx_code, result.okx_msg].filter(Boolean).join(" ").toLowerCase();
+      if (!details.includes("okx_instrument_unsupported") && !/(^|[^0-9])51001([^0-9]|$)/.test(details)) return "";
+      const instID = normalizePrecisionInstID("okx", result.inst_id || order.coinpair || order.ticker) || "该币对";
+      const tradeEnv = order.trade_env === "live" ? "实盘" : "模拟盘";
+      return "OKX " + tradeEnv + "不支持 " + instID + "，无法重试";
     }
 
     function renderOrders() {
@@ -5505,7 +5517,8 @@ const tvbotHTML = `<!doctype html>
         const okxResult = targetExchange === "okx" && order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : "";
         const binanceResult = targetExchange === "binance" && order.result && (order.result.ord_id || order.result.binance_code || order.result.binance_msg) ? [order.result.ord_id, order.result.binance_code, order.result.binance_msg].filter(Boolean).join(" / ") : "";
         const errorText = [order.error_code, order.error].filter(Boolean).join(": ");
-        const exchangeResult = okxResult || binanceResult || errorText || "-";
+        const unsupportedMessage = unsupportedOKXInstrumentMessage(order);
+        const exchangeResult = unsupportedMessage || okxResult || binanceResult || errorText || "-";
         const apiID = order.api_id || (order.result && order.result.api_id);
         const sourceExchange = order.source_exchange || "-";
         const tradeEnvText = order.trade_env === "live" ? "实盘" : "模拟";
@@ -5942,6 +5955,9 @@ const tvbotHTML = `<!doctype html>
         }
         await loadOrders();
         window.setTimeout(() => loadOrders().catch((err) => toast(err.message)), 1600);
+      } catch (err) {
+        try { await loadOrders(); } catch (_) {}
+        throw err;
       } finally {
         delete state.retrying[signalID];
         renderOrders();

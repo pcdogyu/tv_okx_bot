@@ -1588,6 +1588,10 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		writeError(w, http.StatusConflict, "not_retriable", "only failed or ignored orders can be retried")
 		return
 	}
+	if message := unsupportedOKXInstrumentMessage(source); message != "" {
+		writeError(w, http.StatusConflict, "not_retriable", message)
+		return
+	}
 	if source.Status == storage.StatusIgnored && !ignoredOrderCanRetry(source) {
 		writeError(w, http.StatusConflict, "not_retriable", fmt.Sprintf("ignored order reason %q cannot be safely retried", source.ErrorCode))
 		return
@@ -1635,6 +1639,14 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 	defer cancel()
 	price, err := s.currentRetryMarketPrice(ctx, cfg, source)
 	if err != nil {
+		if trading.NormalizeExchange(source.TargetExchange) == trading.ExchangeOKX && isOKXInstrumentNotFoundError(err) {
+			message := formatUnsupportedOKXInstrumentMessage(source)
+			if markErr := s.Orders.MarkFailedCode(source.SignalID, "okx_instrument_unsupported", errors.New(message), now); markErr != nil && s.Logger != nil {
+				s.Logger.Error("failed to mark unsupported OKX instrument", "signal_id", source.SignalID, "error", markErr)
+			}
+			writeError(w, http.StatusConflict, "not_retriable", message)
+			return
+		}
 		writeError(w, http.StatusBadGateway, "retry_price_failed", err.Error())
 		return
 	}
@@ -1669,6 +1681,51 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 func ignoredOrderCanRetry(rec storage.OrderRecord) bool {
 	code := strings.ToLower(strings.TrimSpace(rec.ErrorCode))
 	return strings.HasPrefix(code, "outside_market_") || code == "coinpair_filtered" || code == "coinpair_cooldown"
+}
+
+func unsupportedOKXInstrumentMessage(rec storage.OrderRecord) string {
+	if trading.NormalizeExchange(rec.TargetExchange) != trading.ExchangeOKX {
+		return ""
+	}
+	details := strings.ToLower(strings.Join([]string{
+		rec.ErrorCode,
+		rec.Error,
+		rec.Result.OKXCode,
+		rec.Result.OKXMsg,
+	}, " "))
+	if !strings.Contains(details, "okx_instrument_unsupported") && !strings.Contains(details, "51001") {
+		return ""
+	}
+	return formatUnsupportedOKXInstrumentMessage(rec)
+}
+
+func formatUnsupportedOKXInstrumentMessage(rec storage.OrderRecord) string {
+	instID := strings.TrimSpace(rec.Result.InstID)
+	if instID == "" {
+		if derived, _, err := okx.DeriveSwapInstrumentID(rec.Coinpair, rec.Ticker); err == nil {
+			instID = derived
+		}
+	}
+	if instID == "" {
+		instID = "该币对"
+	}
+	tradeEnv := "模拟盘"
+	if orderRecordTradeEnv(rec) == trading.TradeEnvLive {
+		tradeEnv = "实盘"
+	}
+	return fmt.Sprintf("OKX %s不支持 %s，无法重试", tradeEnv, instID)
+}
+
+func isOKXInstrumentNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr okx.APIError
+	if errors.As(err, &apiErr) && apiErr.HasCode("51001") {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "51001") && strings.Contains(text, "instrument") && strings.Contains(text, "exist")
 }
 
 func ignoredRetrySignalFromRecord(rec storage.OrderRecord, now time.Time) trading.Signal {
