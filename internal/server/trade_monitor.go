@@ -741,21 +741,21 @@ func (s *Server) maybeSubmitAutoReentry(ctx context.Context, cfg config.Config, 
 	if !ok {
 		return fmt.Errorf("source signal %s not found for auto reentry", lifecycle.SourceSignalID)
 	}
-	top30Probe := trading.Signal{
+	marketScopeProbe := trading.Signal{
 		TargetExchange: trading.ExchangeBinance,
 		TradeEnv:       orderRecordTradeEnv(rec),
 		Coinpair:       firstNonEmptyString(rec.Coinpair, lifecycle.Symbol),
 		Ticker:         firstNonEmptyString(rec.Ticker, lifecycle.Symbol),
 		PositionEffect: trading.PositionEffectOpen,
 	}
-	decision, err := s.marketTop30Decision(top30Probe)
+	decision, err := s.marketScopeDecision(marketScopeProbe)
 	if err != nil {
 		return err
 	}
 	if !decision.Available || !decision.Allowed {
-		message := top30UnavailableMessage(decision)
+		message := marketScopeUnavailableMessage(decision)
 		if decision.Available {
-			message = fmt.Sprintf("coinpair is outside %s %s turnover top %d", decision.Exchange, decision.TradeEnv, marketTopSymbolLimit)
+			message = marketScopeOutsideMessage(decision)
 		}
 		updated, err := s.Orders.UpdateTradeLifecycle(lifecycle.LifecycleID, storage.TradeLifecycleUpdate{
 			Status:    storage.TradeLifecycleBlocked,
@@ -771,7 +771,7 @@ func (s *Server) maybeSubmitAutoReentry(ctx context.Context, cfg config.Config, 
 			Symbol:         lifecycle.Symbol,
 			LifecycleID:    lifecycle.LifecycleID,
 			SourceSignalID: lifecycle.SourceSignalID,
-			EventType:      "auto_reentry_top100_blocked",
+			EventType:      marketScopeAutoReentryEventType(decision),
 			Status:         updated.Status,
 			Message:        message,
 		})

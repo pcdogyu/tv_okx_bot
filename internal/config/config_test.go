@@ -95,6 +95,59 @@ func TestNormalizeBinanceBaseURLs(t *testing.T) {
 	}
 }
 
+func TestMarketTurnoverScopeDefaultsPersistsAndValidates(t *testing.T) {
+	cfg := Default()
+	if cfg.Trading.MarketTurnoverScope != MarketTurnoverScopeTop100 {
+		t.Fatalf("default market turnover scope=%q", cfg.Trading.MarketTurnoverScope)
+	}
+
+	legacyPath := filepath.Join(t.TempDir(), "legacy.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"trading":{"order_amount_usdt":100}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := Load(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Trading.MarketTurnoverScope != MarketTurnoverScopeTop100 {
+		t.Fatalf("legacy scope=%q", legacy.Trading.MarketTurnoverScope)
+	}
+
+	for _, scope := range []string{MarketTurnoverScopeTop50, MarketTurnoverScopeTop100, MarketTurnoverScopeTop200, MarketTurnoverScopeTop500, MarketTurnoverScopeAll} {
+		cfg.Trading.MarketTurnoverScope = scope
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("scope %q should validate: %v", scope, err)
+		}
+	}
+	if limits := []int{
+		MarketTurnoverScopeLimit(MarketTurnoverScopeTop50),
+		MarketTurnoverScopeLimit(MarketTurnoverScopeTop100),
+		MarketTurnoverScopeLimit(MarketTurnoverScopeTop200),
+		MarketTurnoverScopeLimit(MarketTurnoverScopeTop500),
+		MarketTurnoverScopeLimit(MarketTurnoverScopeAll),
+	}; !reflect.DeepEqual(limits, []int{50, 100, 200, 500, 0}) {
+		t.Fatalf("unexpected market turnover limits: %#v", limits)
+	}
+
+	cfg.Trading.MarketTurnoverScope = MarketTurnoverScopeTop200
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Trading.MarketTurnoverScope != MarketTurnoverScopeTop200 {
+		t.Fatalf("persisted scope=%q", loaded.Trading.MarketTurnoverScope)
+	}
+
+	cfg.Trading.MarketTurnoverScope = "top75"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("unsupported market turnover scope should be rejected")
+	}
+}
+
 func TestLossCooldownDefaultsMigrationAndValidation(t *testing.T) {
 	cfg := Default()
 	if !cfg.Trading.LossCooldown.Enabled || cfg.Trading.LossCooldown.Hours != 24 {

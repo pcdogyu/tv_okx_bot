@@ -1564,7 +1564,8 @@ const tvbotHTML = `<!doctype html>
         <div class="symbol-controls">
           <label>交易所<select id="symbol-exchange"><option value="okx">OKX</option><option value="binance">Binance</option></select></label>
           <label>环境<select id="symbol-env"><option value="live">实盘</option><option value="demo">模拟</option></select></label>
-          <label class="symbol-search-label">搜索成交量前 100 币对<input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="例如 BTC"></label>
+          <label>交易范围<select id="symbol-turnover-scope"><option value="top50">成交量前 50</option><option value="top100">成交量前 100</option><option value="top200">成交量前 200</option><option value="top500">成交量前 500</option><option value="all">全部</option></select></label>
+          <label class="symbol-search-label"><span id="symbol-search-label-text">搜索成交量前 100 币对</span><input id="symbol-search" autocomplete="off" spellcheck="false" placeholder="例如 BTC"></label>
           <div class="symbol-search-actions">
             <button class="btn" type="button" id="clear-symbol-search" disabled>清除搜索</button>
             <button class="btn primary" type="button" id="refresh-symbols">刷新币对</button>
@@ -3541,6 +3542,7 @@ const tvbotHTML = `<!doctype html>
       $("cfg-position").value = trading.position_mode || "net";
       $("cfg-ttl").value = trading.signal_ttl_seconds || 120;
       $("cfg-live").checked = !!trading.allow_live_trading;
+      renderMarketTurnoverScope();
       renderIgnoredCoinpairFilter();
     }
 
@@ -3559,6 +3561,7 @@ const tvbotHTML = `<!doctype html>
       $("symbol-demo-count").textContent = asText(symbolSetCount(okxDemo) + symbolSetCount(binanceDemo));
       $("symbol-configured-count").textContent = asText(Object.keys(configured).length);
       $("symbol-visible-count").textContent = asText(rows.length);
+      renderMarketTurnoverScope();
       updateSymbolSearchControls(keyword);
       renderTableStructure("symbols");
       const errors = [];
@@ -3570,6 +3573,45 @@ const tvbotHTML = `<!doctype html>
       $("symbol-errors").textContent = errors.join(" / ");
       const columns = currentTableColumnDefs("symbols");
       $("symbol-rows").innerHTML = rows.map((row) => "<tr>" + columns.map((col) => col.cell(row)).join("") + "</tr>").join("") || '<tr><td colspan="' + tableColumnCount("symbols") + '" class="muted">' + escapeHTML(symbolEmptyMessage(keyword)) + '</td></tr>';
+    }
+
+    function marketTurnoverScope() {
+      const trading = state.config && state.config.trading ? state.config.trading : {};
+      const scope = String(trading.market_turnover_scope || "top100").trim().toLowerCase();
+      return ["top50", "top100", "top200", "top500", "all"].includes(scope) ? scope : "top100";
+    }
+
+    function marketTurnoverScopeLabel(scope) {
+      const labels = { top50: "成交量前 50", top100: "成交量前 100", top200: "成交量前 200", top500: "成交量前 500", all: "全部符合条件" };
+      return labels[scope] || labels.top100;
+    }
+
+    function renderMarketTurnoverScope() {
+      const scope = marketTurnoverScope();
+      const select = $("symbol-turnover-scope");
+      if (select && !select.disabled) select.value = scope;
+      const label = $("symbol-search-label-text");
+      if (label) label.textContent = scope === "all" ? "搜索全部符合条件币对" : "搜索" + marketTurnoverScopeLabel(scope) + " 币对";
+    }
+
+    async function saveMarketTurnoverScope() {
+      const select = $("symbol-turnover-scope");
+      if (!select) return;
+      const previous = marketTurnoverScope();
+      const next = String(select.value || "top100");
+      if (next === previous) return;
+      select.disabled = true;
+      try {
+        state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trading: { market_turnover_scope: next } }) });
+      } catch (err) {
+        select.value = previous;
+        throw err;
+      } finally {
+        select.disabled = false;
+      }
+      renderMarketTurnoverScope();
+      await loadSymbols(true);
+      toast("交易范围已保存为" + marketTurnoverScopeLabel(next));
     }
 
     function filteredSymbolRows() {
@@ -6120,6 +6162,7 @@ const tvbotHTML = `<!doctype html>
     $("clear-symbol-search").addEventListener("click", () => clearSymbolSearch());
     $("symbol-exchange").addEventListener("change", () => renderSymbols());
     $("symbol-env").addEventListener("change", () => renderSymbols());
+    $("symbol-turnover-scope").addEventListener("change", () => saveMarketTurnoverScope().catch((err) => toast(err.message)));
     $("symbol-head").addEventListener("click", (event) => {
       if (tableColumnDropSuppressClick) return;
       const th = event.target.closest("th[data-symbol-sort]");

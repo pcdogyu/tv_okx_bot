@@ -12,6 +12,7 @@
     "binance_demo_base_url": "https://demo-fapi.binance.com",
     "default_margin_mode": "isolated",
     "position_mode": "net",
+    "market_turnover_scope": "top100",
     "signal_ttl_seconds": 120,
     "ignored_coinpairs": [],
     "order_amount_usdt": 100,

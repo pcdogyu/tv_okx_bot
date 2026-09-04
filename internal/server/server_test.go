@@ -282,6 +282,15 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("订单配置")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/symbols")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-exchange")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-turnover-scope")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`value="top50"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`value="top100"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`value="top200"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`value="top500"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`value="all"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("market_turnover_scope")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("saveMarketTurnoverScope")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("symbol-search-label-text")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("搜索成交量前 100 币对")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("clear-symbol-search")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("没有匹配的币对")) ||
@@ -786,6 +795,34 @@ func TestTVBotConfigSavesOrderType(t *testing.T) {
 	srv.ServeHTTP(bad, badReq)
 	if bad.Code != http.StatusBadRequest || !bytes.Contains(bad.Body.Bytes(), []byte("unsupported order_type")) {
 		t.Fatalf("bad order type status=%d body=%s", bad.Code, bad.Body.String())
+	}
+}
+
+func TestTVBotConfigSavesMarketTurnoverScopeAndRejectsInvalidValue(t *testing.T) {
+	srv := newTestServer(t)
+	for _, scope := range []string{"top50", "top100", "top200", "top500", "all"} {
+		req := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{"trading":{"market_turnover_scope":"`+scope+`"}}`)))
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("scope %s status=%d body=%s", scope, rr.Code, rr.Body.String())
+		}
+		var cfg config.Config
+		if err := json.Unmarshal(rr.Body.Bytes(), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Trading.MarketTurnoverScope != scope || srv.ConfigStore.Get().Trading.MarketTurnoverScope != scope {
+			t.Fatalf("scope %s not persisted: response=%q store=%q", scope, cfg.Trading.MarketTurnoverScope, srv.ConfigStore.Get().Trading.MarketTurnoverScope)
+		}
+	}
+
+	badReq := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{"trading":{"market_turnover_scope":"top75"}}`)))
+	badReq.SetBasicAuth("admin", "Admin123")
+	bad := httptest.NewRecorder()
+	srv.ServeHTTP(bad, badReq)
+	if bad.Code != http.StatusBadRequest || !bytes.Contains(bad.Body.Bytes(), []byte(`"error":"invalid_config"`)) {
+		t.Fatalf("invalid scope status=%d body=%s", bad.Code, bad.Body.String())
 	}
 }
 
@@ -5617,11 +5654,11 @@ func newTestServer(t *testing.T) *Server {
 			return time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
 		},
 	}
-	seedTestTop30Catalog(t, orderStore, srv.now())
+	seedTestMarketScopeCatalog(t, orderStore, srv.now())
 	return srv
 }
 
-func seedTestTop30Catalog(t *testing.T, store *storage.OrderStore, now time.Time) {
+func seedTestMarketScopeCatalog(t *testing.T, store *storage.OrderStore, now time.Time) {
 	t.Helper()
 	bases := []string{"BTC", "ETH", "BNB", "SOL", "DOGE", "ESPORTS", "ETHFI", "SYRUP", "AAA", "BAD", "ZZZ", "PARTIAL", "SECOND", "EETH", "1000PEPE"}
 	resp := emptySymbolsResponse(map[string]config.SymbolConfig{})
@@ -5644,7 +5681,7 @@ func seedTestTop30Catalog(t *testing.T, store *storage.OrderStore, now time.Time
 	resp.OKX.Demo.Count = len(resp.OKX.Demo.Instruments)
 	resp.Binance.Live.Count = len(resp.Binance.Live.Instruments)
 	resp.Binance.Demo.Count = len(resp.Binance.Demo.Instruments)
-	applyTop30Rankings(&resp)
+	applyMarketScopeRankings(&resp, config.DefaultMarketTurnoverScope)
 	items, err := symbolCatalogCacheItems(resp, now)
 	if err != nil {
 		t.Fatal(err)

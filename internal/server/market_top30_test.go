@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pcdogyu/tv_okx_bot/internal/binance"
+	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/okx"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
@@ -48,8 +49,9 @@ func TestTop100RankingsSortLimitAndFilterMarkets(t *testing.T) {
 		okxRows = append(okxRows, symbolInstrument{Instrument: okx.Instrument{InstID: base + "-USDT-SWAP", BaseCcy: base, State: "live"}, TurnoverUSDT24h: turnover})
 		binanceRows = append(binanceRows, binanceSymbolInstrument{SymbolInfo: binance.SymbolInfo{Symbol: base + "USDT", BaseAsset: base, Status: "TRADING"}, TurnoverUSDT24h: turnover})
 	}
-	okxTop := topOKXInstruments(okxRows, marketTopSymbolLimit)
-	binanceTop := topBinanceInstruments(binanceRows, marketTopSymbolLimit)
+	limit := config.MarketTurnoverScopeLimit(config.DefaultMarketTurnoverScope)
+	okxTop := topOKXInstruments(okxRows, limit)
+	binanceTop := topBinanceInstruments(binanceRows, limit)
 	if len(okxTop) != 100 || len(binanceTop) != 100 {
 		t.Fatalf("top sizes okx=%d binance=%d", len(okxTop), len(binanceTop))
 	}
@@ -72,48 +74,51 @@ func TestTop100RankingsSortLimitAndFilterMarkets(t *testing.T) {
 }
 
 func TestExcludedRankingBasesDoNotMakeCompleteRankingsUnavailable(t *testing.T) {
-	okxSet := okxInstrumentSet{Count: 4, Instruments: []symbolInstrument{
+	okxSet := okxInstrumentSet{Count: 5, Instruments: []symbolInstrument{
 		{Instrument: okx.Instrument{InstID: "BTC-USDT-SWAP", BaseCcy: "BTC", State: "live"}, TurnoverUSDT24h: "100"},
+		{Instrument: okx.Instrument{InstID: "ZERO-USDT-SWAP", BaseCcy: "ZERO", State: "live"}, TurnoverUSDT24h: "0"},
 		{Instrument: okx.Instrument{InstID: "USDC-USDT-SWAP", BaseCcy: "USDC", State: "live"}, TurnoverUSDT24h: "200"},
 		{Instrument: okx.Instrument{InstID: "XAUT-USDT-SWAP", BaseCcy: "XAUT", State: "live"}, TurnoverUSDT24h: "300"},
 		{Instrument: okx.Instrument{InstID: "STRK-USDT-SWAP", Uly: "TSLA-USDT", InstFamily: "STRK-USDT", BaseCcy: "STRK", State: "live"}, TurnoverUSDT24h: "400"},
 	}}
-	okxSet.TopInstruments = topOKXInstruments(okxSet.Instruments, marketTopSymbolLimit)
-	markOKXRankingUnavailable(&okxSet)
+	limit := config.MarketTurnoverScopeLimit(config.DefaultMarketTurnoverScope)
+	okxSet.TopInstruments = topOKXInstruments(okxSet.Instruments, limit)
+	markOKXRankingUnavailable(&okxSet, limit)
 	if okxSet.TickerError != "" || len(okxSet.TopInstruments) != 1 || okxSet.TopInstruments[0].BaseCcy != "BTC" {
 		t.Fatalf("excluded OKX bases or mismatched underlyings should not make ranking unavailable: %#v", okxSet)
 	}
 
-	binanceSet := binanceInstrumentSet{Count: 3, Instruments: []binanceSymbolInstrument{
+	binanceSet := binanceInstrumentSet{Count: 4, Instruments: []binanceSymbolInstrument{
 		{SymbolInfo: binance.SymbolInfo{Symbol: "BTCUSDT", BaseAsset: "BTC", Status: "TRADING"}, TurnoverUSDT24h: "100"},
+		{SymbolInfo: binance.SymbolInfo{Symbol: "ZEROUSDT", BaseAsset: "ZERO", Status: "TRADING"}, TurnoverUSDT24h: "0"},
 		{SymbolInfo: binance.SymbolInfo{Symbol: "USDTUSDT", BaseAsset: "USDT", Status: "TRADING"}, TurnoverUSDT24h: "200"},
 		{SymbolInfo: binance.SymbolInfo{Symbol: "XAGUSDT", BaseAsset: "XAG", Status: "TRADING"}, TurnoverUSDT24h: "300"},
 	}}
-	binanceSet.TopInstruments = topBinanceInstruments(binanceSet.Instruments, marketTopSymbolLimit)
-	markBinanceRankingUnavailable(&binanceSet)
+	binanceSet.TopInstruments = topBinanceInstruments(binanceSet.Instruments, limit)
+	markBinanceRankingUnavailable(&binanceSet, limit)
 	if binanceSet.TickerError != "" || len(binanceSet.TopInstruments) != 1 || binanceSet.TopInstruments[0].BaseAsset != "BTC" {
 		t.Fatalf("excluded Binance bases should not make ranking unavailable: %#v", binanceSet)
 	}
 }
 
-func TestMarketTop30DecisionUsesExactTargetMarketAndSymbolFormats(t *testing.T) {
+func TestMarketScopeDecisionUsesExactTargetMarketAndSymbolFormats(t *testing.T) {
 	srv := newTestServer(t)
 	upsertTestOKXMarket(t, srv, trading.TradeEnvDemo, "ETHFI")
 	upsertTestBinanceMarket(t, srv, trading.TradeEnvLive, "BETA")
 
-	decision, err := srv.marketTop30Decision(trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "OKX:ETHFIUSDT.P"})
+	decision, err := srv.marketScopeDecision(trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "OKX:ETHFIUSDT.P"})
 	if err != nil || !decision.Available || !decision.Allowed || decision.Symbol != "ETHFI-USDT-SWAP" {
 		t.Fatalf("formatted OKX symbol not matched: decision=%#v err=%v", decision, err)
 	}
-	decision, err = srv.marketTop30Decision(trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "ETH"})
+	decision, err = srv.marketScopeDecision(trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: "ETH"})
 	if err != nil || !decision.Available || decision.Allowed {
 		t.Fatalf("exact matching should not treat ETH as ETHFI: decision=%#v err=%v", decision, err)
 	}
-	decision, err = srv.marketTop30Decision(trading.Signal{TargetExchange: trading.ExchangeBinance, TradeEnv: trading.TradeEnvLive, Ticker: "BINANCE:BETAUSDT"})
+	decision, err = srv.marketScopeDecision(trading.Signal{TargetExchange: trading.ExchangeBinance, TradeEnv: trading.TradeEnvLive, Ticker: "BINANCE:BETAUSDT"})
 	if err != nil || !decision.Available || !decision.Allowed || decision.Symbol != "BETAUSDT" {
 		t.Fatalf("Binance live market not matched: decision=%#v err=%v", decision, err)
 	}
-	decision, err = srv.marketTop30Decision(trading.Signal{TargetExchange: trading.ExchangeBinance, Ticker: "BINANCE:BETAUSDT"})
+	decision, err = srv.marketScopeDecision(trading.Signal{TargetExchange: trading.ExchangeBinance, Ticker: "BINANCE:BETAUSDT"})
 	if err != nil || !decision.Available || decision.Allowed || decision.TradeEnv != trading.TradeEnvDemo {
 		t.Fatalf("missing trade_env should use the independent demo ranking: decision=%#v err=%v", decision, err)
 	}
@@ -142,7 +147,7 @@ func TestMarketTop100DecisionAllowsRanks51To100AndRejectsRank101(t *testing.T) {
 	}
 	for _, check := range checks {
 		t.Run(check.name, func(t *testing.T) {
-			decision, err := srv.marketTop30Decision(check.signal)
+			decision, err := srv.marketScopeDecision(check.signal)
 			if err != nil || !decision.Available || decision.Allowed != check.allowed {
 				t.Fatalf("decision=%#v err=%v expected allowed=%v", decision, err, check.allowed)
 			}
@@ -150,7 +155,101 @@ func TestMarketTop100DecisionAllowsRanks51To100AndRejectsRank101(t *testing.T) {
 	}
 }
 
-func TestTVOrderTop30IgnoresOutsideEntryAllowsCloseAndFailsClosedWithoutRanking(t *testing.T) {
+func TestMarketTurnoverScopesControlCachedRankingsAndDecisions(t *testing.T) {
+	checks := []struct {
+		scope string
+		want  int
+	}{
+		{scope: config.MarketTurnoverScopeTop50, want: 50},
+		{scope: config.MarketTurnoverScopeTop100, want: 100},
+		{scope: config.MarketTurnoverScopeTop200, want: 200},
+		{scope: config.MarketTurnoverScopeTop500, want: 500},
+		{scope: config.MarketTurnoverScopeAll, want: 510},
+	}
+	for _, check := range checks {
+		t.Run(check.scope, func(t *testing.T) {
+			srv := newTestServer(t)
+			cfg := srv.ConfigStore.Get()
+			cfg.Trading.MarketTurnoverScope = check.scope
+			srv.ConfigStore = config.NewStore("", cfg)
+			bases := make([]string, 510)
+			for i := range bases {
+				bases[i] = fmt.Sprintf("R%03d", i)
+			}
+			upsertTestOKXMarket(t, srv, trading.TradeEnvDemo, bases...)
+			upsertTestBinanceMarket(t, srv, trading.TradeEnvLive, bases...)
+
+			resp, err := srv.cachedSymbolsResponse(srv.ConfigStore.Get())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(resp.OKX.Demo.TopInstruments) != check.want || len(resp.Binance.Live.TopInstruments) != check.want {
+				t.Fatalf("scope=%s sizes OKX=%d Binance=%d want=%d", check.scope, len(resp.OKX.Demo.TopInstruments), len(resp.Binance.Live.TopInstruments), check.want)
+			}
+
+			lastAllowed := bases[check.want-1]
+			for _, signal := range []trading.Signal{
+				{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: lastAllowed},
+				{TargetExchange: trading.ExchangeBinance, TradeEnv: trading.TradeEnvLive, Coinpair: lastAllowed},
+			} {
+				decision, err := srv.marketScopeDecision(signal)
+				if err != nil || !decision.Available || !decision.Allowed || decision.Scope != check.scope {
+					t.Fatalf("last allowed decision=%#v err=%v", decision, err)
+				}
+			}
+
+			outside := "NOTTOP"
+			if check.want < len(bases) {
+				outside = bases[check.want]
+			}
+			decision, err := srv.marketScopeDecision(trading.Signal{TargetExchange: trading.ExchangeOKX, TradeEnv: trading.TradeEnvDemo, Coinpair: outside})
+			if err != nil || !decision.Available || decision.Allowed {
+				t.Fatalf("outside decision=%#v err=%v", decision, err)
+			}
+		})
+	}
+}
+
+func TestSymbolsAPIRecalculatesCachedCatalogImmediatelyAfterScopeChange(t *testing.T) {
+	srv := newTestServer(t)
+	bases := make([]string, 220)
+	for i := range bases {
+		bases[i] = fmt.Sprintf("API%03d", i)
+	}
+	upsertTestOKXMarket(t, srv, trading.TradeEnvDemo, bases...)
+
+	getSymbols := func() symbolsResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/tvbot/symbols", nil)
+		req.SetBasicAuth("admin", "Admin123")
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("symbols status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp symbolsResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	if got := len(getSymbols().OKX.Demo.TopInstruments); got != 100 {
+		t.Fatalf("default scope returned %d symbols, want 100", got)
+	}
+	put := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader([]byte(`{"trading":{"market_turnover_scope":"top200"}}`)))
+	put.SetBasicAuth("admin", "Admin123")
+	putResult := httptest.NewRecorder()
+	srv.ServeHTTP(putResult, put)
+	if putResult.Code != http.StatusOK {
+		t.Fatalf("scope update status=%d body=%s", putResult.Code, putResult.Body.String())
+	}
+	if got := len(getSymbols().OKX.Demo.TopInstruments); got != 200 {
+		t.Fatalf("updated scope returned %d symbols, want 200", got)
+	}
+}
+
+func TestTVOrderMarketScopeIgnoresOutsideEntryAllowsCloseAndFailsClosedWithoutRanking(t *testing.T) {
 	srv := newTestServer(t)
 
 	outside := validSignal(t, srv)
@@ -188,7 +287,35 @@ func TestTVOrderTop30IgnoresOutsideEntryAllowsCloseAndFailsClosedWithoutRanking(
 	}
 }
 
-func TestOrderRetryOutsideTop30StopsBeforePriceLookup(t *testing.T) {
+func TestTVOrderUsesConfiguredMarketScopeErrorCodes(t *testing.T) {
+	srv := newTestServer(t)
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.MarketTurnoverScope = config.MarketTurnoverScopeTop50
+	srv.ConfigStore = config.NewStore("", cfg)
+	bases := make([]string, 60)
+	for i := range bases {
+		bases[i] = fmt.Sprintf("CODE%02d", i)
+	}
+	upsertTestOKXMarket(t, srv, trading.TradeEnvDemo, bases...)
+
+	signal := validSignal(t, srv)
+	signal.Coinpair = bases[50]
+	signal.Ticker = "OKX:" + bases[50] + "USDT.P"
+	signal.Token = srv.Token.Generate(signal.CanonicalTokenPayload())
+	rr := postTVOrder(t, srv, signal)
+	if rr.Code != http.StatusAccepted || !bytes.Contains(rr.Body.Bytes(), []byte(`"reason":"outside_market_top50"`)) || !bytes.Contains(rr.Body.Bytes(), []byte(`"market_scope":"top50"`)) {
+		t.Fatalf("top50 outside response status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	clearTestMarket(t, srv, trading.ExchangeOKX, trading.TradeEnvDemo)
+	signal = validSignal(t, srv)
+	rr = postTVOrder(t, srv, signal)
+	if rr.Code != http.StatusServiceUnavailable || !bytes.Contains(rr.Body.Bytes(), []byte(`"error":"top50_unavailable"`)) {
+		t.Fatalf("top50 unavailable response status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestOrderRetryOutsideMarketScopeStopsBeforePriceLookup(t *testing.T) {
 	srv := newTestServer(t)
 	now := srv.now()
 	signal := validSignal(t, srv)
@@ -214,7 +341,7 @@ func TestOrderRetryOutsideTop30StopsBeforePriceLookup(t *testing.T) {
 	}
 }
 
-func TestAutoReentryOutsideTop30StopsBeforeExchange(t *testing.T) {
+func TestAutoReentryOutsideMarketScopeStopsBeforeExchange(t *testing.T) {
 	srv := newTestServer(t)
 	now := srv.now()
 	signal := validSignal(t, srv)
@@ -285,7 +412,7 @@ func upsertTestOKXMarket(t *testing.T, srv *Server, env string, bases ...string)
 		})
 	}
 	set.Count = len(set.Instruments)
-	set.TopInstruments = topOKXInstruments(set.Instruments, marketTopSymbolLimit)
+	set.TopInstruments = topOKXInstruments(set.Instruments, config.MarketTurnoverScopeLimit(srv.ConfigStore.Get().Trading.MarketTurnoverScope))
 	upsertTestMarketPayload(t, srv, trading.ExchangeOKX, env, set, len(set.Instruments), srv.now())
 }
 
@@ -299,7 +426,7 @@ func upsertTestBinanceMarket(t *testing.T, srv *Server, env string, bases ...str
 		})
 	}
 	set.Count = len(set.Instruments)
-	set.TopInstruments = topBinanceInstruments(set.Instruments, marketTopSymbolLimit)
+	set.TopInstruments = topBinanceInstruments(set.Instruments, config.MarketTurnoverScopeLimit(srv.ConfigStore.Get().Trading.MarketTurnoverScope))
 	upsertTestMarketPayload(t, srv, trading.ExchangeBinance, env, set, len(set.Instruments), srv.now())
 }
 

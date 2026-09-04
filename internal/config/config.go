@@ -21,6 +21,14 @@ const (
 
 	PositionNet       = "net"
 	PositionLongShort = "long_short"
+
+	MarketTurnoverScopeTop50  = "top50"
+	MarketTurnoverScopeTop100 = "top100"
+	MarketTurnoverScopeTop200 = "top200"
+	MarketTurnoverScopeTop500 = "top500"
+	MarketTurnoverScopeAll    = "all"
+
+	DefaultMarketTurnoverScope = MarketTurnoverScopeTop100
 )
 
 type Config struct {
@@ -44,6 +52,7 @@ type TradingConfig struct {
 	BinanceDemoBaseURL        string                `json:"binance_demo_base_url"`
 	DefaultMarginMode         string                `json:"default_margin_mode"`
 	PositionMode              string                `json:"position_mode"`
+	MarketTurnoverScope       string                `json:"market_turnover_scope"`
 	SignalTTLSeconds          int                   `json:"signal_ttl_seconds"`
 	IgnoredCoinpair           string                `json:"ignored_coinpair"`
 	IgnoredCoinpairs          []string              `json:"ignored_coinpairs"`
@@ -218,6 +227,7 @@ func Default() Config {
 			BinanceDemoBaseURL:        "https://demo-fapi.binance.com",
 			DefaultMarginMode:         MarginIsolated,
 			PositionMode:              PositionNet,
+			MarketTurnoverScope:       DefaultMarketTurnoverScope,
 			SignalTTLSeconds:          120,
 			OrderAmountUSDT:           100,
 			Leverage:                  5,
@@ -347,6 +357,10 @@ func (c *Config) Normalize() {
 	if c.Trading.PositionMode == "" {
 		c.Trading.PositionMode = PositionNet
 	}
+	c.Trading.MarketTurnoverScope = strings.ToLower(strings.TrimSpace(c.Trading.MarketTurnoverScope))
+	if c.Trading.MarketTurnoverScope == "" {
+		c.Trading.MarketTurnoverScope = DefaultMarketTurnoverScope
+	}
 	if c.Trading.SignalTTLSeconds <= 0 {
 		c.Trading.SignalTTLSeconds = 120
 	}
@@ -451,6 +465,9 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("unsupported position mode %q", c.Trading.PositionMode)
 	}
+	if !ValidMarketTurnoverScope(c.Trading.MarketTurnoverScope) {
+		return fmt.Errorf("unsupported market turnover scope %q", c.Trading.MarketTurnoverScope)
+	}
 	switch trading.RiskType(c.Trading.RiskType) {
 	case trading.RiskNone, trading.RiskTPSL, trading.RiskTrailing:
 	default:
@@ -520,6 +537,30 @@ func (c Config) Validate() error {
 		return errors.New("menuSettings must be visible")
 	}
 	return nil
+}
+
+func ValidMarketTurnoverScope(scope string) bool {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case MarketTurnoverScopeTop50, MarketTurnoverScopeTop100, MarketTurnoverScopeTop200, MarketTurnoverScopeTop500, MarketTurnoverScopeAll:
+		return true
+	default:
+		return false
+	}
+}
+
+func MarketTurnoverScopeLimit(scope string) int {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case MarketTurnoverScopeTop50:
+		return 50
+	case MarketTurnoverScopeTop200:
+		return 200
+	case MarketTurnoverScopeTop500:
+		return 500
+	case MarketTurnoverScopeAll:
+		return 0
+	default:
+		return 100
+	}
 }
 
 func normalizeFillMonitorExchanges(exchanges []string) []string {

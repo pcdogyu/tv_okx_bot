@@ -321,7 +321,7 @@ func TestTradeMonitorAutoReentrySubmitsOnce(t *testing.T) {
 	cfg.Trading.AutoReentry.Enabled = true
 	cfg.Trading.AutoReentry.ReentryAmountPct = 50
 	srv.ConfigStore = config.NewStore("", cfg)
-	seedTestTop30Catalog(t, store, now)
+	seedTestMarketScopeCatalog(t, store, now)
 	client := binance.Client{
 		BaseURL:     binanceServer.URL,
 		Credentials: binance.Credentials{APIKey: "key", SecretKey: "secret"},

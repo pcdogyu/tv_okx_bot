@@ -6,11 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pcdogyu/tv_okx_bot/internal/config"
 	"github.com/pcdogyu/tv_okx_bot/internal/storage"
 	"github.com/pcdogyu/tv_okx_bot/internal/trading"
 )
-
-const marketTopSymbolLimit = 100
 
 var excludedRankingStablecoinBases = map[string]bool{
 	"BUSD": true, "DAI": true, "FDUSD": true, "FRAX": true, "PYUSD": true,
@@ -18,52 +17,64 @@ var excludedRankingStablecoinBases = map[string]bool{
 	"USDE": true, "USDP": true, "USDS": true, "USDT": true,
 }
 
-type marketTop30Decision struct {
+type marketScopeDecision struct {
 	Exchange  string
 	TradeEnv  string
 	Symbol    string
+	Scope     string
+	Limit     int
 	Available bool
 	Allowed   bool
 }
 
-func applyTop30Rankings(resp *symbolsResponse) {
+func applyMarketScopeRankings(resp *symbolsResponse, scope string) {
 	if resp == nil {
 		return
 	}
-	resp.OKX.Live.TopInstruments = topOKXInstruments(resp.OKX.Live.Instruments, marketTopSymbolLimit)
-	resp.OKX.Demo.TopInstruments = topOKXInstruments(resp.OKX.Demo.Instruments, marketTopSymbolLimit)
-	resp.Binance.Live.TopInstruments = topBinanceInstruments(resp.Binance.Live.Instruments, marketTopSymbolLimit)
-	resp.Binance.Demo.TopInstruments = topBinanceInstruments(resp.Binance.Demo.Instruments, marketTopSymbolLimit)
+	limit := config.MarketTurnoverScopeLimit(scope)
+	resp.OKX.Live.TopInstruments = topOKXInstruments(resp.OKX.Live.Instruments, limit)
+	resp.OKX.Demo.TopInstruments = topOKXInstruments(resp.OKX.Demo.Instruments, limit)
+	resp.Binance.Live.TopInstruments = topBinanceInstruments(resp.Binance.Live.Instruments, limit)
+	resp.Binance.Demo.TopInstruments = topBinanceInstruments(resp.Binance.Demo.Instruments, limit)
 }
 
-func markUnavailableFetchedRankings(resp *symbolsResponse) {
+func markUnavailableMarketScopeRankings(resp *symbolsResponse, scope string) {
 	if resp == nil {
 		return
 	}
-	markOKXRankingUnavailable(&resp.OKX.Live)
-	markOKXRankingUnavailable(&resp.OKX.Demo)
-	markBinanceRankingUnavailable(&resp.Binance.Live)
-	markBinanceRankingUnavailable(&resp.Binance.Demo)
+	limit := config.MarketTurnoverScopeLimit(scope)
+	markOKXRankingUnavailable(&resp.OKX.Live, limit)
+	markOKXRankingUnavailable(&resp.OKX.Demo, limit)
+	markBinanceRankingUnavailable(&resp.Binance.Live, limit)
+	markBinanceRankingUnavailable(&resp.Binance.Demo, limit)
 }
 
-func markOKXRankingUnavailable(set *okxInstrumentSet) {
-	if set == nil || set.Error != "" || set.TickerError != "" || rankingSizeComplete(okxRankingCandidateCount(set.Instruments), len(set.TopInstruments)) {
+func markOKXRankingUnavailable(set *okxInstrumentSet, limit int) {
+	if set == nil || set.Error != "" || set.TickerError != "" {
 		return
 	}
-	set.TickerError = fmt.Sprintf("top %d ranking unavailable: got %d ranked symbols", marketTopSymbolLimit, len(set.TopInstruments))
-}
-
-func markBinanceRankingUnavailable(set *binanceInstrumentSet) {
-	if set == nil || set.Error != "" || set.TickerError != "" || rankingSizeComplete(binanceRankingCandidateCount(set.Instruments), len(set.TopInstruments)) {
+	candidateCount, coverageComplete := okxRankingCoverage(set.Instruments)
+	if coverageComplete && rankingSizeComplete(candidateCount, len(set.TopInstruments), limit) {
 		return
 	}
-	set.TickerError = fmt.Sprintf("top %d ranking unavailable: got %d ranked symbols", marketTopSymbolLimit, len(set.TopInstruments))
+	set.TickerError = fmt.Sprintf("%s ranking unavailable: got %d ranked symbols", marketScopeLabel(limit), len(set.TopInstruments))
 }
 
-func rankingSizeComplete(catalogCount, rankedCount int) bool {
+func markBinanceRankingUnavailable(set *binanceInstrumentSet, limit int) {
+	if set == nil || set.Error != "" || set.TickerError != "" {
+		return
+	}
+	candidateCount, coverageComplete := binanceRankingCoverage(set.Instruments)
+	if coverageComplete && rankingSizeComplete(candidateCount, len(set.TopInstruments), limit) {
+		return
+	}
+	set.TickerError = fmt.Sprintf("%s ranking unavailable: got %d ranked symbols", marketScopeLabel(limit), len(set.TopInstruments))
+}
+
+func rankingSizeComplete(catalogCount, rankedCount, limit int) bool {
 	required := catalogCount
-	if required > marketTopSymbolLimit {
-		required = marketTopSymbolLimit
+	if limit > 0 && required > limit {
+		required = limit
 	}
 	return required > 0 && rankedCount >= required
 }
@@ -110,24 +121,38 @@ func topBinanceInstruments(in []binanceSymbolInstrument, limit int) []binanceSym
 	return limitBinanceInstruments(eligible, limit)
 }
 
-func okxRankingCandidateCount(in []symbolInstrument) int {
+func okxRankingCoverage(in []symbolInstrument) (int, bool) {
 	count := 0
 	for _, instrument := range in {
-		if strings.EqualFold(strings.TrimSpace(instrument.State), "live") && !excludedRankingBase(instrument.BaseCcy, instrument.InstID) && instrument.UnderlyingMatchesFamily() {
+		if !strings.EqualFold(strings.TrimSpace(instrument.State), "live") || excludedRankingBase(instrument.BaseCcy, instrument.InstID) || !instrument.UnderlyingMatchesFamily() {
+			continue
+		}
+		turnover, ok := parseAnyFloat(instrument.TurnoverUSDT24h)
+		if !ok || turnover < 0 {
+			return count, false
+		}
+		if turnover > 0 {
 			count++
 		}
 	}
-	return count
+	return count, true
 }
 
-func binanceRankingCandidateCount(in []binanceSymbolInstrument) int {
+func binanceRankingCoverage(in []binanceSymbolInstrument) (int, bool) {
 	count := 0
 	for _, instrument := range in {
-		if strings.EqualFold(strings.TrimSpace(instrument.Status), "TRADING") && !excludedRankingBase(instrument.BaseAsset, instrument.Symbol) {
+		if !strings.EqualFold(strings.TrimSpace(instrument.Status), "TRADING") || excludedRankingBase(instrument.BaseAsset, instrument.Symbol) {
+			continue
+		}
+		turnover, ok := parseAnyFloat(instrument.TurnoverUSDT24h)
+		if !ok || turnover < 0 {
+			return count, false
+		}
+		if turnover > 0 {
 			count++
 		}
 	}
-	return count
+	return count, true
 }
 
 func excludedRankingBase(base, instrument string) bool {
@@ -147,40 +172,42 @@ func positiveTurnover(raw string) (float64, bool) {
 }
 
 func limitOKXInstruments(in []symbolInstrument, limit int) []symbolInstrument {
-	if limit <= 0 || len(in) == 0 {
+	if len(in) == 0 {
 		return []symbolInstrument{}
 	}
-	if len(in) > limit {
+	if limit > 0 && len(in) > limit {
 		in = in[:limit]
 	}
 	return append([]symbolInstrument(nil), in...)
 }
 
 func limitBinanceInstruments(in []binanceSymbolInstrument, limit int) []binanceSymbolInstrument {
-	if limit <= 0 || len(in) == 0 {
+	if len(in) == 0 {
 		return []binanceSymbolInstrument{}
 	}
-	if len(in) > limit {
+	if limit > 0 && len(in) > limit {
 		in = in[:limit]
 	}
 	return append([]binanceSymbolInstrument(nil), in...)
 }
 
-func (s *Server) marketTop30Decision(signal trading.Signal) (marketTop30Decision, error) {
+func (s *Server) marketScopeDecision(signal trading.Signal) (marketScopeDecision, error) {
 	exchange := trading.NormalizeExchange(signal.TargetExchange)
 	tradeEnv := trading.NormalizeTradeEnv(signal.TradeEnv)
 	if tradeEnv == "" {
 		tradeEnv = trading.TradeEnvDemo
 	}
-	decision := marketTop30Decision{Exchange: exchange, TradeEnv: tradeEnv}
+	decision := marketScopeDecision{Exchange: exchange, TradeEnv: tradeEnv, Scope: config.DefaultMarketTurnoverScope, Limit: config.MarketTurnoverScopeLimit(config.DefaultMarketTurnoverScope)}
 	if s.ConfigStore == nil || s.Orders == nil {
-		return decision, fmt.Errorf("top %d dependencies are not configured", marketTopSymbolLimit)
+		return decision, fmt.Errorf("market turnover scope dependencies are not configured")
 	}
-	resp, err := s.cachedSymbolsResponse(s.ConfigStore.Get())
+	cfg := s.ConfigStore.Get()
+	decision.Scope = cfg.Trading.MarketTurnoverScope
+	decision.Limit = config.MarketTurnoverScopeLimit(decision.Scope)
+	resp, err := s.cachedSymbolsResponse(cfg)
 	if err != nil {
 		return decision, err
 	}
-	applyTop30Rankings(&resp)
 	candidates := marketSymbolCandidates(signal.Coinpair, signal.Ticker)
 	switch exchange {
 	case trading.ExchangeBinance:
@@ -188,7 +215,8 @@ func (s *Server) marketTop30Decision(signal trading.Signal) (marketTop30Decision
 		if tradeEnv == trading.TradeEnvLive {
 			set = resp.Binance.Live
 		}
-		decision.Available = set.SyncedAt != "" && len(set.TopInstruments) > 0
+		candidateCount, coverageComplete := binanceRankingCoverage(set.Instruments)
+		decision.Available = set.SyncedAt != "" && coverageComplete && rankingSizeComplete(candidateCount, len(set.TopInstruments), decision.Limit)
 		for _, instrument := range set.TopInstruments {
 			base := marketSymbolBase(instrument.BaseAsset, instrument.Symbol)
 			if candidates[base] {
@@ -202,7 +230,8 @@ func (s *Server) marketTop30Decision(signal trading.Signal) (marketTop30Decision
 		if tradeEnv == trading.TradeEnvLive {
 			set = resp.OKX.Live
 		}
-		decision.Available = set.SyncedAt != "" && len(set.TopInstruments) > 0
+		candidateCount, coverageComplete := okxRankingCoverage(set.Instruments)
+		decision.Available = set.SyncedAt != "" && coverageComplete && rankingSizeComplete(candidateCount, len(set.TopInstruments), decision.Limit)
 		for _, instrument := range set.TopInstruments {
 			base := marketSymbolBase(instrument.BaseCcy, instrument.InstID)
 			if candidates[base] {
@@ -233,21 +262,48 @@ func marketSymbolBase(base, instrument string) string {
 	return keyword
 }
 
-func (s *Server) recordTop30IgnoredSignal(signal trading.Signal, decision marketTop30Decision, now time.Time) (storage.OrderRecord, error) {
-	message := fmt.Sprintf("coinpair is outside %s %s turnover top %d", decision.Exchange, decision.TradeEnv, marketTopSymbolLimit)
-	return s.Orders.RecordIgnoredReason(signal, "outside_market_top100", message, now)
+func (s *Server) recordMarketScopeIgnoredSignal(signal trading.Signal, decision marketScopeDecision, now time.Time) (storage.OrderRecord, error) {
+	return s.Orders.RecordIgnoredReason(signal, marketScopeOutsideCode(decision), marketScopeOutsideMessage(decision), now)
 }
 
-func top30IgnoredResponse(record storage.OrderRecord, decision marketTop30Decision) map[string]any {
+func marketScopeIgnoredResponse(record storage.OrderRecord, decision marketScopeDecision) map[string]any {
 	return map[string]any{
 		"status":          "ignored",
-		"reason":          "outside_market_top100",
+		"reason":          marketScopeOutsideCode(decision),
 		"signal_id":       record.SignalID,
 		"target_exchange": decision.Exchange,
 		"trade_env":       decision.TradeEnv,
+		"market_scope":    decision.Scope,
 	}
 }
 
-func top30UnavailableMessage(decision marketTop30Decision) string {
-	return fmt.Sprintf("%s %s top %d ranking is unavailable", decision.Exchange, decision.TradeEnv, marketTopSymbolLimit)
+func marketScopeLabel(limit int) string {
+	if limit > 0 {
+		return fmt.Sprintf("turnover top %d", limit)
+	}
+	return "all eligible turnover"
+}
+
+func marketScopeOutsideMessage(decision marketScopeDecision) string {
+	return fmt.Sprintf("coinpair is outside %s %s %s scope", decision.Exchange, decision.TradeEnv, marketScopeLabel(decision.Limit))
+}
+
+func marketScopeUnavailableMessage(decision marketScopeDecision) string {
+	return fmt.Sprintf("%s %s %s ranking is unavailable", decision.Exchange, decision.TradeEnv, marketScopeLabel(decision.Limit))
+}
+
+func marketScopeOutsideCode(decision marketScopeDecision) string {
+	return "outside_market_" + decision.Scope
+}
+
+func marketScopeCheckFailedCode(decision marketScopeDecision) string {
+	return decision.Scope + "_check_failed"
+}
+
+func marketScopeUnavailableCode(decision marketScopeDecision) string {
+	return decision.Scope + "_unavailable"
+}
+
+func marketScopeAutoReentryEventType(decision marketScopeDecision) string {
+	return "auto_reentry_" + decision.Scope + "_blocked"
 }

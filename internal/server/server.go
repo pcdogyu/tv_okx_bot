@@ -157,25 +157,27 @@ func (s *Server) handleTVOrder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if signal.PositionEffect != trading.PositionEffectClose {
-			decision, err := s.marketTop30Decision(signal)
+			decision, err := s.marketScopeDecision(signal)
 			if err != nil {
-				s.recordTVOrderRejected(r, signal, "top100_check_failed", err, now)
-				writeError(w, http.StatusServiceUnavailable, "top100_check_failed", err.Error())
+				code := marketScopeCheckFailedCode(decision)
+				s.recordTVOrderRejected(r, signal, code, err, now)
+				writeError(w, http.StatusServiceUnavailable, code, err.Error())
 				return
 			}
 			if !decision.Available {
-				err := errors.New(top30UnavailableMessage(decision))
-				s.recordTVOrderRejected(r, signal, "top100_unavailable", err, now)
-				writeError(w, http.StatusServiceUnavailable, "top100_unavailable", err.Error())
+				err := errors.New(marketScopeUnavailableMessage(decision))
+				code := marketScopeUnavailableCode(decision)
+				s.recordTVOrderRejected(r, signal, code, err, now)
+				writeError(w, http.StatusServiceUnavailable, code, err.Error())
 				return
 			}
 			if !decision.Allowed {
-				record, err := s.recordTop30IgnoredSignal(signal, decision, now)
+				record, err := s.recordMarketScopeIgnoredSignal(signal, decision, now)
 				if err != nil {
 					writeError(w, http.StatusInternalServerError, "store_error", err.Error())
 					return
 				}
-				writeJSON(w, http.StatusAccepted, top30IgnoredResponse(record, decision))
+				writeJSON(w, http.StatusAccepted, marketScopeIgnoredResponse(record, decision))
 				return
 			}
 		}
@@ -1033,7 +1035,8 @@ func (s *Server) cachedSymbolsResponse(cfg config.Config) (symbolsResponse, erro
 			}
 		}
 	}
-	applyTop30Rankings(&resp)
+	applyMarketScopeRankings(&resp, cfg.Trading.MarketTurnoverScope)
+	markUnavailableMarketScopeRankings(&resp, cfg.Trading.MarketTurnoverScope)
 	return resp, nil
 }
 
@@ -1043,8 +1046,8 @@ func (s *Server) syncSymbolCatalogs(ctx context.Context) (symbolsResponse, error
 	}
 	cfg := s.ConfigStore.Get()
 	resp := s.fetchSymbolCatalogs(ctx, cfg)
-	applyTop30Rankings(&resp)
-	markUnavailableFetchedRankings(&resp)
+	applyMarketScopeRankings(&resp, cfg.Trading.MarketTurnoverScope)
+	markUnavailableMarketScopeRankings(&resp, cfg.Trading.MarketTurnoverScope)
 	now := s.now()
 	items, err := symbolCatalogCacheItems(resp, now)
 	if err != nil {
@@ -1092,7 +1095,7 @@ func (s *Server) fetchSymbolCatalogs(ctx context.Context, cfg config.Config) sym
 		}
 		resp.OKX.Live = result.okxSet
 	}
-	applyTop30Rankings(&resp)
+	applyMarketScopeRankings(&resp, cfg.Trading.MarketTurnoverScope)
 	return resp
 }
 
@@ -1624,23 +1627,23 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		return
 	}
 	if !strings.EqualFold(strings.TrimSpace(probe.PositionEffect), trading.PositionEffectClose) {
-		decision, err := s.marketTop30Decision(probe)
+		decision, err := s.marketScopeDecision(probe)
 		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "top100_check_failed", err.Error())
+			writeError(w, http.StatusServiceUnavailable, marketScopeCheckFailedCode(decision), err.Error())
 			return
 		}
 		if !decision.Available {
-			writeError(w, http.StatusServiceUnavailable, "top100_unavailable", top30UnavailableMessage(decision))
+			writeError(w, http.StatusServiceUnavailable, marketScopeUnavailableCode(decision), marketScopeUnavailableMessage(decision))
 			return
 		}
 		if !decision.Allowed {
 			signal := ignoredRetrySignalFromRecord(source, now)
-			record, err := s.recordTop30IgnoredSignal(signal, decision, now)
+			record, err := s.recordMarketScopeIgnoredSignal(signal, decision, now)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "store_error", err.Error())
 				return
 			}
-			resp := top30IgnoredResponse(record, decision)
+			resp := marketScopeIgnoredResponse(record, decision)
 			resp["retry_of"] = source.SignalID
 			writeJSON(w, http.StatusAccepted, resp)
 			return
@@ -2209,6 +2212,7 @@ type tradingPatch struct {
 	BinanceDemoBaseURL        *string                       `json:"binance_demo_base_url"`
 	DefaultMarginMode         *string                       `json:"default_margin_mode"`
 	PositionMode              *string                       `json:"position_mode"`
+	MarketTurnoverScope       *string                       `json:"market_turnover_scope"`
 	SignalTTLSeconds          *int                          `json:"signal_ttl_seconds"`
 	IgnoredCoinpair           *string                       `json:"ignored_coinpair"`
 	IgnoredCoinpairs          *[]string                     `json:"ignored_coinpairs"`
@@ -2282,6 +2286,9 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.Trading.PositionMode != nil {
 		c.Trading.PositionMode = *patch.Trading.PositionMode
+	}
+	if patch.Trading.MarketTurnoverScope != nil {
+		c.Trading.MarketTurnoverScope = *patch.Trading.MarketTurnoverScope
 	}
 	if patch.Trading.SignalTTLSeconds != nil {
 		c.Trading.SignalTTLSeconds = *patch.Trading.SignalTTLSeconds
