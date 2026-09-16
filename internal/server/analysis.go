@@ -2118,14 +2118,18 @@ func (s *Server) balanceOverviewForOKX(ctx context.Context, cfg config.Config, e
 	fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	balance, err := s.fetchAnalysisBalance(fetchCtx, s.analysisOKXClient(cfg, creds), apiID, envName, now)
 	cancel()
+	out.BalancePoints = s.balanceOverviewPoints(trading.ExchangeOKX, apiID, envName, minutes, now)
 	if err != nil {
 		out.Status = "error"
 		out.Error = err.Error()
+		if cached, ok := analysisBalanceFromLatestPoint(out.BalancePoints); ok {
+			out.Status = "stale"
+			out.Balance = cached
+		}
 	} else {
 		out.Status = "ok"
 		out.Balance = balance
 	}
-	out.BalancePoints = s.balanceOverviewPoints(trading.ExchangeOKX, apiID, envName, minutes, now)
 	out.Window = balanceWindowStats(out.BalancePoints, out.Balance)
 	return out
 }
@@ -2155,16 +2159,58 @@ func (s *Server) balanceOverviewForBinance(ctx context.Context, cfg config.Confi
 	fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	balance, err := s.fetchBinanceAnalysisBalance(fetchCtx, s.analysisBinanceClient(cfg, creds), apiID, envName, now)
 	cancel()
+	out.BalancePoints = s.balanceOverviewPoints(trading.ExchangeBinance, apiID, envName, minutes, now)
 	if err != nil {
 		out.Status = "error"
 		out.Error = err.Error()
+		if cached, ok := analysisBalanceFromLatestPoint(out.BalancePoints); ok {
+			out.Status = "stale"
+			out.Balance = cached
+		}
 	} else {
 		out.Status = "ok"
 		out.Balance = balance
 	}
-	out.BalancePoints = s.balanceOverviewPoints(trading.ExchangeBinance, apiID, envName, minutes, now)
 	out.Window = balanceWindowStats(out.BalancePoints, out.Balance)
 	return out
+}
+
+func analysisBalanceFromLatestPoint(points []analysisBalancePoint) (analysisBalance, bool) {
+	if len(points) == 0 {
+		return analysisBalance{}, false
+	}
+	point := points[len(points)-1]
+	updatedAt := strings.TrimSpace(point.BalanceUpdatedAt)
+	if updatedAt == "" && !point.ObservedAt.IsZero() {
+		updatedAt = point.ObservedAt.UTC().Format(time.RFC3339Nano)
+	}
+	equity := strings.TrimSpace(point.Eq)
+	if equity == "" {
+		equity = strings.TrimSpace(point.EqUsd)
+	}
+	if equity == "" && point.Value != 0 {
+		equity = strconv.FormatFloat(point.Value, 'f', -1, 64)
+	}
+	equityUSD := strings.TrimSpace(point.EqUsd)
+	if equityUSD == "" {
+		equityUSD = equity
+	}
+	return analysisBalance{
+		TotalEq:   equity,
+		AvailEq:   strings.TrimSpace(point.AvailEq),
+		Currency:  "USDT",
+		UpdatedAt: updatedAt,
+		Details: []analysisBalanceDetail{{
+			Ccy:       "USDT",
+			Eq:        equity,
+			EqUsd:     equityUSD,
+			AvailBal:  strings.TrimSpace(point.AvailBal),
+			AvailEq:   strings.TrimSpace(point.AvailEq),
+			CashBal:   strings.TrimSpace(point.CashBal),
+			FrozenBal: strings.TrimSpace(point.FrozenBal),
+			UpdatedAt: updatedAt,
+		}},
+	}, true
 }
 
 func balanceWindowStats(points []analysisBalancePoint, balance analysisBalance) analysisBalanceWindow {

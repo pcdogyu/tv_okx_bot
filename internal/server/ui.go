@@ -5163,6 +5163,8 @@ const tvbotHTML = `<!doctype html>
       }
       if (!item.configured) return label + " 未配置";
       if (item.status === "ok") return "已更新";
+      if (item.status === "stale") return "缓存数据（上游暂不可用）";
+      if (balance && usdtBalanceDetail(balance)) return "缓存数据（上游暂不可用）";
       return item.error || item.status || "读取失败";
     }
 

@@ -82,6 +82,62 @@ func TestBuildAnalysisUsesStaleCacheWhenOKXBalanceIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestBalanceOverviewUsesLatestSnapshotWhenOKXIsUnavailable(t *testing.T) {
+	srv := newTestServer(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/account/balance" {
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"50001","data":[],"msg":"Service temporarily unavailable. Please try again later."}`))
+	}))
+	defer upstream.Close()
+
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = upstream.URL
+	srv.OKXHTTPClient = upstream.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	observedAt := srv.now().Add(-10 * time.Minute)
+	if err := srv.Orders.UpsertUSDTBalanceSnapshot(storage.USDTBalanceSnapshot{
+		Exchange:         trading.ExchangeOKX,
+		APIID:            "default",
+		Env:              analysisEnvName(cfg),
+		ObservedAt:       observedAt,
+		Eq:               "9776.287875",
+		EqUsd:            "9776.287875",
+		AvailEq:          "9700",
+		AvailBal:         "9690",
+		CashBal:          "9776.287875",
+		BalanceUpdatedAt: observedAt.UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := srv.balanceOverviewForOKX(context.Background(), cfg, analysisEnvName(cfg), "", 12*60, srv.now())
+	if got.Status != "stale" || !strings.Contains(got.Error, "50001") {
+		t.Fatalf("expected stale overview with diagnostic error: %#v", got)
+	}
+	if len(got.BalancePoints) != 1 || len(got.Balance.Details) != 1 {
+		t.Fatalf("expected cached balance and point: %#v", got)
+	}
+	if got.Balance.Details[0].Eq != "9776.287875" || got.Balance.UpdatedAt != observedAt.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("bad cached balance: %#v", got.Balance)
+	}
+	if got.Window.CurrentValue != 9776.287875 {
+		t.Fatalf("bad cached window: %#v", got.Window)
+	}
+}
+
 func TestFetchBinanceAnalysisTradesContinuesAfterSymbolError(t *testing.T) {
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	tradeTime := now.Add(-time.Hour).UnixMilli()
