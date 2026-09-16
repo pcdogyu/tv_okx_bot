@@ -25,6 +25,63 @@ func (f analysisRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, err
 	return f(req)
 }
 
+func TestBuildAnalysisUsesStaleCacheWhenOKXBalanceIsUnavailable(t *testing.T) {
+	srv := newTestServer(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v5/account/balance" {
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"50001","data":[],"msg":"Service temporarily unavailable. Please try again later."}`))
+	}))
+	defer upstream.Close()
+
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = upstream.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = upstream.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cachedAt := srv.now().Add(-15 * time.Minute)
+	cacheKey := analysisCacheKey("default", "", analysisEnvName(cfg), 3, 12*60)
+	want := analysisResponse{
+		OK:          true,
+		APIID:       "default",
+		Env:         analysisEnvName(cfg),
+		PriceDays:   3,
+		PNLMinutes:  12 * 60,
+		RefreshedAt: cachedAt,
+		Balance:     analysisBalance{TotalEq: "9776.287875"},
+	}
+	if err := srv.Orders.CachePayload(cacheKey, want, cachedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := srv.buildAnalysis(context.Background(), cfg, "", "", 3, 12*60, true)
+	if err != nil {
+		t.Fatalf("build analysis should use stale cache: %v", err)
+	}
+	if !got.Cache.Hit || !got.Cache.Stale || !got.Cache.CachedAt.Equal(cachedAt) || got.Cache.CacheKey != cacheKey {
+		t.Fatalf("bad stale cache metadata: %#v", got.Cache)
+	}
+	if got.Balance.TotalEq != want.Balance.TotalEq || got.RefreshedAt != want.RefreshedAt {
+		t.Fatalf("cached response was not preserved: %#v", got)
+	}
+	if got.Source.Balance != "cache" || got.Source.Price != "cache" || got.Source.Fills != "cache" || got.Source.Funding != "cache" {
+		t.Fatalf("bad stale cache source: %#v", got.Source)
+	}
+}
+
 func TestFetchBinanceAnalysisTradesContinuesAfterSymbolError(t *testing.T) {
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	tradeTime := now.Add(-time.Hour).UnixMilli()

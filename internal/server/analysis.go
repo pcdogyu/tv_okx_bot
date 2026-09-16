@@ -431,6 +431,12 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 	client := s.analysisOKXClient(cfg, creds)
 	balance, err := s.fetchAnalysisBalance(ctx, client, apiID, envName, now)
 	if err != nil {
+		if resp, ok := s.staleAnalysisFromCache(cacheKey); ok {
+			if s.Logger != nil {
+				s.Logger.Warn("using stale analysis cache after OKX balance failure", "api_id", apiID, "env", envName, "error", err)
+			}
+			return resp, nil
+		}
 		return analysisResponse{}, err
 	}
 	source := analysisSourceStatus{Balance: "okx", Price: "okx", Fills: "okx", Funding: "okx"}
@@ -463,17 +469,8 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		}
 	}
 	if err := s.refreshAnalysisData(ctx, client, apiID, priceDays, pnlMinutes, now); err != nil {
-		cached, ok, cacheErr := s.Orders.CachedPayload(cacheKey)
-		if cacheErr == nil && ok {
-			var resp analysisResponse
-			if jsonErr := json.Unmarshal([]byte(cached.PayloadJSON), &resp); jsonErr == nil {
-				resp.Cache.Hit = true
-				resp.Cache.Stale = true
-				resp.Cache.CachedAt = cached.RefreshedAt
-				resp.Cache.CacheKey = cacheKey
-				resp.Source = analysisSourceStatus{Balance: "cache", Price: "cache", Fills: "cache", Funding: "cache"}
-				return resp, nil
-			}
+		if resp, ok := s.staleAnalysisFromCache(cacheKey); ok {
+			return resp, nil
 		}
 		return analysisResponse{}, err
 	}
@@ -495,6 +492,23 @@ func (s *Server) buildAnalysis(ctx context.Context, cfg config.Config, requested
 		s.Logger.Warn("failed to write analysis cache", "error", err)
 	}
 	return resp, nil
+}
+
+func (s *Server) staleAnalysisFromCache(cacheKey string) (analysisResponse, bool) {
+	cached, ok, err := s.Orders.CachedPayload(cacheKey)
+	if err != nil || !ok {
+		return analysisResponse{}, false
+	}
+	var resp analysisResponse
+	if err := json.Unmarshal([]byte(cached.PayloadJSON), &resp); err != nil {
+		return analysisResponse{}, false
+	}
+	resp.Cache.Hit = true
+	resp.Cache.Stale = true
+	resp.Cache.CachedAt = cached.RefreshedAt
+	resp.Cache.CacheKey = cacheKey
+	resp.Source = analysisSourceStatus{Balance: "cache", Price: "cache", Fills: "cache", Funding: "cache"}
+	return resp, true
 }
 
 func (s *Server) analysisBinanceCredentials(requestedAPIID string) (binance.Credentials, string, bool) {

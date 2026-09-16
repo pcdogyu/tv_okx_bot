@@ -116,6 +116,7 @@ func TestTVBotUSDTBalanceLayoutAndWindowButtons(t *testing.T) {
 		`exchange: activeExchange()`,
 		`loadPositionExchange(activeExchange()`,
 		`loadPendingOrdersExchange(activeExchange()`,
+		`缓存数据（上游暂不可用）`,
 	} {
 		if !strings.Contains(tvbotHTML, marker) {
 			t.Fatalf("tvbot ui missing %s", marker)

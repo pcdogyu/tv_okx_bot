@@ -4717,7 +4717,8 @@ const tvbotHTML = `<!doctype html>
       renderAnalysisExchangeBalances();
       const exchange = activeExchange();
       const apiID = exchange === "binance" ? state.analysis.binance_api_id : state.analysis.api_id;
-      $("analysis-updated").textContent = shanghaiTime(state.analysis.refreshed_at) + " / API " + exchangeLabel(exchange) + " " + asText(apiID);
+      const staleLabel = state.analysis.cache && state.analysis.cache.stale ? " / 缓存数据（上游暂不可用）" : "";
+      $("analysis-updated").textContent = shanghaiTime(state.analysis.refreshed_at) + " / API " + exchangeLabel(exchange) + " " + asText(apiID) + staleLabel;
       renderAnalysisExchangeStats("okx", "");
       renderAnalysisExchangeStats("binance", "");
       renderAnalysisTradeHistory("");
