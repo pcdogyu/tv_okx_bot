@@ -1623,7 +1623,9 @@ const tvbotHTML = `<!doctype html>
         <label>移动止损 %<input id="order-trailing" type="number" min="0" step="0.01"></label>
         <label>多单限价倍率<input id="order-long-multiplier" type="number" min="0" step="0.000001"></label>
         <label>空单限价倍率<input id="order-short-multiplier" type="number" min="0" step="0.000001"></label>
+        <label>24h 交易额排名限制<select id="order-turnover-scope"><option value="top50">前 50</option><option value="top100">前 100</option><option value="top200">前 200</option><option value="top500">前 500</option><option value="all">不限排名</option></select></label>
       </div>
+      <div class="muted" style="margin-top:10px">按各交易所、各交易环境的 24 小时交易额排名过滤新开仓，适用于 OKX 和 Binance；平仓不受影响。点击“保存下单设置”后生效。</div>
       <table style="margin-top:14px">
         <tbody id="order-settings-preview"></tbody>
       </table>
@@ -3586,6 +3588,11 @@ const tvbotHTML = `<!doctype html>
       return labels[scope] || labels.top100;
     }
 
+    function orderTurnoverScopeLabel(scope) {
+      const labels = { top50: "前 50", top100: "前 100", top200: "前 200", top500: "前 500", all: "不限排名" };
+      return labels[scope] || labels.top100;
+    }
+
     function renderMarketTurnoverScope() {
       const scope = marketTurnoverScope();
       const select = $("symbol-turnover-scope");
@@ -3610,6 +3617,8 @@ const tvbotHTML = `<!doctype html>
         select.disabled = false;
       }
       renderMarketTurnoverScope();
+      $("order-turnover-scope").value = marketTurnoverScope();
+      renderOrderSettingsPreview();
       await loadSymbols(true);
       toast("交易范围已保存为" + marketTurnoverScopeLabel(next));
     }
@@ -3912,6 +3921,7 @@ const tvbotHTML = `<!doctype html>
       $("order-amount").value = trading.order_amount_usdt || 100;
       $("order-leverage").value = trading.leverage || 5;
       $("order-type").value = trading.order_type || "market";
+      $("order-turnover-scope").value = marketTurnoverScope();
       $("order-risk-type").value = trading.risk_type || "tp_sl";
       $("order-tp").value = trading.take_profit_pct || 2;
       $("order-sl").value = trading.stop_loss_pct || 1;
@@ -3925,6 +3935,7 @@ const tvbotHTML = `<!doctype html>
       const orderType = $("order-type").value || "market";
       const rows = [
         ["订单类型", orderTypeText(orderType)],
+        ["24h 交易额排名限制", orderTurnoverScopeLabel($("order-turnover-scope").value)],
         [orderType === "limit" ? "多单限价单价格" : "市价单估算价格", orderType === "limit" ? "TradingView 当前价格 x " + asText($("order-long-multiplier").value) : "TradingView 当前价格"],
         [orderType === "limit" ? "空单限价单价格" : "OKX 下单价格", orderType === "limit" ? "TradingView 当前价格 x " + asText($("order-short-multiplier").value) : "市价"],
         ["固定止盈止损", asText($("order-tp").value) + "% / " + asText($("order-sl").value) + "%"],
@@ -5738,11 +5749,13 @@ const tvbotHTML = `<!doctype html>
     }
 
     async function saveOrderSettings() {
+      const previousScope = marketTurnoverScope();
       const patch = {
         trading: {
           order_amount_usdt: Number($("order-amount").value),
           leverage: Number($("order-leverage").value),
           order_type: $("order-type").value,
+          market_turnover_scope: $("order-turnover-scope").value,
           risk_type: $("order-risk-type").value,
           take_profit_pct: Number($("order-tp").value),
           stop_loss_pct: Number($("order-sl").value),
@@ -5754,10 +5767,14 @@ const tvbotHTML = `<!doctype html>
       state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
       applyMenuSettings();
       renderOrderSettings();
+      renderMarketTurnoverScope();
       renderDashboard();
       renderMenuSettings();
       updateMetrics();
       toast("下单设置已保存");
+      if (previousScope !== marketTurnoverScope()) {
+        await loadSymbols(false).catch((err) => toast("下单设置已保存，币对列表刷新失败：" + err.message));
+      }
     }
 
     async function savePositionMonitor() {
@@ -6199,7 +6216,7 @@ const tvbotHTML = `<!doctype html>
       setSymbolSort(th.dataset.symbolSort);
     });
     $("save-order-settings").addEventListener("click", () => saveOrderSettings().catch((err) => toast(err.message)));
-    ["order-amount", "order-leverage", "order-type", "order-risk-type", "order-tp", "order-sl", "order-trailing", "order-long-multiplier", "order-short-multiplier"].forEach((id) => {
+    ["order-amount", "order-leverage", "order-type", "order-turnover-scope", "order-risk-type", "order-tp", "order-sl", "order-trailing", "order-long-multiplier", "order-short-multiplier"].forEach((id) => {
       $(id).addEventListener("input", () => renderOrderSettingsPreview());
       $(id).addEventListener("change", () => renderOrderSettingsPreview());
     });
