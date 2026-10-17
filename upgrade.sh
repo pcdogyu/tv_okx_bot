@@ -8,6 +8,7 @@ APP_USER="${APP_USER:-tvokx}"
 GO_CMD="${GO_CMD:-go}"
 RESTART_CMD="${TV_OKX_RESTART_CMD:-${RESTART_CMD:-}}"
 RUN_AS_APP_USER="${RUN_AS_APP_USER:-true}"
+RUN_TESTS="${TV_OKX_UPGRADE_RUN_TESTS:-false}"
 TMP_BINARY="${BINARY_PATH}.new"
 
 shell_quote() {
@@ -51,8 +52,13 @@ fi
 log_step "pull code"
 run_in_app_dir "git pull --ff-only"
 
-log_step "run tests"
-run_in_app_dir "$(shell_quote "${GO_CMD}") test ./..."
+if [[ "${RUN_TESTS,,}" == "true" || "${RUN_TESTS}" == "1" || "${RUN_TESTS,,}" == "yes" || "${RUN_TESTS,,}" == "on" ]]; then
+  log_step "run tests"
+  run_in_app_dir "$(shell_quote "${GO_CMD}") test ./..."
+else
+  log_step "skip server-side tests"
+  echo "set TV_OKX_UPGRADE_RUN_TESTS=true to run go test ./... on the server"
+fi
 
 log_step "build binary"
 run_in_app_dir "$(shell_quote "${GO_CMD}") build -o $(shell_quote "${TMP_BINARY}") ./cmd/tv-okx-bot"

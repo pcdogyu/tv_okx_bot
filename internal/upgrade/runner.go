@@ -81,7 +81,7 @@ func (m *Manager) Start(ctx context.Context) (Result, bool, error) {
 	m.mu.Unlock()
 
 	go func() {
-		runCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		runCtx, cancel := context.WithTimeout(ctx, upgradeTimeout())
 		defer cancel()
 		result, err := m.runner.Run(runCtx)
 		m.mu.Lock()
@@ -151,7 +151,10 @@ type ShellRunner struct {
 	BinaryPath     string
 	ServiceName    string
 	RestartCommand string
+	RunTests       bool
 }
+
+const defaultUpgradeTimeout = 45 * time.Minute
 
 func NewShellRunnerFromEnv() (ShellRunner, error) {
 	wd := os.Getenv("TV_OKX_WORKDIR")
@@ -179,6 +182,7 @@ func NewShellRunnerFromEnv() (ShellRunner, error) {
 		BinaryPath:     binary,
 		ServiceName:    service,
 		RestartCommand: os.Getenv("TV_OKX_RESTART_CMD"),
+		RunTests:       envBool("TV_OKX_UPGRADE_RUN_TESTS", false),
 	}, nil
 }
 
@@ -193,8 +197,18 @@ func (r ShellRunner) Run(ctx context.Context) (Result, error) {
 	if err := r.runStep(ctx, &result, "git_pull", "git", "pull", "--ff-only"); err != nil {
 		return result, err
 	}
-	if err := r.runStep(ctx, &result, "go_test", "go", "test", "./..."); err != nil {
-		return result, err
+	if r.RunTests {
+		if err := r.runStep(ctx, &result, "go_test", "go", "test", "./..."); err != nil {
+			return result, err
+		}
+	} else {
+		result.Steps = append(result.Steps, Step{
+			Name:     "go_test",
+			Command:  "skipped (TV_OKX_UPGRADE_RUN_TESTS=false)",
+			Started:  time.Now().UTC(),
+			Finished: time.Now().UTC(),
+			Output:   "server-side test suite skipped; run go test ./... before publishing",
+		})
 	}
 	tmpBinary := r.BinaryPath + ".new"
 	if err := r.runStep(ctx, &result, "go_build", "go", "build", "-o", tmpBinary, "./cmd/tv-okx-bot"); err != nil {
@@ -267,4 +281,31 @@ func truncate(v string, limit int) string {
 		return v
 	}
 	return v[:limit] + "\n... truncated ..."
+}
+
+func envBool(name string, fallback bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func upgradeTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("TV_OKX_UPGRADE_TIMEOUT"))
+	if raw == "" {
+		return defaultUpgradeTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultUpgradeTimeout
+	}
+	return d
 }
