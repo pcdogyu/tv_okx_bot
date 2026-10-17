@@ -465,7 +465,8 @@ const tradeChartHTML = `<!doctype html>
     .marker-dot.exit { background:#d92d20; }
     .chart-card { position:relative; background:#fff; border:1px solid #dce3ee; border-radius:10px; padding:8px; box-shadow:0 5px 18px rgba(33,55,85,.06); }
     .swatch.volume { background:linear-gradient(to top, rgba(47,129,247,.38) 0 50%, rgba(245,158,11,.38) 50% 100%); }
-    canvas { width:100%; height:700px; display:block; cursor:crosshair; outline:none; }
+    canvas { width:100%; height:700px; display:block; cursor:grab; outline:none; touch-action:none; }
+    canvas.dragging { cursor:grabbing; }
     canvas:focus { box-shadow:inset 0 0 0 2px rgba(31,111,235,.28); }
     .tooltip { position:absolute; display:none; pointer-events:none; background:rgba(23,32,51,.94); color:#fff; border-radius:6px; padding:7px 9px; font-size:12px; line-height:1.5; white-space:nowrap; z-index:2; }
     .trade-info { margin-top:14px; background:#fff; border:1px solid #dce3ee; border-radius:10px; padding:12px 14px; font-size:13px; color:#475467; }
@@ -515,7 +516,7 @@ const tradeChartHTML = `<!doctype html>
   </main>
   <script>
     const params = new URLSearchParams(window.location.search);
-    const state = { data: null, bar: "1m", hours: 8, hover: null, viewFrom: null, viewTo: null, priceZoom: 1 };
+    const state = { data: null, bar: "1m", hours: 8, hover: null, viewFrom: null, viewTo: null, priceZoom: 1, priceOffset: 0, priceRange: 1, pricePlotHeight: 1, drag: null };
     let loadToken = 0;
     const canvas = document.getElementById("chart");
     const ctx = canvas.getContext("2d");
@@ -575,6 +576,7 @@ const tradeChartHTML = `<!doctype html>
       state.viewFrom = null;
       state.viewTo = null;
       state.priceZoom = 1;
+      state.priceOffset = 0;
     }
     function setTimeWindow(from, to) {
       const base = baseWindow();
@@ -630,8 +632,10 @@ const tradeChartHTML = `<!doctype html>
       min -= padding; max += padding;
       const priceCenter = (min + max) / 2;
       const priceRange = (max - min) / state.priceZoom;
-      min = priceCenter - priceRange / 2;
-      max = priceCenter + priceRange / 2;
+      min = priceCenter + state.priceOffset - priceRange / 2;
+      max = priceCenter + state.priceOffset + priceRange / 2;
+      state.priceRange = priceRange;
+      state.pricePlotHeight = plotHeight;
       const x = function (ts) { return left + ((ts - windowRange.from) / (windowRange.to - windowRange.from)) * plotWidth; };
       const y = function (price) { return top + ((max - price) / (max - min)) * plotHeight; };
       ctx.font = "12px -apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif";
@@ -738,8 +742,36 @@ const tradeChartHTML = `<!doctype html>
     }
     document.querySelectorAll("button[data-bar]").forEach(function (button) { button.addEventListener("click", function () { state.bar = button.dataset.bar || "1m"; document.querySelectorAll("button[data-bar]").forEach(function (item) { item.classList.toggle("active", item === button); }); resetView(); statusEl.textContent = "正在加载 " + state.bar + " K 线数据…"; load(); }); });
     document.querySelectorAll("button[data-hours]").forEach(function (button) { button.addEventListener("click", function () { state.hours = Number(button.dataset.hours) || 8; document.querySelectorAll("button[data-hours]").forEach(function (item) { item.classList.toggle("active", item === button); }); resetView(); statusEl.textContent = "正在加载最近" + state.hours + "小时 K 线数据…"; load(); }); });
-    canvas.addEventListener("mousemove", function (event) {
+    function finishDrag() {
+      if (!state.drag) return;
+      state.drag = null;
+      canvas.classList.remove("dragging");
+    }
+    canvas.addEventListener("pointerdown", function (event) {
+      if (!state.data || event.button !== 0) return;
+      event.preventDefault();
+      canvas.focus();
+      const range = currentWindow();
+      state.drag = { x: event.clientX, y: event.clientY, from: range.from, to: range.to, priceOffset: state.priceOffset };
+      canvas.classList.add("dragging");
+      if (canvas.setPointerCapture) canvas.setPointerCapture(event.pointerId);
+      tooltip.style.display = "none";
+    });
+    canvas.addEventListener("pointermove", function (event) {
       if (!state.data) return;
+      if (state.drag) {
+        event.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const dx = event.clientX - state.drag.x;
+        const dy = event.clientY - state.drag.y;
+        const span = state.drag.to - state.drag.from;
+        const plotWidth = Math.max(1, rect.width - 144);
+        setTimeWindow(state.drag.from - dx / plotWidth * span, state.drag.to - dx / plotWidth * span);
+        state.priceOffset = state.drag.priceOffset - dy / Math.max(1, state.pricePlotHeight || rect.height) * (state.priceRange || 1);
+        state.hover = null;
+        draw();
+        return;
+      }
       const rect = canvas.getBoundingClientRect(); const range = currentWindow(); const left = 68, right = rect.width - 76;
       const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left - left) / Math.max(1, right - left)));
       const ts = range.from + (range.to - range.from) * ratio;
@@ -758,7 +790,9 @@ const tradeChartHTML = `<!doctype html>
       zoomTime(event.deltaY < 0 ? 0.8 : 1.25, ratio);
       draw();
     }, { passive: false });
-    canvas.addEventListener("mousedown", function () { canvas.focus(); });
+    canvas.addEventListener("pointerup", finishDrag);
+    canvas.addEventListener("pointercancel", finishDrag);
+    window.addEventListener("pointerup", finishDrag);
     window.addEventListener("keydown", function (event) {
       if (!state.data || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
       event.preventDefault();
@@ -771,7 +805,7 @@ const tradeChartHTML = `<!doctype html>
       }
       draw();
     });
-    canvas.addEventListener("mouseleave", function () { state.hover = null; tooltip.style.display = "none"; draw(); });
+    canvas.addEventListener("pointerleave", function () { if (state.drag) return; state.hover = null; tooltip.style.display = "none"; draw(); });
     window.addEventListener("resize", draw);
     load();
   </script>
