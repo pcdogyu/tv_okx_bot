@@ -795,7 +795,7 @@ const tradeChartHTML = `<!doctype html>
         const span = state.drag.to - state.drag.from;
         const plotWidth = Math.max(1, rect.width - 144);
         setTimeWindow(state.drag.from - dx / plotWidth * span, state.drag.to - dx / plotWidth * span);
-        state.priceOffset = state.drag.priceOffset - dy / Math.max(1, state.pricePlotHeight || rect.height) * (state.priceRange || 1);
+        state.priceOffset = state.drag.priceOffset + dy / Math.max(1, state.pricePlotHeight || rect.height) * (state.priceRange || 1);
         state.hover = null;
         draw();
         return;
