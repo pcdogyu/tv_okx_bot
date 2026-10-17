@@ -1177,7 +1177,7 @@ const tvbotHTML = `<!doctype html>
     .positions-table .pos-holding-time-col { width: 6.6%; }
     .positions-table .pos-actions-col { width: 23.3%; }
     .pending-order-table {
-      min-width: 1360px;
+      min-width: 1440px;
     }
     .pending-order-table .pending-exchange-col { width: 5.6%; }
     .pending-order-table .pending-time-col { width: 9.2%; }
@@ -1189,6 +1189,7 @@ const tvbotHTML = `<!doctype html>
     .pending-order-table .pending-mid-col { width: 7.8%; }
     .pending-order-table .pending-size-col { width: 7.4%; }
     .pending-order-table .pending-margin-col { width: 7.4%; }
+    .pending-order-table .pending-notional-col { width: 7.4%; }
     .pending-order-table .pending-filled-col { width: 6.4%; }
     .pending-order-table .pending-age-col { width: 7%; }
     .pending-order-table .pending-state-col { width: 6%; }
@@ -2005,6 +2006,7 @@ const tvbotHTML = `<!doctype html>
       { id: "mid_price", title: "中间价", colClass: "pending-mid-col", cell: (row) => textTableCell(row.price_error ? row.price_error : formatPriceAmount(row, row.mid_px)) },
       { id: "size", title: "委托量", colClass: "pending-size-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.sz)) },
       { id: "margin", title: "保证金", colClass: "pending-margin-col", cell: (row) => textTableCell(formatFixed2(row.margin)) },
+      { id: "notional", title: "名义价值", colClass: "pending-notional-col", cell: (row) => textTableCell(formatFixed2(row.notional)) },
       { id: "filled", title: "已成交", colClass: "pending-filled-col", cell: (row) => textTableCell(formatQuantityAmount(row, row.accFillSz)) },
       { id: "pending_age", title: "挂单计时", colClass: "pending-age-col", cell: (row) => pendingOrderAgeCell(row) },
       { id: "state", title: "状态", colClass: "pending-state-col", cell: (row) => textTableCell(pendingOrderStateText(row.state)) },
@@ -2042,6 +2044,7 @@ const tvbotHTML = `<!doctype html>
       const seen = {};
       const out = [];
       const hadPendingAge = Array.isArray(order) && order.some((raw) => String(raw || "").trim() === "pending_age");
+      const hadPendingNotional = Array.isArray(order) && order.some((raw) => String(raw || "").trim() === "notional");
       defs.forEach((def) => { known[def.id] = true; });
       (Array.isArray(order) ? order : []).forEach((raw) => {
         const id = String(raw || "").trim();
@@ -2052,6 +2055,9 @@ const tvbotHTML = `<!doctype html>
       defs.forEach((def) => {
         if (!seen[def.id]) out.push(def.id);
       });
+      if (tableID === "pending_orders" && !hadPendingNotional) {
+        moveColumnAfter(out, "notional", "margin");
+      }
       if (tableID === "pending_orders" && !hadPendingAge) {
         moveColumnBefore(out, "pending_age", "state");
       }
@@ -2065,6 +2071,16 @@ const tvbotHTML = `<!doctype html>
       order.splice(from, 1);
       const nextTo = order.indexOf(beforeID);
       if (nextTo >= 0) order.splice(nextTo, 0, columnID);
+      return order;
+    }
+
+    function moveColumnAfter(order, columnID, afterID) {
+      const from = order.indexOf(columnID);
+      const after = order.indexOf(afterID);
+      if (from < 0 || after < 0 || from === after + 1) return order;
+      order.splice(from, 1);
+      const nextAfter = order.indexOf(afterID);
+      if (nextAfter >= 0) order.splice(nextAfter + 1, 0, columnID);
       return order;
     }
 

@@ -137,6 +137,7 @@ type pendingOrderView struct {
 	MidPx                  string `json:"mid_px,omitempty"`
 	ChasePx                string `json:"chase_px,omitempty"`
 	Margin                 string `json:"margin,omitempty"`
+	Notional               string `json:"notional,omitempty"`
 	PriceError             string `json:"price_error,omitempty"`
 	Chasing                bool   `json:"chasing"`
 	Chaseable              bool   `json:"chaseable"`
@@ -2847,6 +2848,7 @@ func (s *Server) pendingOrderViews(ctx context.Context, cfg config.Config, clien
 		if inst, ok := instruments[strings.ToUpper(strings.TrimSpace(order.InstID))]; ok {
 			applyPendingOrderViewPrecision(&view, precisionFromOKXInstrument(inst))
 			view.Margin = pendingOrderMargin(order, view.MidPx, inst.CtVal, cfg.Trading.Leverage)
+			view.Notional = pendingOrderNotional(order, view.MidPx, inst.CtVal, cfg.Trading.Leverage)
 		}
 		views = append(views, view)
 	}
@@ -2878,6 +2880,7 @@ func (s *Server) pendingAlgoOrderViews(ctx context.Context, cfg config.Config, c
 		if inst, ok := instruments[strings.ToUpper(strings.TrimSpace(view.InstID))]; ok {
 			applyPendingOrderViewPrecision(&view, precisionFromOKXInstrument(inst))
 			view.Margin = pendingOrderMargin(view.PendingOrder, firstNonEmpty(view.TriggerPx, view.ActivationPx, view.MidPx), inst.CtVal, cfg.Trading.Leverage)
+			view.Notional = pendingOrderNotional(view.PendingOrder, firstNonEmpty(view.TriggerPx, view.ActivationPx, view.MidPx), inst.CtVal, cfg.Trading.Leverage)
 		}
 		views = append(views, view)
 	}
@@ -2919,6 +2922,7 @@ func (s *Server) binancePendingOrderViews(ctx context.Context, cfg config.Config
 			applyPendingOrderViewPrecision(&view, precisionFromBinanceSymbol(inst))
 		}
 		view.Margin = pendingOrderMargin(order, view.MidPx, "1", cfg.Trading.Leverage)
+		view.Notional = pendingOrderNotional(order, view.MidPx, "1", cfg.Trading.Leverage)
 		views = append(views, view)
 	}
 	return views
@@ -2951,6 +2955,7 @@ func (s *Server) binancePendingAlgoOrderViews(ctx context.Context, cfg config.Co
 			applyPendingOrderViewPrecision(&view, precisionFromBinanceSymbol(inst))
 		}
 		view.Margin = pendingOrderMargin(view.PendingOrder, firstNonEmpty(view.TriggerPx, view.ActivationPx, view.MidPx), "1", cfg.Trading.Leverage)
+		view.Notional = pendingOrderNotional(view.PendingOrder, firstNonEmpty(view.TriggerPx, view.ActivationPx, view.MidPx), "1", cfg.Trading.Leverage)
 		views = append(views, view)
 	}
 	sort.Slice(views, func(i, j int) bool {
@@ -4138,6 +4143,20 @@ func pendingOrderMargin(order okx.PendingOrder, fallbackPx, ctValRaw string, fal
 		return ""
 	}
 	return trimDecimalZeros(strconv.FormatFloat(margin, 'f', 8, 64))
+}
+
+func pendingOrderNotional(order okx.PendingOrder, fallbackPx, ctValRaw string, fallbackLeverage int) string {
+	marginRaw := pendingOrderMargin(order, fallbackPx, ctValRaw, fallbackLeverage)
+	margin, marginErr := strconv.ParseFloat(strings.TrimSpace(marginRaw), 64)
+	leverage := pendingOrderLeverage(order, fallbackLeverage)
+	if marginErr != nil || margin <= 0 || leverage <= 0 {
+		return ""
+	}
+	notional := margin * leverage
+	if math.IsNaN(notional) || math.IsInf(notional, 0) || notional <= 0 {
+		return ""
+	}
+	return trimDecimalZeros(strconv.FormatFloat(notional, 'f', 8, 64))
 }
 
 func pendingOrderLeverage(order okx.PendingOrder, fallback int) float64 {

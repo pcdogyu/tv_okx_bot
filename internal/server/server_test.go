@@ -237,6 +237,10 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte(`tableColumnCount("positions")`)) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-order-rows")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-margin-col")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("pending-notional-col")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`title: "名义价值"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("formatFixed2(row.notional)")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("moveColumnAfter(out, \"notional\", \"margin\")")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-age-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pending-actions-col")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("pendingOrderTableColumnDefs")) ||
@@ -3320,7 +3324,7 @@ func TestTVBotBinancePositionsPendingOrdersAndBalanceOverview(t *testing.T) {
 	if err := json.Unmarshal(pendingRR.Body.Bytes(), &pending); err != nil {
 		t.Fatal(err)
 	}
-	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || pending.Count != 1 || pending.NormalCount != 1 || pending.AlgoCount != 2 || pending.TotalCount != 3 || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].MidPx != "50000" || pending.Orders[0].ChasePx != "49999.9" || pending.Orders[0].Margin != "998" || pending.Orders[0].PriceError != "" {
+	if pending.Exchange != trading.ExchangeBinance || pending.APIID != "main" || pending.Count != 1 || pending.NormalCount != 1 || pending.AlgoCount != 2 || pending.TotalCount != 3 || len(pending.Orders) != 1 || pending.Orders[0].OrdID != "123456" || pending.Orders[0].MidPx != "50000" || pending.Orders[0].ChasePx != "49999.9" || pending.Orders[0].Margin != "998" || pending.Orders[0].Notional != "4990" || pending.Orders[0].PriceError != "" {
 		t.Fatalf("bad Binance pending response: %#v", pending)
 	}
 	if pending.Orders[0].PricePrecision == nil || *pending.Orders[0].PricePrecision != 2 || pending.Orders[0].QuantityPrecision == nil || *pending.Orders[0].QuantityPrecision != 3 {
@@ -3459,7 +3463,7 @@ func TestTVBotPendingOrdersRequiresAdminAndReturnsCurrentOrders(t *testing.T) {
 	if !resp.OK || resp.APIID != "default" || resp.Count != 2 || resp.NormalCount != 2 || resp.AlgoCount != 2 || resp.TotalCount != 4 || len(resp.Orders) != 2 || len(resp.AlgoOrders) != 2 {
 		t.Fatalf("bad pending orders response: %#v", resp)
 	}
-	if resp.Orders[0].InstID != "BTC-USDT-SWAP" || resp.Orders[0].OrdID != "100" || resp.Orders[0].AccFillSz != "0.1" || resp.Orders[0].MidPx != "64000" || resp.Orders[0].ChasePx != "63999.9" || resp.Orders[0].Margin != "5120" {
+	if resp.Orders[0].InstID != "BTC-USDT-SWAP" || resp.Orders[0].OrdID != "100" || resp.Orders[0].AccFillSz != "0.1" || resp.Orders[0].MidPx != "64000" || resp.Orders[0].ChasePx != "63999.9" || resp.Orders[0].Margin != "5120" || resp.Orders[0].Notional != "25600" {
 		t.Fatalf("bad pending order sorting/data: %#v", resp.Orders)
 	}
 	if resp.Orders[0].PricePrecision == nil || *resp.Orders[0].PricePrecision != 1 || resp.Orders[0].QuantityPrecision == nil || *resp.Orders[0].QuantityPrecision != 0 {
