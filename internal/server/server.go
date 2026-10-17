@@ -485,6 +485,10 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handleOrderRetry(w, r, path)
 	case path == "/analysis":
 		s.handleAnalysis(w, r)
+	case path == "/chart":
+		s.handleTradeChartPage(w, r)
+	case path == "/chart/data":
+		s.handleTradeChartData(w, r)
 	case path == "/balances/overview":
 		s.handleBalanceOverview(w, r)
 	case path == "/positions":

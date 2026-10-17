@@ -175,6 +175,15 @@ type BookTicker struct {
 	Time     int64  `json:"time"`
 }
 
+type MarketCandle struct {
+	TS     int64
+	Open   string
+	High   string
+	Low    string
+	Close  string
+	Volume string
+}
+
 type PremiumIndex struct {
 	Symbol          string `json:"symbol"`
 	MarkPrice       string `json:"markPrice"`
@@ -602,6 +611,119 @@ func (c Client) Ticker24hr(ctx context.Context) ([]Ticker24hr, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c Client) MarketKlines(ctx context.Context, symbol, interval string, startTime, endTime time.Time, limit int) ([]MarketCandle, error) {
+	q := url.Values{}
+	q.Set("symbol", strings.ToUpper(strings.TrimSpace(symbol)))
+	q.Set("interval", strings.TrimSpace(interval))
+	if !startTime.IsZero() {
+		q.Set("startTime", strconv.FormatInt(startTime.UTC().UnixMilli(), 10))
+	}
+	if !endTime.IsZero() {
+		q.Set("endTime", strconv.FormatInt(endTime.UTC().UnixMilli(), 10))
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	b, err := c.Do(ctx, http.MethodGet, "/fapi/v1/klines", q, false)
+	if err != nil {
+		return nil, err
+	}
+	var raw [][]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]MarketCandle, 0, len(raw))
+	for _, row := range raw {
+		if len(row) < 6 {
+			continue
+		}
+		ts, err := strconv.ParseInt(jsonValueString(row[0]), 10, 64)
+		if err != nil {
+			continue
+		}
+		out = append(out, MarketCandle{
+			TS:     ts,
+			Open:   jsonValueString(row[1]),
+			High:   jsonValueString(row[2]),
+			Low:    jsonValueString(row[3]),
+			Close:  jsonValueString(row[4]),
+			Volume: jsonValueString(row[5]),
+		})
+	}
+	return out, nil
+}
+
+func (c Client) MarketKlinesRange(ctx context.Context, symbol, interval string, since, until time.Time, maxCandles int) ([]MarketCandle, error) {
+	if since.IsZero() {
+		since = time.Now().UTC().Add(-24 * time.Hour)
+	}
+	if until.IsZero() {
+		until = time.Now().UTC()
+	}
+	if until.Before(since) {
+		return nil, errors.New("kline range end is before start")
+	}
+	if maxCandles <= 0 {
+		maxCandles = 10080
+	}
+	if maxCandles > 10080 {
+		maxCandles = 10080
+	}
+	const pageSize = 1000
+	result := make([]MarketCandle, 0, minInt(maxCandles, pageSize))
+	cursor := since.UTC()
+	for len(result) < maxCandles && cursor.Before(until) {
+		limit := pageSize
+		if remaining := maxCandles - len(result); remaining < limit {
+			limit = remaining
+		}
+		page, err := c.MarketKlines(ctx, symbol, interval, cursor, until, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		lastTS := int64(0)
+		for _, candle := range page {
+			if candle.TS < since.UnixMilli() || candle.TS > until.UnixMilli() {
+				continue
+			}
+			result = append(result, candle)
+			if candle.TS > lastTS {
+				lastTS = candle.TS
+			}
+		}
+		if lastTS == 0 || lastTS < cursor.UnixMilli() || len(page) < limit {
+			break
+		}
+		cursor = time.UnixMilli(lastTS).UTC().Add(time.Minute)
+		if err := sleepContext(ctx, 110*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func jsonValueString(raw json.RawMessage) string {
+	var value string
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return value
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c Client) ExchangeInfo(ctx context.Context) (ExchangeInfo, error) {

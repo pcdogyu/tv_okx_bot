@@ -1098,6 +1098,21 @@ const tvbotHTML = `<!doctype html>
     .analysis-trade-table .analysis-net-pnl-col { width: 7.6%; }
     .analysis-trade-table .analysis-turnover-col { width: 8.6%; }
     .analysis-trade-table .analysis-fill-count-col { width: 6%; }
+    .analysis-chart-symbol {
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 600;
+      padding: 0;
+      text-decoration: underline;
+      text-decoration-style: dotted;
+      text-underline-offset: 3px;
+    }
+    .analysis-chart-symbol:hover {
+      color: var(--accent);
+    }
     .analysis-realized-pnl-cell {
       display: flex;
       align-items: center;
@@ -1888,7 +1903,7 @@ const tvbotHTML = `<!doctype html>
     const analysisTradeColumnStorageKey = "tvbot.analysisTradeColumns.v3";
     const analysisTradeColumnDefs = [
       { id: "exit_time", title: "平仓时间", colClass: "analysis-exit-time-col", tdClass: "time", render: (row) => shanghaiTime(row.exit_time) },
-      { id: "inst_id", title: "币对", colClass: "analysis-inst-id-col", render: (row) => analysisInstIDText(row.inst_id) },
+      { id: "inst_id", title: "币对", colClass: "analysis-inst-id-col", renderHTML: (row) => analysisTradeChartCellHTML(row) },
       { id: "side", title: "方向", colClass: "analysis-side-col", toneClass: (row) => analysisPositionSideToneClass(row.side), render: (row) => analysisPositionSideText(row.side) },
       { id: "entry_px", title: "开仓价", colClass: "analysis-entry-px-col", render: (row) => analysisAmountText(row.entry_px) },
       { id: "exit_px", title: "平仓价", colClass: "analysis-exit-px-col", render: (row) => analysisAmountText(row.exit_px) },
@@ -4874,6 +4889,22 @@ const tvbotHTML = `<!doctype html>
       return original;
     }
 
+    function analysisTradeChartCellHTML(row) {
+      const symbol = analysisInstIDText(row && row.inst_id);
+      const exchange = normalizeExchange(row && row.exchange || activeExchange());
+      const title = symbol === "-" ? "打开币对 K 线回看" : ("打开 " + symbol + " 的模拟盘 / 实盘 K 线");
+      return '<button type="button" class="analysis-chart-symbol" data-trade-chart="true"' +
+        ' data-chart-exchange="' + escapeHTML(exchange) + '"' +
+        ' data-chart-inst-id="' + escapeHTML(row && row.inst_id || "") + '"' +
+        ' data-chart-api-id="' + escapeHTML(row && row.api_id || "") + '"' +
+        ' data-chart-side="' + escapeHTML(row && row.side || "") + '"' +
+        ' data-chart-entry-ts="' + escapeHTML(row && row.entry_ts || "") + '"' +
+        ' data-chart-exit-ts="' + escapeHTML(row && row.exit_ts || "") + '"' +
+        ' data-chart-entry-px="' + escapeHTML(row && row.entry_px || "") + '"' +
+        ' data-chart-exit-px="' + escapeHTML(row && row.exit_px || "") + '"' +
+        ' title="' + escapeHTML(title) + '">' + escapeHTML(symbol) + '</button>';
+    }
+
     function analysisPositionSideText(side) {
       return positionDirectionText(side);
     }
@@ -6312,6 +6343,23 @@ const tvbotHTML = `<!doctype html>
     $("analysis-trade-prev").addEventListener("click", () => changeAnalysisTradePage(-1));
     $("analysis-trade-next").addEventListener("click", () => changeAnalysisTradePage(1));
     $("analysis-trade-rows").addEventListener("click", (event) => {
+      const chartButton = event.target.closest("button[data-trade-chart]");
+      if (chartButton) {
+        const params = new URLSearchParams({
+          exchange: chartButton.dataset.chartExchange || activeExchange(),
+          inst_id: chartButton.dataset.chartInstId || "",
+          api_id: chartButton.dataset.chartApiId || "",
+          side: chartButton.dataset.chartSide || "",
+          entry_ts: chartButton.dataset.chartEntryTs || "",
+          exit_ts: chartButton.dataset.chartExitTs || "",
+          entry_px: chartButton.dataset.chartEntryPx || "",
+          exit_px: chartButton.dataset.chartExitPx || ""
+        });
+        const popup = window.open("/tvbot/chart?" + params.toString(), "_blank", "popup=yes,width=1600,height=900,resizable=yes,scrollbars=yes");
+        if (popup) popup.focus();
+        else toast("浏览器阻止了新窗口，请允许本站弹出窗口");
+        return;
+      }
       const button = event.target.closest("button[data-analysis-cooldown]");
       if (!button) return;
       addAnalysisCoinpairCooldown(button).catch((err) => toast(err.message));

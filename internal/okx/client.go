@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -969,15 +970,106 @@ func (c Client) MarketTickers(ctx context.Context, instType string) ([]Ticker, E
 }
 
 func (c Client) MarketCandles(ctx context.Context, instID, bar string, limit int) ([]MarketCandle, Envelope, error) {
+	return c.marketCandles(ctx, "/api/v5/market/candles", instID, bar, "", "", limit)
+}
+
+// MarketHistoryCandles reads the paginated historical candle endpoint. OKX
+// returns the newest candle first; the after cursor asks for candles older
+// than the supplied timestamp.
+func (c Client) MarketHistoryCandles(ctx context.Context, instID, bar, before, after string, limit int) ([]MarketCandle, Envelope, error) {
+	return c.marketCandles(ctx, "/api/v5/market/history-candles", instID, bar, before, after, limit)
+}
+
+// MarketCandlesRange loads minute-level historical candles between since and
+// until. It is intentionally capped by maxCandles so callers cannot
+// accidentally request an unbounded history from the public API.
+func (c Client) MarketCandlesRange(ctx context.Context, instID, bar string, since, until time.Time, maxCandles int) ([]MarketCandle, error) {
+	if since.IsZero() {
+		since = time.Now().UTC().Add(-24 * time.Hour)
+	}
+	if until.IsZero() {
+		until = time.Now().UTC()
+	}
+	if until.Before(since) {
+		return nil, errors.New("candle range end is before start")
+	}
+	if maxCandles <= 0 {
+		maxCandles = 10080
+	}
+	if maxCandles > 10080 {
+		maxCandles = 10080
+	}
+
+	const pageSize = 300
+	result := make([]MarketCandle, 0, minInt(maxCandles, pageSize))
+	after := ""
+	lastOldest := int64(-1)
+	for len(result) < maxCandles {
+		limit := pageSize
+		if remaining := maxCandles - len(result); remaining < limit {
+			limit = remaining
+		}
+		page, _, err := c.MarketHistoryCandles(ctx, instID, bar, "", after, limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+
+		oldest := int64(0)
+		for _, candle := range page {
+			ts, err := strconv.ParseInt(strings.TrimSpace(candle.TS), 10, 64)
+			if err != nil {
+				continue
+			}
+			if oldest == 0 || ts < oldest {
+				oldest = ts
+			}
+			if ts >= since.UnixMilli() && ts <= until.UnixMilli() {
+				result = append(result, candle)
+			}
+		}
+		if oldest == 0 || oldest <= since.UnixMilli() || oldest == lastOldest {
+			break
+		}
+		lastOldest = oldest
+		after = strconv.FormatInt(oldest, 10)
+		if len(page) < limit {
+			break
+		}
+		if len(result) >= maxCandles {
+			break
+		}
+		if err := sleepContext(ctx, 110*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		left, _ := strconv.ParseInt(strings.TrimSpace(result[i].TS), 10, 64)
+		right, _ := strconv.ParseInt(strings.TrimSpace(result[j].TS), 10, 64)
+		return left < right
+	})
+	return result, nil
+}
+
+func (c Client) marketCandles(ctx context.Context, path, instID, bar, before, after string, limit int) ([]MarketCandle, Envelope, error) {
 	q := url.Values{}
 	q.Set("instId", strings.ToUpper(strings.TrimSpace(instID)))
 	if bar != "" {
 		q.Set("bar", bar)
 	}
+	if before != "" {
+		q.Set("before", before)
+	}
+	if after != "" {
+		q.Set("after", after)
+	}
 	if limit > 0 {
 		q.Set("limit", strconv.Itoa(limit))
 	}
-	env, err := c.Do(ctx, http.MethodGet, "/api/v5/market/candles", q, nil, false)
+	env, err := c.Do(ctx, http.MethodGet, path, q, nil, false)
 	if err != nil {
 		return nil, env, err
 	}
@@ -1008,6 +1100,13 @@ func (c Client) MarketCandles(ctx context.Context, instID, bar string, limit int
 		out = append(out, candle)
 	}
 	return out, env, nil
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (c Client) FillsHistory(ctx context.Context, instType, after string, limit int) ([]Fill, Envelope, error) {
