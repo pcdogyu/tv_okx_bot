@@ -124,6 +124,21 @@ type pendingOrdersResponse struct {
 	AlgoOrders  []pendingOrderView `json:"algo_orders,omitempty"`
 }
 
+type cancelAllPendingOrdersRequest struct {
+	Exchange string `json:"exchange"`
+	APIID    string `json:"api_id"`
+}
+
+type cancelAllPendingOrdersResponse struct {
+	OK          bool   `json:"ok"`
+	Exchange    string `json:"exchange"`
+	APIID       string `json:"api_id"`
+	NormalCount int    `json:"normal_count"`
+	AlgoCount   int    `json:"algo_count"`
+	TotalCount  int    `json:"total_count"`
+	Message     string `json:"message,omitempty"`
+}
+
 type pendingOrderView struct {
 	okx.PendingOrder
 	OrderGroup             string `json:"order_group,omitempty"`
@@ -476,6 +491,156 @@ func (s *Server) handlePendingOrderCancel(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.handleOKXPendingOrderCancel(w, r, cfg, req)
+}
+
+func (s *Server) handlePendingOrdersCancelAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is allowed")
+		return
+	}
+	var req cancelAllPendingOrdersRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_json", err.Error())
+		return
+	}
+	req.Exchange = trading.NormalizeExchange(req.Exchange)
+	req.APIID = strings.TrimSpace(req.APIID)
+	if req.Exchange != trading.ExchangeOKX && req.Exchange != trading.ExchangeBinance {
+		writeError(w, http.StatusBadRequest, "invalid_exchange", "exchange must be okx or binance")
+		return
+	}
+	cfg := s.ConfigStore.Get()
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	var (
+		apiID       string
+		normalCount int
+		algoCount   int
+		err         error
+	)
+	if req.Exchange == trading.ExchangeBinance {
+		if s.BinanceCredentials == nil {
+			writeError(w, http.StatusServiceUnavailable, "not_configured", "Binance credential store is not configured")
+			return
+		}
+		if !cfg.BinanceLiveTradingAllowedByEnvironment() {
+			writeError(w, http.StatusForbidden, "live_trading_disabled", "Binance live trading is not allowed by environment")
+			return
+		}
+		client, resolvedAPIID, clientErr := s.binanceClientForCredentials(cfg, req.APIID)
+		if clientErr != nil {
+			writeError(w, http.StatusBadRequest, "credentials_failed", clientErr.Error())
+			return
+		}
+		apiID = resolvedAPIID
+		normalCount, algoCount, err = cancelAllBinancePendingOrders(ctx, client, "")
+	} else {
+		if s.OKXCredentials == nil {
+			writeError(w, http.StatusServiceUnavailable, "not_configured", "OKX credential store is not configured")
+			return
+		}
+		client, resolvedAPIID, clientErr := s.okxClientForCredentials(cfg, req.APIID)
+		if clientErr != nil {
+			writeError(w, http.StatusBadRequest, "credentials_failed", clientErr.Error())
+			return
+		}
+		apiID = resolvedAPIID
+		normalCount, algoCount, err = cancelAllOKXPendingOrders(ctx, client, "")
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "pending_orders_cancel_all_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cancelAllPendingOrdersResponse{
+		OK:          true,
+		Exchange:    req.Exchange,
+		APIID:       apiID,
+		NormalCount: normalCount,
+		AlgoCount:   algoCount,
+		TotalCount:  normalCount + algoCount,
+		Message:     "all pending orders canceled",
+	})
+}
+
+func cancelAllOKXPendingOrders(ctx context.Context, client okx.Client, instID string) (int, int, error) {
+	instID = strings.ToUpper(strings.TrimSpace(instID))
+	normalOrders, _, err := client.PendingOrders(ctx, "SWAP")
+	if err != nil {
+		return 0, 0, err
+	}
+	normalCount := 0
+	for _, order := range normalOrders {
+		if instID != "" && !strings.EqualFold(strings.TrimSpace(order.InstID), instID) {
+			continue
+		}
+		if err := cancelPendingOrder(ctx, client, order); err != nil {
+			return normalCount, 0, fmt.Errorf("cancel OKX pending order %s: %w", firstNonEmpty(order.OrdID, order.ClOrdID), err)
+		}
+		normalCount++
+	}
+
+	algoOrders, _, err := client.PendingAlgoOrders(ctx, "SWAP", instID)
+	if err != nil {
+		return normalCount, 0, err
+	}
+	algoReqs := make([]okx.CancelAlgoOrderRequest, 0, len(algoOrders))
+	for _, order := range algoOrders {
+		req := okx.CancelAlgoOrderRequest{InstID: strings.ToUpper(strings.TrimSpace(order.InstID))}
+		if strings.TrimSpace(order.AlgoID) != "" {
+			req.AlgoID = strings.TrimSpace(order.AlgoID)
+		} else if strings.TrimSpace(order.AlgoClOrdID) != "" {
+			req.AlgoClOrdID = strings.TrimSpace(order.AlgoClOrdID)
+		} else {
+			continue
+		}
+		algoReqs = append(algoReqs, req)
+	}
+	algoCount := 0
+	for len(algoReqs) > 0 {
+		n := min(len(algoReqs), 10)
+		if _, _, err := client.CancelAlgoOrders(ctx, algoReqs[:n]); err != nil {
+			return normalCount, algoCount, fmt.Errorf("cancel OKX algorithm orders: %w", err)
+		}
+		algoCount += n
+		algoReqs = algoReqs[n:]
+	}
+	return normalCount, algoCount, nil
+}
+
+func cancelAllBinancePendingOrders(ctx context.Context, client binance.Client, symbol string) (int, int, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	normalOrders, err := client.OpenOrders(ctx, symbol)
+	if err != nil {
+		return 0, 0, err
+	}
+	algoOrders, err := client.OpenAlgoOrders(ctx, symbol)
+	if err != nil {
+		return len(normalOrders), 0, err
+	}
+	symbols := map[string]struct{}{}
+	if symbol != "" {
+		symbols[symbol] = struct{}{}
+	}
+	for _, order := range normalOrders {
+		if value := strings.ToUpper(strings.TrimSpace(order.Symbol)); value != "" {
+			symbols[value] = struct{}{}
+		}
+	}
+	for _, order := range algoOrders {
+		if value := strings.ToUpper(strings.TrimSpace(order.Symbol)); value != "" {
+			symbols[value] = struct{}{}
+		}
+	}
+	for value := range symbols {
+		if err := client.CancelAllOpenOrders(ctx, value); err != nil {
+			return len(normalOrders), len(algoOrders), fmt.Errorf("cancel Binance pending orders for %s: %w", value, err)
+		}
+		if err := client.CancelAllAlgoOpenOrders(ctx, value); err != nil {
+			return len(normalOrders), len(algoOrders), fmt.Errorf("cancel Binance algorithm orders for %s: %w", value, err)
+		}
+	}
+	return len(normalOrders), len(algoOrders), nil
 }
 
 func (s *Server) handleOKXPendingOrderCancel(w http.ResponseWriter, r *http.Request, cfg config.Config, req pendingOrderChaseRequest) {
@@ -1595,6 +1760,9 @@ func (s *Server) handlePositionClose(w http.ResponseWriter, r *http.Request) {
 		if order.Px != "" {
 			message = fmt.Sprintf("market close converted to a protected limit close order at %s", order.Px)
 		}
+		if ratio >= 1 {
+			go s.cancelClosedOKXPositionOrders(client, order.Position)
+		}
 		writeJSON(w, http.StatusOK, positionCloseResponse{
 			OK:      true,
 			Status:  "submitted",
@@ -1800,6 +1968,9 @@ func (s *Server) handleBinancePositionClose(w http.ResponseWriter, r *http.Reque
 		status = "unknown"
 		message = "Binance close order status is unknown; refresh positions before retrying"
 		code = http.StatusAccepted
+	}
+	if ratio >= 1 {
+		go s.cancelClosedBinancePositionOrders(client, order.Position)
 	}
 	writeJSON(w, code, positionCloseResponse{
 		OK:      true,
@@ -5422,14 +5593,14 @@ func binanceLimitClosePrice(ctx context.Context, client binance.Client, position
 }
 
 func (s *Server) watchLimitPositionClose(apiID string, cfg config.Config, client okx.Client, active positionCloseOrder) {
-	s.watchLimitPositionCloseWithOptions(apiID, cfg, client, active, positionClosePollInterval, positionCloseLimitTimeout, false)
+	s.watchLimitPositionCloseWithOptions(apiID, cfg, client, active, positionClosePollInterval, positionCloseLimitTimeout)
 }
 
 func (s *Server) watchAutoProfitLimitPositionClose(apiID string, cfg config.Config, client okx.Client, active positionCloseOrder) {
-	s.watchLimitPositionCloseWithOptions(apiID, cfg, client, active, autoProfitClosePollInterval, autoProfitCloseLimitTimeout, true)
+	s.watchLimitPositionCloseWithOptions(apiID, cfg, client, active, autoProfitClosePollInterval, autoProfitCloseLimitTimeout)
 }
 
-func (s *Server) watchLimitPositionCloseWithOptions(apiID string, cfg config.Config, client okx.Client, active positionCloseOrder, pollInterval, timeoutDuration time.Duration, cancelProtectionOrders bool) {
+func (s *Server) watchLimitPositionCloseWithOptions(apiID string, cfg config.Config, client okx.Client, active positionCloseOrder, pollInterval, timeoutDuration time.Duration) {
 	key := positionCloseKey(trading.ExchangeOKX, apiID, active.Position.InstID, active.Position.PosSide)
 	defer positionCloseJobs.done(key)
 
@@ -5462,7 +5633,7 @@ func (s *Server) watchLimitPositionCloseWithOptions(apiID string, cfg config.Con
 				continue
 			}
 			if closed {
-				s.cancelClosedOKXPositionOrders(client, active.Position, cancelProtectionOrders && !active.Partial)
+				s.cancelClosedOKXPositionOrders(client, active.Position)
 				return
 			}
 			active = next
@@ -5476,14 +5647,14 @@ func (s *Server) watchLimitPositionCloseWithOptions(apiID string, cfg config.Con
 			if err != nil {
 				s.logPositionCloseError("limit position close fallback failed", err, active.Position)
 			} else {
-				s.cancelClosedOKXPositionOrders(client, active.Position, cancelProtectionOrders && !active.Partial)
+				s.cancelClosedOKXPositionOrders(client, active.Position)
 			}
 			return
 		}
 	}
 }
 
-func (s *Server) cancelClosedOKXPositionOrders(client okx.Client, position okx.Position, cancelProtectionOrders bool) {
+func (s *Server) cancelClosedOKXPositionOrders(client okx.Client, position okx.Position) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	for {
@@ -5504,14 +5675,46 @@ func (s *Server) cancelClosedOKXPositionOrders(client okx.Client, position okx.P
 		case <-timer.C:
 		}
 	}
-	if err := cancelOKXPositionPendingOrders(ctx, client, position); err != nil {
-		s.logPositionCloseError("failed to cancel closed position pending orders", err, position)
+	if _, _, err := cancelAllOKXPendingOrders(ctx, client, position.InstID); err != nil {
+		s.logPositionCloseError("failed to cancel all closed position pending orders", err, position)
 	}
-	if cancelProtectionOrders {
-		if err := cancelOKXPositionProtectionOrders(ctx, client, position); err != nil {
-			s.logPositionCloseError("failed to cancel closed position protection orders", err, position)
+}
+
+func (s *Server) cancelClosedBinancePositionOrders(client binance.Client, position okx.Position) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for {
+		closed, err := binancePositionClosed(ctx, client, position)
+		if err != nil {
+			s.logPositionCloseError("failed to confirm Binance position close before canceling pending orders", err, position)
+			return
+		}
+		if closed {
+			break
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			s.logPositionCloseError("Binance position close not confirmed before pending-order cancellation", ctx.Err(), position)
+			return
+		case <-timer.C:
 		}
 	}
+	if _, _, err := cancelAllBinancePendingOrders(ctx, client, position.InstID); err != nil {
+		s.logPositionCloseError("failed to cancel all closed Binance position pending orders", err, position)
+	}
+}
+
+func binancePositionClosed(ctx context.Context, client binance.Client, position okx.Position) (bool, error) {
+	_, err := currentBinanceOpenPosition(ctx, client, position.InstID, position.PosSide)
+	if err == nil {
+		return false, nil
+	}
+	if errors.Is(err, errPositionNotOpen) {
+		return true, nil
+	}
+	return false, err
 }
 
 func cancelOKXPositionPendingOrders(ctx context.Context, client okx.Client, position okx.Position) error {
@@ -5743,12 +5946,15 @@ func (s *Server) watchBinanceLimitPositionClose(apiID string, client binance.Cli
 				continue
 			}
 			if closed {
+				s.cancelClosedBinancePositionOrders(client, active.Position)
 				return
 			}
 			active = next
 		case <-timeout.C:
 			if err := fallbackBinanceMarketPositionClose(client, active); err != nil {
 				s.logPositionCloseError("Binance limit position close fallback failed", err, active.Position)
+			} else {
+				s.cancelClosedBinancePositionOrders(client, active.Position)
 			}
 			return
 		}

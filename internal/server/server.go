@@ -507,6 +507,8 @@ func (s *Server) handleTVBot(w http.ResponseWriter, r *http.Request) {
 		s.handlePendingOrderChaseStop(w, r)
 	case path == "/pending-orders/cancel":
 		s.handlePendingOrderCancel(w, r)
+	case path == "/pending-orders/cancel-all":
+		s.handlePendingOrdersCancelAll(w, r)
 	case path == "/positions/close":
 		s.handlePositionClose(w, r)
 	case path == "/positions/protection":

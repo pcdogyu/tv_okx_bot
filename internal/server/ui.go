@@ -1412,6 +1412,7 @@ const tvbotHTML = `<!doctype html>
             <button class="btn small pending-order-group-btn" type="button" data-pending-order-group="algo">算法订单 (0)</button>
           </div>
           <span class="muted" id="pending-orders-updated">-</span>
+          <button class="btn small danger" type="button" id="cancel-all-pending-orders">全部取消</button>
         </div>
       </div>
       <div class="symbol-table-wrap">
@@ -1881,6 +1882,7 @@ const tvbotHTML = `<!doctype html>
       retrying: {},
       positionClosing: {},
       pendingOrderActions: {},
+      cancelAllPendingOrders: false,
       analysis: null,
       analysisError: "",
       selectedExchange: "okx",
@@ -3435,6 +3437,13 @@ const tvbotHTML = `<!doctype html>
       return pendingOrderCountValue(response, "normal_count", Array.isArray(response.orders) ? response.orders.length : 0);
     }
 
+    function updateCancelAllPendingOrdersButton() {
+      const button = $("cancel-all-pending-orders");
+      if (!button) return;
+      button.disabled = !!state.cancelAllPendingOrders;
+      button.textContent = state.cancelAllPendingOrders ? "取消中..." : "全部取消";
+    }
+
     function updatePendingOrderGroupButtons() {
       document.querySelectorAll("[data-pending-order-group]").forEach((button) => {
         const group = button.dataset.pendingOrderGroup === "algo" ? "algo" : "normal";
@@ -4833,6 +4842,7 @@ const tvbotHTML = `<!doctype html>
     function renderPendingOrders() {
       renderTableStructure("pending_orders");
       updatePendingOrderGroupButtons();
+      updateCancelAllPendingOrdersButton();
       const columnDefs = currentTableColumnDefs("pending_orders");
       const colspan = tableColumnCount("pending_orders");
       const rows = pendingOrderDisplayRows();
@@ -6273,6 +6283,27 @@ const tvbotHTML = `<!doctype html>
       }
     }
 
+    async function cancelAllPendingOrders() {
+      if (state.cancelAllPendingOrders) return;
+      const exchange = activeExchange();
+      const apiID = activeAPIID(exchange);
+      if (!window.confirm("确认取消当前交易所账户的全部普通挂单和算法订单吗？")) return;
+      state.cancelAllPendingOrders = true;
+      renderPendingOrders();
+      try {
+        const result = await api("/tvbot/pending-orders/cancel-all", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ exchange: exchange, api_id: apiID || "" })
+        });
+        toast(exchangeLabel(exchange) + "已取消 " + Number(result.total_count || 0) + " 个挂单");
+        await loadPendingOrders();
+      } finally {
+        state.cancelAllPendingOrders = false;
+        renderPendingOrders();
+      }
+    }
+
     async function checkOKX() {
       $("okx-output").textContent = "checking...";
       try {
@@ -6499,6 +6530,7 @@ const tvbotHTML = `<!doctype html>
       addAnalysisCoinpairCooldown(button).catch((err) => toast(err.message));
     });
     $("refresh-positions").addEventListener("click", () => loadPositionView(true).then(() => toast("持仓和挂单已刷新")).catch((err) => toast(err.message)));
+    $("cancel-all-pending-orders").addEventListener("click", () => cancelAllPendingOrders().catch((err) => toast(err.message)));
     document.querySelectorAll("[data-pending-order-group]").forEach((button) => {
       button.addEventListener("click", () => {
         state.pendingOrderGroup = button.dataset.pendingOrderGroup === "algo" ? "algo" : "normal";

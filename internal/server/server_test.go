@@ -284,6 +284,9 @@ func TestRoutes(t *testing.T) {
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/pending-orders/chase")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/pending-orders/chase/stop")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/pending-orders/cancel")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("/tvbot/pending-orders/cancel-all")) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte(`id="cancel-all-pending-orders"`)) ||
+		!bytes.Contains(ui.Body.Bytes(), []byte("cancelAllPendingOrders")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-profit")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signed-loss")) ||
 		!bytes.Contains(ui.Body.Bytes(), []byte("signedCell")) ||
@@ -5770,6 +5773,160 @@ func TestPositionReturnRatioPrefersExchangeUPLRatio(t *testing.T) {
 	}
 	if got, ok := positionReturnRatio(okx.Position{UplRatio: "bad", Upl: "10", Margin: "200"}); !ok || got != 0.05 {
 		t.Fatalf("fallback return ratio = %v, %v; want 0.05, true", got, ok)
+	}
+}
+
+func TestCancelAllOKXPendingOrdersCancelsNormalAndAllAlgorithmOrdersForInstrument(t *testing.T) {
+	var canceledOrders []okx.CancelOrderRequest
+	var canceledAlgos []okx.CancelAlgoOrderRequest
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+				{"instId":"BTC-USDT-SWAP","ordId":"btc-entry","clOrdId":"btc-entry-client"},
+				{"instId":"ETH-USDT-SWAP","ordId":"eth-entry","clOrdId":"eth-entry-client"}
+			]}`))
+		case "/api/v5/trade/orders-algo-pending":
+			if r.URL.Query().Get("ordType") == "conditional" {
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[
+					{"instId":"BTC-USDT-SWAP","algoId":"btc-trigger","ordType":"conditional","triggerPx":"65000"},
+					{"instId":"BTC-USDT-SWAP","algoId":"btc-trailing","ordType":"conditional","callbackRatio":"0.5"}
+				]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/cancel-order":
+			var req okx.CancelOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			canceledOrders = append(canceledOrders, req)
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"sCode":"0"}]}`))
+		case "/api/v5/trade/cancel-algos":
+			var reqs []okx.CancelAlgoOrderRequest
+			if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
+				t.Fatal(err)
+			}
+			canceledAlgos = append(canceledAlgos, reqs...)
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"sCode":"0"},{"sCode":"0"}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+
+	client := okx.Client{BaseURL: okxServer.URL, Credentials: okx.Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: okxServer.Client()}
+	normalCount, algoCount, err := cancelAllOKXPendingOrders(context.Background(), client, "BTC-USDT-SWAP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalCount != 1 || algoCount != 2 {
+		t.Fatalf("canceled counts = %d normal, %d algo", normalCount, algoCount)
+	}
+	if len(canceledOrders) != 1 || canceledOrders[0].InstID != "BTC-USDT-SWAP" || canceledOrders[0].OrdID != "btc-entry" {
+		t.Fatalf("canceled normal orders = %#v", canceledOrders)
+	}
+	if len(canceledAlgos) != 2 || canceledAlgos[0].AlgoID != "btc-trigger" || canceledAlgos[1].AlgoID != "btc-trailing" {
+		t.Fatalf("canceled algorithm orders = %#v", canceledAlgos)
+	}
+}
+
+func TestCancelAllBinancePendingOrdersCancelsEverySymbolAndOrderType(t *testing.T) {
+	var canceledNormal []string
+	var canceledAlgo []string
+	binanceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[
+				{"symbol":"BTCUSDT","orderId":100,"clientOrderId":"btc"},
+				{"symbol":"ETHUSDT","orderId":200,"clientOrderId":"eth"}
+			]`))
+		case "/fapi/v1/openAlgoOrders":
+			_, _ = w.Write([]byte(`[
+				{"symbol":"BTCUSDT","algoId":300,"clientAlgoId":"btc-algo"},
+				{"symbol":"ETHUSDT","algoId":400,"clientAlgoId":"eth-algo"}
+			]`))
+		case "/fapi/v1/allOpenOrders":
+			canceledNormal = append(canceledNormal, r.URL.Query().Get("symbol"))
+			_, _ = w.Write([]byte(`{}`))
+		case "/fapi/v1/algoOpenOrders":
+			canceledAlgo = append(canceledAlgo, r.URL.Query().Get("symbol"))
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Fatalf("unexpected Binance path %s", r.URL.Path)
+		}
+	}))
+	defer binanceServer.Close()
+
+	client := binance.Client{BaseURL: binanceServer.URL, Credentials: binance.Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: binanceServer.Client()}
+	normalCount, algoCount, err := cancelAllBinancePendingOrders(context.Background(), client, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalCount != 2 || algoCount != 2 {
+		t.Fatalf("canceled counts = %d normal, %d algo", normalCount, algoCount)
+	}
+	if !reflect.DeepEqual(map[string]bool{canceledNormal[0]: true, canceledNormal[1]: true}, map[string]bool{"BTCUSDT": true, "ETHUSDT": true}) {
+		t.Fatalf("canceled normal symbols = %#v", canceledNormal)
+	}
+	if !reflect.DeepEqual(map[string]bool{canceledAlgo[0]: true, canceledAlgo[1]: true}, map[string]bool{"BTCUSDT": true, "ETHUSDT": true}) {
+		t.Fatalf("canceled algorithm symbols = %#v", canceledAlgo)
+	}
+}
+
+func TestTVBotCancelAllPendingOrdersEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","ordId":"100","clOrdId":"client-100"}]}`))
+		case "/api/v5/trade/orders-algo-pending":
+			if r.URL.Query().Get("ordType") == "conditional" {
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","algoId":"900","ordType":"conditional"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/cancel-order":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"sCode":"0"}]}`))
+		case "/api/v5/trade/cancel-algos":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"sCode":"0"}]}`))
+		default:
+			t.Fatalf("unexpected OKX path %s", r.URL.Path)
+		}
+	}))
+	defer okxServer.Close()
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BaseURL = okxServer.URL
+	srv.ConfigStore = config.NewStore("", cfg)
+	srv.OKXHTTPClient = okxServer.Client()
+	if _, err := srv.OKXCredentials.UpdateAccount(okx.CredentialAccountUpdate{
+		ID:     "default",
+		Active: true,
+		Credentials: okx.Credentials{
+			APIKey:     "key",
+			SecretKey:  "secret",
+			Passphrase: "pass",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tvbot/pending-orders/cancel-all", strings.NewReader(`{"exchange":"okx","api_id":"default"}`))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cancel all status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp cancelAllPendingOrdersResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK || resp.Exchange != trading.ExchangeOKX || resp.APIID != "default" || resp.NormalCount != 1 || resp.AlgoCount != 1 || resp.TotalCount != 2 {
+		t.Fatalf("bad cancel all response: %#v", resp)
 	}
 }
 
