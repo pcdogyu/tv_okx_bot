@@ -102,7 +102,7 @@ func TestTradeChartPageAndAnalysisTableExposeIndependentChartWindow(t *testing.T
 	mainReq.Header.Set("X-Admin-Token", "admin")
 	main := httptest.NewRecorder()
 	srv.ServeHTTP(main, mainReq)
-	if main.Code != http.StatusOK || !strings.Contains(main.Body.String(), `data-trade-chart="true"`) || !strings.Contains(main.Body.String(), `window.open("/tvbot/chart?"`) {
+	if main.Code != http.StatusOK || !strings.Contains(main.Body.String(), `data-trade-chart="true"`) || !strings.Contains(main.Body.String(), `window.open("/tvbot/chart?"`) || strings.Contains(main.Body.String(), "popup=yes") {
 		t.Fatalf("main page is missing chart opener: status=%d", main.Code)
 	}
 }

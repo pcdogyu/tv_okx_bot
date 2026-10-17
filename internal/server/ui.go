@@ -6355,7 +6355,7 @@ const tvbotHTML = `<!doctype html>
           entry_px: chartButton.dataset.chartEntryPx || "",
           exit_px: chartButton.dataset.chartExitPx || ""
         });
-        const popup = window.open("/tvbot/chart?" + params.toString(), "_blank", "popup=yes,width=1600,height=900,resizable=yes,scrollbars=yes");
+        const popup = window.open("/tvbot/chart?" + params.toString(), "_blank");
         if (popup) popup.focus();
         else toast("浏览器阻止了新窗口，请允许本站弹出窗口");
         return;
