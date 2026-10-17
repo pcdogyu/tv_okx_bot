@@ -46,6 +46,9 @@ func TestNewShellRunnerDefaultsToSkippingServerTests(t *testing.T) {
 	if runner.RunTests {
 		t.Fatal("RunTests = true, want false by default")
 	}
+	if runner.BuildBinary {
+		t.Fatal("BuildBinary = true, want false by default")
+	}
 
 	for _, value := range []string{"1", "true", "yes", "on"} {
 		t.Setenv("TV_OKX_UPGRADE_RUN_TESTS", value)
@@ -56,6 +59,15 @@ func TestNewShellRunnerDefaultsToSkippingServerTests(t *testing.T) {
 		if !runner.RunTests {
 			t.Fatalf("RunTests = false for %q, want true", value)
 		}
+	}
+
+	t.Setenv("TV_OKX_UPGRADE_BUILD", "true")
+	runner, err = NewShellRunnerFromEnv()
+	if err != nil {
+		t.Fatalf("NewShellRunnerFromEnv(build) error = %v", err)
+	}
+	if !runner.BuildBinary {
+		t.Fatal("BuildBinary = false for true, want true")
 	}
 }
 

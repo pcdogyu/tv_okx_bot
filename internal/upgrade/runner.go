@@ -152,6 +152,7 @@ type ShellRunner struct {
 	ServiceName    string
 	RestartCommand string
 	RunTests       bool
+	BuildBinary    bool
 }
 
 const defaultUpgradeTimeout = 45 * time.Minute
@@ -183,6 +184,7 @@ func NewShellRunnerFromEnv() (ShellRunner, error) {
 		ServiceName:    service,
 		RestartCommand: os.Getenv("TV_OKX_RESTART_CMD"),
 		RunTests:       envBool("TV_OKX_UPGRADE_RUN_TESTS", false),
+		BuildBinary:    envBool("TV_OKX_UPGRADE_BUILD", false),
 	}, nil
 }
 
@@ -211,8 +213,30 @@ func (r ShellRunner) Run(ctx context.Context) (Result, error) {
 		})
 	}
 	tmpBinary := r.BinaryPath + ".new"
-	if err := r.runStep(ctx, &result, "go_build", "go", "build", "-o", tmpBinary, "./cmd/tv-okx-bot"); err != nil {
-		return result, err
+	if r.BuildBinary {
+		if err := r.runStep(ctx, &result, "go_build", "go", "build", "-o", tmpBinary, "./cmd/tv-okx-bot"); err != nil {
+			return result, err
+		}
+	} else {
+		step := Step{
+			Name:     "go_build",
+			Command:  "skipped (TV_OKX_UPGRADE_BUILD=false)",
+			Started:  time.Now().UTC(),
+			Finished: time.Now().UTC(),
+		}
+		info, err := os.Stat(tmpBinary)
+		if err != nil {
+			step.Error = fmt.Sprintf("prebuilt binary %s is required: %v", tmpBinary, err)
+			result.Steps = append(result.Steps, step)
+			return result, errors.New(step.Error)
+		}
+		if !info.Mode().IsRegular() || info.Size() == 0 {
+			step.Error = fmt.Sprintf("prebuilt binary %s is empty or not a regular file", tmpBinary)
+			result.Steps = append(result.Steps, step)
+			return result, errors.New(step.Error)
+		}
+		step.Output = fmt.Sprintf("using prebuilt binary %s (%d bytes)", tmpBinary, info.Size())
+		result.Steps = append(result.Steps, step)
 	}
 	if err := os.Rename(tmpBinary, r.BinaryPath); err != nil {
 		step := Step{Name: "replace_binary", Command: "rename " + tmpBinary + " " + r.BinaryPath, Started: time.Now().UTC(), Finished: time.Now().UTC(), Error: err.Error()}

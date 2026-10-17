@@ -9,6 +9,7 @@ GO_CMD="${GO_CMD:-go}"
 RESTART_CMD="${TV_OKX_RESTART_CMD:-${RESTART_CMD:-}}"
 RUN_AS_APP_USER="${RUN_AS_APP_USER:-true}"
 RUN_TESTS="${TV_OKX_UPGRADE_RUN_TESTS:-false}"
+BUILD_BINARY="${TV_OKX_UPGRADE_BUILD:-false}"
 TMP_BINARY="${BINARY_PATH}.new"
 
 shell_quote() {
@@ -60,8 +61,16 @@ else
   echo "set TV_OKX_UPGRADE_RUN_TESTS=true to run go test ./... on the server"
 fi
 
-log_step "build binary"
-run_in_app_dir "$(shell_quote "${GO_CMD}") build -o $(shell_quote "${TMP_BINARY}") ./cmd/tv-okx-bot"
+if [[ "${BUILD_BINARY,,}" == "true" || "${BUILD_BINARY}" == "1" || "${BUILD_BINARY,,}" == "yes" || "${BUILD_BINARY,,}" == "on" ]]; then
+  log_step "build binary"
+  run_in_app_dir "$(shell_quote "${GO_CMD}") build -o $(shell_quote "${TMP_BINARY}") ./cmd/tv-okx-bot"
+else
+  log_step "use prebuilt binary"
+  if [[ ! -s "${TMP_BINARY}" ]]; then
+    echo "prebuilt binary ${TMP_BINARY} is required; upload it locally or set TV_OKX_UPGRADE_BUILD=true" >&2
+    exit 1
+  fi
+fi
 
 log_step "replace binary"
 run_in_app_dir "mv -f $(shell_quote "${TMP_BINARY}") $(shell_quote "${BINARY_PATH}")"
