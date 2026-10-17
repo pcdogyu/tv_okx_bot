@@ -246,6 +246,29 @@ func (s *OrderStore) MarkFailedCode(signalID, code string, err error, now time.T
 	return errors.New("signal record not found")
 }
 
+func (s *OrderStore) MarkFailedWithResult(signalID, code string, result trading.OrderResult, failErr error, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		return s.markFailedSQLiteLockedWithResult(signalID, code, result, failErr, now)
+	}
+	message := ""
+	if failErr != nil {
+		message = failErr.Error()
+	}
+	for i := range s.state.Orders {
+		if s.state.Orders[i].SignalID == signalID {
+			s.state.Orders[i].Status = StatusFailed
+			s.state.Orders[i].UpdatedAt = now.UTC()
+			s.state.Orders[i].ErrorCode = strings.TrimSpace(code)
+			s.state.Orders[i].Error = message
+			s.state.Orders[i].Result = result
+			return s.saveLocked()
+		}
+	}
+	return errors.New("signal record not found")
+}
+
 func (s *OrderStore) List(limit int) []OrderRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1047,6 +1070,36 @@ func (s *OrderStore) markFailedSQLiteLocked(signalID, code string, failErr error
 	return nil
 }
 
+func (s *OrderStore) markFailedSQLiteLockedWithResult(signalID, code string, result trading.OrderResult, failErr error, now time.Time) error {
+	message := ""
+	if failErr != nil {
+		message = failErr.Error()
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`UPDATE orders SET status = ?, updated_at = ?, result_json = ?, error_code = ?, error = ? WHERE signal_id = ?`,
+		string(StatusFailed),
+		now.UTC().Format(time.RFC3339Nano),
+		string(resultJSON),
+		strings.TrimSpace(code),
+		message,
+		signalID,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("signal record not found")
+	}
+	return nil
+}
+
 func orderResultPresent(result trading.OrderResult) bool {
 	return strings.TrimSpace(result.SignalID) != "" ||
 		strings.TrimSpace(result.APIID) != "" ||
@@ -1063,7 +1116,8 @@ func orderResultPresent(result trading.OrderResult) bool {
 		strings.TrimSpace(result.PositionEffect) != "" ||
 		strings.TrimSpace(result.PositionSide) != "" ||
 		result.Leverage != 0 ||
-		len(result.RiskOrders) > 0
+		len(result.RiskOrders) > 0 ||
+		result.Batch != nil
 }
 
 func (s *OrderStore) insertOrderSQLiteLocked(rec OrderRecord) error {

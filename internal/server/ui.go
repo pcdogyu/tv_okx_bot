@@ -376,7 +376,24 @@ const tvbotHTML = `<!doctype html>
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
     }
+    .order-settings-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .batch-order-layout {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+    .batch-order-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcff;
+    }
+    .batch-order-panel table { margin-top: 10px; }
+    .batch-order-panel th, .batch-order-panel td { padding: 7px 8px; }
+    .batch-order-panel input { min-height: 32px; padding: 6px 7px; }
+    .batch-order-panel input:disabled { color: var(--muted); background: #f1f3f7; }
     label {
       display: grid;
       gap: 6px;
@@ -1249,7 +1266,7 @@ const tvbotHTML = `<!doctype html>
       .bar { align-items: flex-start; flex-direction: column; }
       .header-controls { justify-content: flex-start; }
       nav { justify-content: flex-start; }
-      .status, .grid, .grid.two, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics, .dashboard-balance-grid, .analysis-balance-grid, .position-monitor-grid { grid-template-columns: 1fr; }
+      .status, .grid, .grid.two, .order-settings-grid, .batch-order-layout, .split, .api-key-layout, .analysis-metrics, .asset-metrics, .symbol-metrics, .position-metrics, .dashboard-balance-grid, .analysis-balance-grid, .position-monitor-grid { grid-template-columns: 1fr; }
       .template-title-row { grid-template-columns: 1fr; }
       .analysis-period-row { flex-direction: column; }
       .analysis-time-status { min-width: 0; }
@@ -1628,7 +1645,7 @@ const tvbotHTML = `<!doctype html>
         <h2>下单设置</h2>
         <button class="btn primary" type="button" id="save-order-settings">保存下单设置</button>
       </div>
-      <div class="grid">
+      <div class="grid order-settings-grid">
         <label>USDT 下单金额<input id="order-amount" type="number" min="0" step="0.01"></label>
         <label>杠杆<input id="order-leverage" type="number" min="1" step="1"></label>
         <label>订单类型<select id="order-type"><option value="market">市价单</option><option value="limit">限价单</option></select></label>
@@ -1641,6 +1658,29 @@ const tvbotHTML = `<!doctype html>
         <label>24h 交易额排名限制<select id="order-turnover-scope"><option value="top50">前 50</option><option value="top100">前 100</option><option value="top200">前 200</option><option value="top500">前 500</option><option value="all">不限排名</option></select></label>
       </div>
       <div class="muted" style="margin-top:10px">按各交易所、各交易环境的 24 小时交易额排名过滤新开仓，适用于 OKX 和 Binance；平仓不受影响。点击“保存下单设置”后生效。</div>
+      <div class="batch-order-section" style="margin-top:18px">
+        <div class="section-head">
+          <h3>批量下单设置</h3>
+          <label class="check"><input id="order-batch-enabled" type="checkbox">启用批量下单</label>
+        </div>
+        <div class="batch-order-layout">
+          <div class="batch-order-panel">
+            <h3>多单批量下单（左）</h3>
+            <table>
+              <thead><tr><th>档位</th><th>订单类型</th><th>价格距离 %</th><th>下单比例 %</th></tr></thead>
+              <tbody id="batch-order-long-rows"></tbody>
+            </table>
+          </div>
+          <div class="batch-order-panel">
+            <h3>空单批量下单（右）</h3>
+            <table>
+              <thead><tr><th>档位</th><th>订单类型</th><th>价格距离 %</th><th>下单比例 %</th></tr></thead>
+              <tbody id="batch-order-short-rows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="muted" style="margin-top:10px">批量设置仅用于 TradingView 开仓信号和人工重试，不影响平仓及自动再入场。每个方向的下单比例合计不能超过 100%。第一档为市价单，第二档严格使用 TradingView 传入价格，其余档位按当前盘口中间价偏移。</div>
+      </div>
       <table style="margin-top:14px">
         <tbody id="order-settings-preview"></tbody>
       </table>
@@ -3931,6 +3971,68 @@ const tvbotHTML = `<!doctype html>
       return unit ? text + " " + unit : text;
     }
 
+    const defaultBatchOrderLegs = [
+      { type: "market", distance_pct: 0, amount_pct: 10 },
+      { type: "signal_limit", distance_pct: 0, amount_pct: 18 },
+      { type: "current_offset_limit", distance_pct: 0.5, amount_pct: 18 },
+      { type: "current_offset_limit", distance_pct: 1, amount_pct: 18 },
+      { type: "current_offset_limit", distance_pct: 2, amount_pct: 18 },
+      { type: "current_offset_limit", distance_pct: 3, amount_pct: 18 }
+    ];
+
+    function batchOrderTypeText(type, index) {
+      if (index === 0 || type === "market") return "市价单";
+      if (index === 1 || type === "signal_limit") return "TradingView 传入价格限价单";
+      return "当前价偏移限价单";
+    }
+
+    function batchOrderLegsForSide(batch, side) {
+      const source = batch && Array.isArray(batch[side]) ? batch[side] : [];
+      return defaultBatchOrderLegs.map((fallback, index) => {
+        const item = source[index] || {};
+        return {
+          type: fallback.type,
+          distance_pct: item.distance_pct === undefined || item.distance_pct === null ? fallback.distance_pct : item.distance_pct,
+          amount_pct: item.amount_pct === undefined || item.amount_pct === null ? fallback.amount_pct : item.amount_pct
+        };
+      });
+    }
+
+    function renderBatchOrderRows(side, legs) {
+      const tbody = $("batch-order-" + side + "-rows");
+      tbody.innerHTML = legs.map((leg, index) => {
+        const distance = index < 2
+          ? (index === 0 ? "无" : "TradingView 价格")
+          : '<input class="batch-order-distance" data-batch-side="' + side + '" data-batch-index="' + index + '" type="number" min="0" step="0.01" value="' + escapeHTML(asText(leg.distance_pct)) + '">';
+        return "<tr>" +
+          "<td>第" + (index + 1) + "档</td>" +
+          "<td>" + escapeHTML(batchOrderTypeText(leg.type, index)) + "</td>" +
+          "<td>" + distance + "</td>" +
+          '<td><input class="batch-order-amount" data-batch-side="' + side + '" data-batch-index="' + index + '" type="number" min="0" step="0.01" value="' + escapeHTML(asText(leg.amount_pct)) + '"></td>' +
+          "</tr>";
+      }).join("");
+    }
+
+    function renderBatchOrderSettings() {
+      const trading = state.config && state.config.trading ? state.config.trading : {};
+      const batch = trading.batch_orders || {};
+      $("order-batch-enabled").checked = !!batch.enabled;
+      renderBatchOrderRows("long", batchOrderLegsForSide(batch, "long"));
+      renderBatchOrderRows("short", batchOrderLegsForSide(batch, "short"));
+    }
+
+    function readBatchOrderRows(side) {
+      return defaultBatchOrderLegs.map((fallback, index) => {
+        const amountInput = document.querySelector('[data-batch-side="' + side + '"][data-batch-index="' + index + '"].batch-order-amount');
+        const distanceInput = document.querySelector('[data-batch-side="' + side + '"][data-batch-index="' + index + '"].batch-order-distance');
+        return {
+          type: fallback.type,
+          distance_pct: distanceInput ? Number(distanceInput.value) : 0,
+          amount_pct: amountInput ? Number(amountInput.value) : fallback.amount_pct
+        };
+      });
+    }
+
     function renderOrderSettings() {
       const trading = state.config && state.config.trading ? state.config.trading : {};
       $("order-amount").value = trading.order_amount_usdt || 100;
@@ -3943,6 +4045,7 @@ const tvbotHTML = `<!doctype html>
       $("order-trailing").value = trading.trailing_pct || 1;
       $("order-long-multiplier").value = trading.long_limit_price_multiplier || 0.997;
       $("order-short-multiplier").value = trading.short_limit_price_multiplier || 1.003;
+      renderBatchOrderSettings();
       renderOrderSettingsPreview();
     }
 
@@ -3954,7 +4057,9 @@ const tvbotHTML = `<!doctype html>
         [orderType === "limit" ? "多单限价单价格" : "市价单估算价格", orderType === "limit" ? "TradingView 当前价格 x " + asText($("order-long-multiplier").value) : "TradingView 当前价格"],
         [orderType === "limit" ? "空单限价单价格" : "OKX 下单价格", orderType === "limit" ? "TradingView 当前价格 x " + asText($("order-short-multiplier").value) : "市价"],
         ["固定止盈止损", asText($("order-tp").value) + "% / " + asText($("order-sl").value) + "%"],
-        ["移动止损", asText($("order-trailing").value) + "%"]
+        ["移动止损", asText($("order-trailing").value) + "%"],
+        ["批量下单", $("order-batch-enabled").checked ? "已启用" : "已关闭"],
+        ["批量比例（多 / 空）", readBatchOrderRows("long").reduce((sum, leg) => sum + (Number(leg.amount_pct) || 0), 0).toFixed(2) + "% / " + readBatchOrderRows("short").reduce((sum, leg) => sum + (Number(leg.amount_pct) || 0), 0).toFixed(2) + "%"]
       ];
       $("order-settings-preview").innerHTML = rows.map((row) => "<tr><th>" + escapeHTML(row[0]) + "</th><td>" + escapeHTML(row[1]) + "</td></tr>").join("");
     }
@@ -5532,7 +5637,9 @@ const tvbotHTML = `<!doctype html>
     }
 
     function orderCanRetry(order) {
-      return !!(order && order.signal_id && (order.status === "failed" || order.status === "ignored") && !unsupportedOKXInstrumentMessage(order));
+      const batch = order && order.result && order.result.batch;
+      const partialBatch = batch && Number(batch.submitted || 0) > 0;
+      return !!(order && order.signal_id && !partialBatch && (order.status === "failed" || order.status === "ignored") && !unsupportedOKXInstrumentMessage(order));
     }
 
     function unsupportedOKXInstrumentMessage(order) {
@@ -5561,9 +5668,11 @@ const tvbotHTML = `<!doctype html>
         const precisionInstID = order.result && order.result.inst_id ? order.result.inst_id : order.coinpair;
         const okxResult = targetExchange === "okx" && order.result && (order.result.ord_id || order.result.okx_code) ? [order.result.ord_id, order.result.okx_code].filter(Boolean).join(" / ") : "";
         const binanceResult = targetExchange === "binance" && order.result && (order.result.ord_id || order.result.binance_code || order.result.binance_msg) ? [order.result.ord_id, order.result.binance_code, order.result.binance_msg].filter(Boolean).join(" / ") : "";
+        const batchResult = order.result && order.result.batch;
+        const batchText = batchResult ? "批量已提交 " + Number(batchResult.submitted || 0) + "/" + Number(batchResult.total || 0) + (batchResult.failed_index ? "，第" + batchResult.failed_index + "档失败" : "") : "";
         const errorText = [order.error_code, order.error].filter(Boolean).join(": ");
         const unsupportedMessage = unsupportedOKXInstrumentMessage(order);
-        const exchangeResult = unsupportedMessage || okxResult || binanceResult || errorText || "-";
+        const exchangeResult = [batchText, unsupportedMessage || okxResult || binanceResult || errorText].filter(Boolean).join(" / ") || "-";
         const apiID = order.api_id || (order.result && order.result.api_id);
         const sourceExchange = order.source_exchange || "-";
         const tradeEnvText = order.trade_env === "live" ? "实盘" : "模拟";
@@ -5792,7 +5901,12 @@ const tvbotHTML = `<!doctype html>
           stop_loss_pct: Number($("order-sl").value),
           trailing_pct: Number($("order-trailing").value),
           long_limit_price_multiplier: Number($("order-long-multiplier").value),
-          short_limit_price_multiplier: Number($("order-short-multiplier").value)
+          short_limit_price_multiplier: Number($("order-short-multiplier").value),
+          batch_orders: {
+            enabled: $("order-batch-enabled").checked,
+            long: readBatchOrderRows("long"),
+            short: readBatchOrderRows("short")
+          }
         }
       };
       state.config = await api("/tvbot/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
@@ -6250,6 +6364,10 @@ const tvbotHTML = `<!doctype html>
     ["order-amount", "order-leverage", "order-type", "order-turnover-scope", "order-risk-type", "order-tp", "order-sl", "order-trailing", "order-long-multiplier", "order-short-multiplier"].forEach((id) => {
       $(id).addEventListener("input", () => renderOrderSettingsPreview());
       $(id).addEventListener("change", () => renderOrderSettingsPreview());
+    });
+    $("order-batch-enabled").addEventListener("change", () => renderOrderSettingsPreview());
+    ["batch-order-long-rows", "batch-order-short-rows"].forEach((id) => {
+      $(id).addEventListener("input", () => renderOrderSettingsPreview());
     });
     $("save-position-monitor").addEventListener("click", () => savePositionMonitor().catch((err) => toast(err.message)));
     $("save-menu-settings").addEventListener("click", () => saveMenuSettings().catch((err) => toast(err.message)));

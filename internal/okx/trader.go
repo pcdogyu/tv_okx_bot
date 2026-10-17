@@ -54,11 +54,15 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		return trading.OrderResult{}, err
 	}
 	orderSettings := cfg.OrderSettings().Normalize()
-	orderType := string(orderSettings.OrderType)
+	executionOrderType := orderSettings.OrderType
+	if signal.Execution != nil && signal.Execution.OrderType != "" {
+		executionOrderType = signal.Execution.OrderType
+	}
+	orderType := string(executionOrderType)
 	sizingPx := signal.Price.Value
 	orderPx := ""
-	if orderSettings.OrderType == trading.OrderTypeLimit {
-		sizingPx, orderPx, err = refreshedOKXLimitOrderPrice(ctx, client, signal.Action, orderSettings, sym)
+	if executionOrderType == trading.OrderTypeLimit {
+		sizingPx, orderPx, err = t.executionLimitOrderPrice(ctx, client, signal, orderSettings, sym)
 		if err != nil {
 			return trading.OrderResult{}, err
 		}
@@ -114,6 +118,47 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		t.Logger.Info("okx order submitted", "api_id", apiID, "inst_id", submittedReq.InstID, "action", signal.Action, "cl_ord_id", clOrdID, "okx_code", env.Code)
 	}
 	return result, nil
+}
+
+func (t Trader) executionLimitOrderPrice(ctx context.Context, client Client, signal trading.Signal, settings trading.OrderSettings, sym trading.SymbolInfo) (float64, string, error) {
+	if signal.Execution != nil {
+		if signal.Execution.LimitPrice.Set {
+			return formatOKXExecutionLimitPrice(signal.Action, signal.Execution.LimitPrice.Value, sym.TickSz)
+		}
+		if signal.Execution.CurrentPriceOffsetPct > 0 {
+			return refreshedOKXOffsetLimitOrderPrice(ctx, client, signal.Action, signal.Execution.CurrentPriceOffsetPct, sym)
+		}
+	}
+	return refreshedOKXLimitOrderPrice(ctx, client, signal.Action, settings, sym)
+}
+
+func formatOKXExecutionLimitPrice(action trading.Side, target, tickSz float64) (float64, string, error) {
+	roundUp := action == trading.ActionShort
+	orderPx := formatOKXPrice(target, tickSz, roundUp)
+	if orderPx == "" || orderPx == "0" {
+		return 0, "", fmt.Errorf("invalid OKX execution limit price")
+	}
+	sizingPx, err := strconv.ParseFloat(orderPx, 64)
+	if err != nil || sizingPx <= 0 {
+		return 0, "", fmt.Errorf("invalid OKX execution limit price %q", orderPx)
+	}
+	return sizingPx, orderPx, nil
+}
+
+func refreshedOKXOffsetLimitOrderPrice(ctx context.Context, client Client, action trading.Side, distancePct float64, sym trading.SymbolInfo) (float64, string, error) {
+	ticker, _, err := client.MarketTicker(ctx, sym.InstID)
+	if err != nil {
+		return 0, "", fmt.Errorf("refresh OKX batch limit price for %s: %w", sym.InstID, err)
+	}
+	marketPx, err := okxTickerMidPrice(ticker)
+	if err != nil {
+		return 0, "", fmt.Errorf("refresh OKX batch limit price for %s: %w", sym.InstID, err)
+	}
+	target, err := trading.OffsetLimitPrice(action, marketPx, distancePct)
+	if err != nil {
+		return 0, "", err
+	}
+	return formatOKXExecutionLimitPrice(action, target, sym.TickSz)
 }
 
 func (t Trader) placeOrderWithFallback(ctx context.Context, client Client, req PlaceOrderRequest, signal trading.Signal, clOrdID string, referencePx float64, sym trading.SymbolInfo) (OrderAck, Envelope, PlaceOrderRequest, error) {
@@ -974,7 +1019,11 @@ func okxRatio(ratio float64) string {
 }
 
 func clientOrderID(signal trading.Signal) string {
-	sum := sha256.Sum256([]byte(signal.CanonicalTokenPayload() + "|" + signal.SentAt + "|" + signal.Ticker))
+	batchTag := ""
+	if signal.Execution != nil && signal.Execution.BatchIndex > 0 {
+		batchTag = fmt.Sprintf("|batch:%d", signal.Execution.BatchIndex)
+	}
+	sum := sha256.Sum256([]byte(signal.CanonicalTokenPayload() + "|" + signal.SentAt + "|" + signal.Ticker + batchTag))
 	short := hex.EncodeToString(sum[:])[:12]
 	return strings.ToUpper(fmt.Sprintf("TV%d%s", time.Now().UTC().UnixMilli(), short))
 }

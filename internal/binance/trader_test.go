@@ -118,6 +118,58 @@ func TestTraderPlacesLimitOrderAndTPSLAlgoOrders(t *testing.T) {
 	}
 }
 
+func TestTraderBatchExecutionUsesBinanceBookTickerOffsetAndStep(t *testing.T) {
+	var orderForm url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			_, _ = w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"TRADING","pricePrecision":1,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","minQty":"0.001","stepSize":"0.001"}]}]}`))
+		case "/fapi/v3/positionRisk", "/fapi/v1/openOrders":
+			_, _ = w.Write([]byte(`[]`))
+		case "/fapi/v1/marginType":
+			_, _ = w.Write([]byte(`{"code":200,"msg":"success"}`))
+		case "/fapi/v1/leverage":
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","leverage":10}`))
+		case "/fapi/v1/ticker/bookTicker":
+			_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","bidPrice":"50000","askPrice":"50010"}`))
+		case "/fapi/v1/order":
+			orderForm = cloneValues(r.Form)
+			_, _ = w.Write([]byte(`{"orderId":321,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"entry","price":"49754.9","origQty":"0.002","executedQty":"0","type":"LIMIT","side":"BUY"}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+	cfg := config.Default()
+	cfg.Trading.BinanceDemoBaseURL = ts.URL
+	cfg.Trading.OrderType = string(trading.OrderTypeMarket)
+	cfg.Trading.RiskType = string(trading.RiskNone)
+	signal := trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "BTC",
+		Price:    trading.NewFlexibleFloat(50000),
+		Leverage: 10,
+		Amount:   trading.NewFlexibleFloat(100),
+		Execution: &trading.SignalExecution{
+			OrderType:             trading.OrderTypeLimit,
+			CurrentPriceOffsetPct: 0.5,
+			BatchIndex:            3,
+		},
+	}
+	signal.Normalize()
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret"}, HTTPClient: ts.Client()}
+	if _, err := trader.ExecuteSignal(context.Background(), signal, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if orderForm.Get("type") != "LIMIT" || orderForm.Get("price") != "49754.9" || orderForm.Get("quantity") != "0.002" || orderForm.Get("timeInForce") != "GTC" {
+		t.Fatalf("batch offset should use book ticker and Binance steps: %#v", orderForm)
+	}
+}
+
 func TestTraderPlacesMarketOrderAndTrailingAlgoOrder(t *testing.T) {
 	var orderForm url.Values
 	var trailingForm url.Values

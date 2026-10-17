@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,11 @@ const (
 
 	DefaultMarketTurnoverScope = MarketTurnoverScopeTop100
 	DefaultLossCooldownHours   = 1
+	BatchOrderLegCount         = 6
+
+	BatchOrderTypeMarket             = "market"
+	BatchOrderTypeSignalLimit        = "signal_limit"
+	BatchOrderTypeCurrentOffsetLimit = "current_offset_limit"
 )
 
 type Config struct {
@@ -66,10 +72,99 @@ type TradingConfig struct {
 	TrailingPct               float64               `json:"trailing_pct"`
 	LongLimitPriceMultiplier  float64               `json:"long_limit_price_multiplier"`
 	ShortLimitPriceMultiplier float64               `json:"short_limit_price_multiplier"`
+	BatchOrders               BatchOrderSettings    `json:"batch_orders"`
 	LossCooldown              LossCooldownConfig    `json:"loss_cooldown"`
 	FillMonitor               FillMonitorConfig     `json:"fill_monitor"`
 	AutoReentry               AutoReentryConfig     `json:"auto_reentry"`
 	PositionMonitor           PositionMonitorConfig `json:"position_monitor"`
+}
+
+type BatchOrderSettings struct {
+	Enabled bool            `json:"enabled"`
+	Long    []BatchOrderLeg `json:"long"`
+	Short   []BatchOrderLeg `json:"short"`
+}
+
+type BatchOrderLeg struct {
+	Type        string  `json:"type"`
+	DistancePct float64 `json:"distance_pct"`
+	AmountPct   float64 `json:"amount_pct"`
+}
+
+func defaultBatchOrderLegs() []BatchOrderLeg {
+	return []BatchOrderLeg{
+		{Type: BatchOrderTypeMarket, AmountPct: 10},
+		{Type: BatchOrderTypeSignalLimit, AmountPct: 18},
+		{Type: BatchOrderTypeCurrentOffsetLimit, DistancePct: 0.5, AmountPct: 18},
+		{Type: BatchOrderTypeCurrentOffsetLimit, DistancePct: 1, AmountPct: 18},
+		{Type: BatchOrderTypeCurrentOffsetLimit, DistancePct: 2, AmountPct: 18},
+		{Type: BatchOrderTypeCurrentOffsetLimit, DistancePct: 3, AmountPct: 18},
+	}
+}
+
+func DefaultBatchOrderSettings() BatchOrderSettings {
+	return BatchOrderSettings{
+		Long:  defaultBatchOrderLegs(),
+		Short: defaultBatchOrderLegs(),
+	}
+}
+
+func cloneBatchOrderLegs(in []BatchOrderLeg) []BatchOrderLeg {
+	out := make([]BatchOrderLeg, len(in))
+	copy(out, in)
+	return out
+}
+
+func (b *BatchOrderSettings) Normalize() {
+	if len(b.Long) == 0 {
+		b.Long = defaultBatchOrderLegs()
+	}
+	if len(b.Short) == 0 {
+		b.Short = defaultBatchOrderLegs()
+	}
+	for _, legs := range [][]BatchOrderLeg{b.Long, b.Short} {
+		for i := range legs {
+			legs[i].Type = strings.ToLower(strings.TrimSpace(legs[i].Type))
+		}
+	}
+}
+
+func (b BatchOrderSettings) Validate() error {
+	for side, legs := range map[string][]BatchOrderLeg{"long": b.Long, "short": b.Short} {
+		if len(legs) != BatchOrderLegCount {
+			return fmt.Errorf("batch_orders.%s must contain exactly %d legs", side, BatchOrderLegCount)
+		}
+		var total float64
+		for i, leg := range legs {
+			wantType := BatchOrderTypeCurrentOffsetLimit
+			if i == 0 {
+				wantType = BatchOrderTypeMarket
+			} else if i == 1 {
+				wantType = BatchOrderTypeSignalLimit
+			}
+			if leg.Type != wantType {
+				return fmt.Errorf("batch_orders.%s[%d].type must be %q", side, i, wantType)
+			}
+			if math.IsNaN(leg.AmountPct) || math.IsInf(leg.AmountPct, 0) || leg.AmountPct <= 0 || leg.AmountPct > 100 {
+				return fmt.Errorf("batch_orders.%s[%d].amount_pct must be greater than 0 and at most 100", side, i)
+			}
+			if i >= 2 && (math.IsNaN(leg.DistancePct) || math.IsInf(leg.DistancePct, 0) || leg.DistancePct <= 0) {
+				return fmt.Errorf("batch_orders.%s[%d].distance_pct must be positive", side, i)
+			}
+			total += leg.AmountPct
+		}
+		if total > 100+1e-9 {
+			return fmt.Errorf("batch_orders.%s amount_pct total must not exceed 100", side)
+		}
+	}
+	return nil
+}
+
+func (b BatchOrderSettings) LegsForSide(side trading.Side) []BatchOrderLeg {
+	if side == trading.ActionShort {
+		return cloneBatchOrderLegs(b.Short)
+	}
+	return cloneBatchOrderLegs(b.Long)
 }
 
 // LossCooldownConfig controls the global block applied to a coinpair after a
@@ -239,6 +334,7 @@ func Default() Config {
 			TrailingPct:               1,
 			LongLimitPriceMultiplier:  0.997,
 			ShortLimitPriceMultiplier: 1.003,
+			BatchOrders:               DefaultBatchOrderSettings(),
 			LossCooldown: LossCooldownConfig{
 				Enabled: true,
 				Hours:   DefaultLossCooldownHours,
@@ -400,6 +496,7 @@ func (c *Config) Normalize() {
 	if c.Trading.ShortLimitPriceMultiplier <= 0 {
 		c.Trading.ShortLimitPriceMultiplier = 1.003
 	}
+	c.Trading.BatchOrders.Normalize()
 	if c.Trading.LossCooldown.Hours <= 0 {
 		c.Trading.LossCooldown.Hours = DefaultLossCooldownHours
 	}
@@ -493,6 +590,9 @@ func (c Config) Validate() error {
 	}
 	if c.Trading.LongLimitPriceMultiplier <= 0 || c.Trading.ShortLimitPriceMultiplier <= 0 {
 		return errors.New("limit price multipliers must be positive")
+	}
+	if err := c.Trading.BatchOrders.Validate(); err != nil {
+		return err
 	}
 	if c.Trading.LossCooldown.Hours < 1 || c.Trading.LossCooldown.Hours > 8760 {
 		return errors.New("loss_cooldown.hours must be between 1 and 8760")

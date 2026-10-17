@@ -44,6 +44,34 @@ func (f fakeExecutor) Check(ctx context.Context, cfg trading.RuntimeConfig) (map
 	return map[string]any{"ok": true}, nil
 }
 
+type batchRecordingExecutor struct {
+	calls     chan trading.Signal
+	failureAt int
+	count     int
+}
+
+func (e *batchRecordingExecutor) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg trading.RuntimeConfig) (trading.OrderResult, error) {
+	e.count++
+	e.calls <- signal
+	result := trading.OrderResult{
+		APIID:          signal.APIID,
+		TargetExchange: trading.ExchangeOKX,
+		InstID:         "BTC-USDT-SWAP",
+		ClOrdID:        fmt.Sprintf("cl-%d", e.count),
+		OrdID:          fmt.Sprintf("ord-%d", e.count),
+		OrdType:        string(signal.Execution.OrderType),
+		Px:             trading.NormalizeFloat(signal.Price.Value),
+	}
+	if e.failureAt > 0 && e.count == e.failureAt {
+		return result, errors.New("simulated batch failure")
+	}
+	return result, nil
+}
+
+func (e *batchRecordingExecutor) Check(ctx context.Context, cfg trading.RuntimeConfig) (map[string]any, error) {
+	return map[string]any{"ok": true}, nil
+}
+
 type fakeUpgradeRunner struct {
 	done chan struct{}
 }
@@ -809,6 +837,63 @@ func TestTVBotConfigSavesOrderType(t *testing.T) {
 	srv.ServeHTTP(bad, badReq)
 	if bad.Code != http.StatusBadRequest || !bytes.Contains(bad.Body.Bytes(), []byte("unsupported order_type")) {
 		t.Fatalf("bad order type status=%d body=%s", bad.Code, bad.Body.String())
+	}
+}
+
+func TestTVBotConfigSavesBatchOrdersAndRejectsInvalidPercentages(t *testing.T) {
+	srv := newTestServer(t)
+	batch := config.DefaultBatchOrderSettings()
+	batch.Enabled = true
+	batch.Long[2].DistancePct = 0.75
+	batch.Long[2].AmountPct = 17
+	batch.Long[3].AmountPct = 19
+	batch.Short[0].AmountPct = 8
+	batch.Short[5].DistancePct = 4
+	batch.Short[5].AmountPct = 20
+	body, err := json.Marshal(map[string]any{"trading": map[string]any{"batch_orders": batch}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader(body))
+	req.SetBasicAuth("admin", "Admin123")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("batch config status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	got := srv.ConfigStore.Get().Trading.BatchOrders
+	if !got.Enabled || got.Long[2].DistancePct != 0.75 || got.Long[2].AmountPct != 17 || got.Short[5].DistancePct != 4 || got.Short[5].AmountPct != 20 {
+		t.Fatalf("batch config was not saved: %#v", got)
+	}
+
+	bad := config.DefaultBatchOrderSettings()
+	bad.Long[0].AmountPct = 83
+	bad.Long[1].AmountPct = 18
+	badBody, err := json.Marshal(map[string]any{"trading": map[string]any{"batch_orders": bad}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	badReq := httptest.NewRequest(http.MethodPut, "/tvbot/config", bytes.NewReader(badBody))
+	badReq.SetBasicAuth("admin", "Admin123")
+	badRR := httptest.NewRecorder()
+	srv.ServeHTTP(badRR, badReq)
+	if badRR.Code != http.StatusBadRequest || !bytes.Contains(badRR.Body.Bytes(), []byte("batch_orders.long amount_pct total")) {
+		t.Fatalf("invalid batch percentage status=%d body=%s", badRR.Code, badRR.Body.String())
+	}
+}
+
+func TestTVBotUIIncludesBatchOrderSettings(t *testing.T) {
+	for _, marker := range []string{
+		"order-settings-grid",
+		`id="order-batch-enabled"`,
+		`id="batch-order-long-rows"`,
+		`id="batch-order-short-rows"`,
+		"batch_orders:",
+		"批量设置仅用于 TradingView 开仓信号和人工重试",
+	} {
+		if !strings.Contains(tvbotHTML, marker) {
+			t.Fatalf("tvbot UI missing batch order marker %q", marker)
+		}
 	}
 }
 
@@ -2413,6 +2498,108 @@ func TestTVOrderAppliesConfiguredOrderSettings(t *testing.T) {
 		t.Fatal("executor was not called")
 	}
 	waitOrderStatus(t, srv.Orders, resp.SignalID, storage.StatusSubmitted)
+}
+
+func TestBatchOrderExecutionSubmitsLongLegsInOrder(t *testing.T) {
+	srv := newTestServer(t)
+	executor := &batchRecordingExecutor{calls: make(chan trading.Signal, config.BatchOrderLegCount)}
+	srv.Executor = executor
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BatchOrders.Enabled = true
+	cfg.Trading.OrderAmountUSDT = 100
+	cfg.Normalize()
+	signal := trading.Signal{
+		Action:         trading.ActionLong,
+		APIID:          "main",
+		TargetExchange: trading.ExchangeOKX,
+		TradeEnv:       trading.TradeEnvDemo,
+		Coinpair:       "BTC",
+		Ticker:         "BTCUSDT",
+		Price:          trading.NewFlexibleFloat(50000),
+		Amount:         trading.NewFlexibleFloat(100),
+		Leverage:       5,
+		PositionEffect: trading.PositionEffectOpen,
+		SentAt:         "2026-07-24T03:00:00Z",
+	}
+	signal.Normalize()
+	record, _, err := srv.Orders.RecordAccepted(signal, "batch-test-long", srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.execute(record.SignalID, signal, cfg)
+
+	amounts := []float64{10, 18, 18, 18, 18, 18}
+	for i, expectedAmount := range amounts {
+		got := <-executor.calls
+		if got.Amount.Value != expectedAmount || got.Execution == nil || got.Execution.BatchIndex != i+1 {
+			t.Fatalf("leg %d amount/index: amount=%v execution=%#v", i+1, got.Amount.Value, got.Execution)
+		}
+		switch i {
+		case 0:
+			if got.Execution.OrderType != trading.OrderTypeMarket {
+				t.Fatalf("first leg type=%q", got.Execution.OrderType)
+			}
+		case 1:
+			if got.Execution.OrderType != trading.OrderTypeLimit || !got.Execution.LimitPrice.Set || got.Execution.LimitPrice.Value != signal.Price.Value {
+				t.Fatalf("second leg execution=%#v", got.Execution)
+			}
+		default:
+			if got.Execution.OrderType != trading.OrderTypeLimit || got.Execution.CurrentPriceOffsetPct <= 0 {
+				t.Fatalf("offset leg %d execution=%#v", i+1, got.Execution)
+			}
+		}
+	}
+	updated, ok := srv.Orders.Get(record.SignalID)
+	if !ok || updated.Status != storage.StatusSubmitted || updated.Result.Batch == nil || updated.Result.Batch.Submitted != config.BatchOrderLegCount {
+		t.Fatalf("batch result not submitted: %#v", updated)
+	}
+	if len(updated.Result.Batch.Legs) != config.BatchOrderLegCount || updated.Result.OrdID != "ord-1 / ord-2 / ord-3 / ord-4 / ord-5 / ord-6" {
+		t.Fatalf("batch result details missing: %#v", updated.Result)
+	}
+}
+
+func TestBatchOrderStopsAfterFailureAndPersistsPartialResult(t *testing.T) {
+	srv := newTestServer(t)
+	executor := &batchRecordingExecutor{calls: make(chan trading.Signal, config.BatchOrderLegCount), failureAt: 3}
+	srv.Executor = executor
+	cfg := srv.ConfigStore.Get()
+	cfg.Trading.BatchOrders.Enabled = true
+	cfg.Normalize()
+	signal := trading.Signal{
+		Action:         trading.ActionShort,
+		APIID:          "main",
+		TargetExchange: trading.ExchangeOKX,
+		TradeEnv:       trading.TradeEnvDemo,
+		Coinpair:       "BTC",
+		Ticker:         "BTCUSDT",
+		Price:          trading.NewFlexibleFloat(50000),
+		Amount:         trading.NewFlexibleFloat(100),
+		PositionEffect: trading.PositionEffectOpen,
+		SentAt:         "2026-07-24T03:01:00Z",
+	}
+	signal.Normalize()
+	record, _, err := srv.Orders.RecordAccepted(signal, "batch-test-failure", srv.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.execute(record.SignalID, signal, cfg)
+	if executor.count != 3 {
+		t.Fatalf("failure should stop later legs, executor calls=%d", executor.count)
+	}
+	updated, ok := srv.Orders.Get(record.SignalID)
+	if !ok || updated.Status != storage.StatusFailed || updated.ErrorCode != "batch_partial" {
+		t.Fatalf("partial batch status=%#v", updated)
+	}
+	if updated.Result.Batch == nil || updated.Result.Batch.Submitted != 2 || updated.Result.Batch.FailedIndex != 3 || len(updated.Result.Batch.Legs) != 3 {
+		t.Fatalf("partial batch details=%#v", updated.Result)
+	}
+	if orderCanRetryRecord := orderRecordCanRetryAfterBatch(updated); orderCanRetryRecord {
+		t.Fatal("partially submitted batch should not be retried")
+	}
+}
+
+func orderRecordCanRetryAfterBatch(record storage.OrderRecord) bool {
+	return record.Status == storage.StatusFailed && (record.Result.Batch == nil || record.Result.Batch.Submitted == 0)
 }
 
 func TestTVBotTemplatesRequiresAdminAndReturnsJSON(t *testing.T) {

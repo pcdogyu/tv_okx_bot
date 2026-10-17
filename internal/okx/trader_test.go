@@ -458,6 +458,67 @@ func TestTraderExecuteSignalRefreshesStaleShortLimitPriceFromOKXTicker(t *testin
 	}
 }
 
+func TestTraderBatchExecutionUsesOKXBookTickerOffsetAndRisk(t *testing.T) {
+	var orderReq PlaceOrderRequest
+	tickerSeen := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v5/account/positions":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/account/set-leverage":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{}]}`))
+		case "/api/v5/market/ticker":
+			tickerSeen = true
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"STRK-USDT-SWAP","bidPx":"239.3","askPx":"239.5","last":"200"}]}`))
+		case "/api/v5/trade/order":
+			if err := json.NewDecoder(r.Body).Decode(&orderReq); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"clOrdId":"x","ordId":"123","sCode":"0","sMsg":""}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+	cfg := config.Default()
+	cfg.Trading.BaseURL = ts.URL
+	cfg.Trading.OrderType = string(trading.OrderTypeMarket)
+	cfg.Trading.RiskType = string(trading.RiskTPSL)
+	cfg.Symbols = map[string]config.SymbolConfig{
+		"STRKUSDT.P": {Coinpair: "STRKUSDT.P", InstID: "STRK-USDT-SWAP", CtVal: 1, TickSz: 0.0001, LotSz: 1, MinSz: 1},
+	}
+	tp := trading.NewFlexibleFloat(2)
+	sl := trading.NewFlexibleFloat(1)
+	signal := trading.Signal{
+		Action:   trading.ActionLong,
+		Coinpair: "STRKUSDT.P",
+		Ticker:   "OKX:STRKUSDT.P",
+		Price:    trading.NewFlexibleFloat(200),
+		Leverage: 5,
+		Amount:   trading.NewFlexibleFloat(1000),
+		Risk:     trading.Risk{Type: trading.RiskTPSL, TPPct: &tp, SLPct: &sl},
+		Execution: &trading.SignalExecution{
+			OrderType:             trading.OrderTypeLimit,
+			CurrentPriceOffsetPct: 0.5,
+			BatchIndex:            3,
+		},
+	}
+	signal.Normalize()
+	trader := Trader{Credentials: Credentials{APIKey: "key", SecretKey: "secret", Passphrase: "pass"}, HTTPClient: ts.Client()}
+	if _, err := trader.ExecuteSignal(context.Background(), signal, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !tickerSeen || orderReq.OrdType != "limit" || orderReq.Px != "238.203" || orderReq.Sz != "4" {
+		t.Fatalf("batch offset should use OKX book ticker and steps: ticker=%v request=%#v", tickerSeen, orderReq)
+	}
+	if len(orderReq.AttachAlgoOrds) != 1 || orderReq.AttachAlgoOrds[0]["tpTriggerRatio"] != "0.02" || orderReq.AttachAlgoOrds[0]["slTriggerRatio"] != "-0.01" {
+		t.Fatalf("batch leg should preserve risk orders: %#v", orderReq.AttachAlgoOrds)
+	}
+}
+
 func TestTraderExecuteSignalUsesSelectedAPIIDCredentials(t *testing.T) {
 	var seenAPIKey string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

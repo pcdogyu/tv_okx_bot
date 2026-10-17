@@ -108,32 +108,42 @@ type Risk struct {
 }
 
 type Signal struct {
-	Action         Side          `json:"action"`
-	SourceAction   Side          `json:"-"`
-	APIID          string        `json:"api_id,omitempty"`
-	TargetExchange string        `json:"target_exchange,omitempty"`
-	TradeEnv       string        `json:"trade_env,omitempty"`
-	Coinpair       string        `json:"coinpair"`
-	Price          FlexibleFloat `json:"price"`
-	SentAt         string        `json:"sent_at"`
-	Time           string        `json:"time,omitempty"`
-	Ticker         string        `json:"ticker"`
-	Exchange       string        `json:"exchange,omitempty"`
-	Interval       string        `json:"interval,omitempty"`
-	Condition      string        `json:"condition,omitempty"`
-	Text           string        `json:"text,omitempty"`
-	OrderIntent    string        `json:"order_intent,omitempty"`
-	Intent         string        `json:"intent,omitempty"`
-	PositionEffect string        `json:"position_effect,omitempty"`
-	PositionSide   string        `json:"position_side,omitempty"`
-	Leverage       int           `json:"leverage"`
-	Amount         FlexibleFloat `json:"amount"`
-	Risk           Risk          `json:"risk,omitempty"`
-	TokenNonce     string        `json:"token_nonce,omitempty"`
-	Token          string        `json:"token"`
-	ADX            *float64      `json:"-"`
-	MarketStrategy string        `json:"-"`
-	RawJSON        string        `json:"-"`
+	Action         Side             `json:"action"`
+	SourceAction   Side             `json:"-"`
+	APIID          string           `json:"api_id,omitempty"`
+	TargetExchange string           `json:"target_exchange,omitempty"`
+	TradeEnv       string           `json:"trade_env,omitempty"`
+	Coinpair       string           `json:"coinpair"`
+	Price          FlexibleFloat    `json:"price"`
+	SentAt         string           `json:"sent_at"`
+	Time           string           `json:"time,omitempty"`
+	Ticker         string           `json:"ticker"`
+	Exchange       string           `json:"exchange,omitempty"`
+	Interval       string           `json:"interval,omitempty"`
+	Condition      string           `json:"condition,omitempty"`
+	Text           string           `json:"text,omitempty"`
+	OrderIntent    string           `json:"order_intent,omitempty"`
+	Intent         string           `json:"intent,omitempty"`
+	PositionEffect string           `json:"position_effect,omitempty"`
+	PositionSide   string           `json:"position_side,omitempty"`
+	Leverage       int              `json:"leverage"`
+	Amount         FlexibleFloat    `json:"amount"`
+	Risk           Risk             `json:"risk,omitempty"`
+	TokenNonce     string           `json:"token_nonce,omitempty"`
+	Token          string           `json:"token"`
+	ADX            *float64         `json:"-"`
+	MarketStrategy string           `json:"-"`
+	RawJSON        string           `json:"-"`
+	Execution      *SignalExecution `json:"-"`
+}
+
+// SignalExecution contains server-side execution overrides used by batch
+// order orchestration. It is never accepted from or serialized to a webhook.
+type SignalExecution struct {
+	OrderType             OrderType
+	LimitPrice            FlexibleFloat
+	CurrentPriceOffsetPct float64
+	BatchIndex            int
 }
 
 type OrderSettings struct {
@@ -179,6 +189,29 @@ type OrderResult struct {
 	PositionEffect string            `json:"position_effect,omitempty"`
 	PositionSide   string            `json:"position_side,omitempty"`
 	RiskOrders     []RiskOrderResult `json:"risk_orders,omitempty"`
+	Batch          *BatchOrderResult `json:"batch,omitempty"`
+}
+
+type BatchOrderResult struct {
+	Total       int              `json:"total"`
+	Submitted   int              `json:"submitted"`
+	FailedIndex int              `json:"failed_index,omitempty"`
+	Legs        []BatchLegResult `json:"legs"`
+}
+
+type BatchLegResult struct {
+	Index       int               `json:"index"`
+	Type        string            `json:"type"`
+	DistancePct float64           `json:"distance_pct,omitempty"`
+	AmountPct   float64           `json:"amount_pct"`
+	AmountUSDT  string            `json:"amount_usdt"`
+	Status      string            `json:"status"`
+	ClOrdID     string            `json:"cl_ord_id,omitempty"`
+	OrdID       string            `json:"ord_id,omitempty"`
+	OrdType     string            `json:"ord_type,omitempty"`
+	Px          string            `json:"px,omitempty"`
+	Error       string            `json:"error,omitempty"`
+	RiskOrders  []RiskOrderResult `json:"risk_orders,omitempty"`
 }
 
 type RiskOrderResult struct {
@@ -438,6 +471,27 @@ func (o OrderSettings) LimitPrice(action Side, currentPrice float64) float64 {
 		return currentPrice * o.ShortLimitPriceMultiplier
 	}
 	return currentPrice * o.LongLimitPriceMultiplier
+}
+
+func OffsetLimitPrice(action Side, currentPrice, distancePct float64) (float64, error) {
+	if currentPrice <= 0 || math.IsNaN(currentPrice) || math.IsInf(currentPrice, 0) {
+		return 0, errors.New("current price must be positive")
+	}
+	if distancePct <= 0 || math.IsNaN(distancePct) || math.IsInf(distancePct, 0) {
+		return 0, errors.New("price distance must be positive")
+	}
+	factor := 1 + distancePct/100
+	switch action {
+	case ActionLong:
+		factor = 1 - distancePct/100
+	case ActionShort:
+	default:
+		return 0, fmt.Errorf("unsupported action %q", action)
+	}
+	if factor <= 0 {
+		return 0, errors.New("price distance produces a non-positive limit price")
+	}
+	return currentPrice * factor, nil
 }
 
 func (s Signal) Validate(now time.Time, ttl time.Duration, cfg RuntimeConfig) error {

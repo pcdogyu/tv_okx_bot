@@ -148,6 +148,53 @@ func TestMarketTurnoverScopeDefaultsPersistsAndValidates(t *testing.T) {
 	}
 }
 
+func TestBatchOrderDefaultsLegacyMigrationAndValidation(t *testing.T) {
+	cfg := Default()
+	if cfg.Trading.BatchOrders.Enabled {
+		t.Fatal("batch orders should be disabled by default")
+	}
+	if len(cfg.Trading.BatchOrders.Long) != BatchOrderLegCount || len(cfg.Trading.BatchOrders.Short) != BatchOrderLegCount {
+		t.Fatalf("default batch legs: long=%d short=%d", len(cfg.Trading.BatchOrders.Long), len(cfg.Trading.BatchOrders.Short))
+	}
+	if got := cfg.Trading.BatchOrders.Long[2].DistancePct; got != 0.5 {
+		t.Fatalf("default third long distance=%v", got)
+	}
+
+	legacyPath := filepath.Join(t.TempDir(), "legacy-batch.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"trading":{"order_amount_usdt":100}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := Load(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Trading.BatchOrders.Enabled || len(legacy.Trading.BatchOrders.Long) != BatchOrderLegCount || len(legacy.Trading.BatchOrders.Short) != BatchOrderLegCount {
+		t.Fatalf("legacy batch migration failed: %#v", legacy.Trading.BatchOrders)
+	}
+
+	invalid := Default()
+	invalid.Trading.BatchOrders.Long[0].AmountPct = 83
+	invalid.Trading.BatchOrders.Long[1].AmountPct = 18
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("batch percentage total over 100 should fail validation")
+	}
+	invalid = Default()
+	invalid.Trading.BatchOrders.Short[2].DistancePct = 0
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("batch offset distance of zero should fail validation")
+	}
+
+	custom := Default()
+	custom.Trading.BatchOrders.Enabled = true
+	custom.Trading.BatchOrders.Long[2].DistancePct = 0.75
+	custom.Trading.BatchOrders.Short[5].AmountPct = 20
+	store := NewStore("", custom)
+	got := store.Get()
+	if !got.Trading.BatchOrders.Enabled || got.Trading.BatchOrders.Long[2].DistancePct != 0.75 || got.Trading.BatchOrders.Short[5].AmountPct != 20 {
+		t.Fatalf("batch settings should survive store round trip: %#v", got.Trading.BatchOrders)
+	}
+}
+
 func TestLossCooldownDefaultsMigrationAndValidation(t *testing.T) {
 	cfg := Default()
 	if !cfg.Trading.LossCooldown.Enabled || cfg.Trading.LossCooldown.Hours != DefaultLossCooldownHours {

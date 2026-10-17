@@ -72,10 +72,34 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		return trading.OrderResult{}, err
 	}
 	sizingPx := signal.Price.Value
-	orderType := strings.ToUpper(string(orderSettings.OrderType))
+	executionOrderType := orderSettings.OrderType
+	if signal.Execution != nil && signal.Execution.OrderType != "" {
+		executionOrderType = signal.Execution.OrderType
+	}
+	orderType := strings.ToUpper(string(executionOrderType))
 	orderPx := ""
-	if orderSettings.OrderType == trading.OrderTypeLimit {
-		sizingPx = orderSettings.LimitPrice(signal.Action, signal.Price.Value)
+	if executionOrderType == trading.OrderTypeLimit {
+		if signal.Execution != nil && signal.Execution.LimitPrice.Set {
+			sizingPx = signal.Execution.LimitPrice.Value
+		} else if signal.Execution != nil && signal.Execution.CurrentPriceOffsetPct > 0 {
+			ticker, tickerErr := client.BookTicker(ctx, symbol)
+			if tickerErr != nil {
+				return trading.OrderResult{}, fmt.Errorf("refresh Binance batch limit price for %s: %w", symbol, tickerErr)
+			}
+			marketPx, midErr := binanceBookTickerMidPrice(ticker)
+			if midErr != nil {
+				return trading.OrderResult{}, fmt.Errorf("refresh Binance batch limit price for %s: %w", symbol, midErr)
+			}
+			sizingPx, midErr = trading.OffsetLimitPrice(signal.Action, marketPx, signal.Execution.CurrentPriceOffsetPct)
+			if midErr != nil {
+				return trading.OrderResult{}, midErr
+			}
+		} else {
+			sizingPx = orderSettings.LimitPrice(signal.Action, signal.Price.Value)
+		}
+		if sizingPx <= 0 || math.IsNaN(sizingPx) || math.IsInf(sizingPx, 0) {
+			return trading.OrderResult{}, fmt.Errorf("invalid Binance limit price %v", sizingPx)
+		}
 		orderPx = formatStep(sizingPx, filters.TickSize, signal.Action == trading.ActionShort)
 	}
 	orderStep := filters.StepSizeForOrderType(orderType)
@@ -109,7 +133,7 @@ func (t Trader) ExecuteSignal(ctx context.Context, signal trading.Signal, cfg tr
 		Price:            orderPx,
 		NewClientOrderID: clOrdID,
 	}
-	if orderSettings.OrderType == trading.OrderTypeLimit {
+	if executionOrderType == trading.OrderTypeLimit {
 		req.TimeInForce = "GTC"
 	}
 	orderRequests, err := splitBinancePlaceOrderRequest(req, filters)
@@ -897,6 +921,15 @@ func binanceMarkPrice(ctx context.Context, client Client, symbol string) (float6
 	return markPx, nil
 }
 
+func binanceBookTickerMidPrice(ticker BookTicker) (float64, error) {
+	bid, bidErr := strconv.ParseFloat(strings.TrimSpace(ticker.BidPrice), 64)
+	ask, askErr := strconv.ParseFloat(strings.TrimSpace(ticker.AskPrice), 64)
+	if bidErr != nil || askErr != nil || bid <= 0 || ask <= 0 {
+		return 0, fmt.Errorf("invalid Binance ticker bid/ask")
+	}
+	return (bid + ask) / 2, nil
+}
+
 func safeBinanceTPSLTriggers(action trading.Side, tpTrigger, slTrigger string, markPx, tickSize float64) (string, string, bool, error) {
 	if markPx <= 0 || tickSize <= 0 {
 		return tpTrigger, slTrigger, false, nil
@@ -995,7 +1028,11 @@ func maxInt(a, b int) int {
 }
 
 func clientOrderID(signal trading.Signal) string {
-	sum := sha256.Sum256([]byte(signal.CanonicalTokenPayload() + "|" + signal.SentAt + "|" + signal.Ticker + "|binance"))
+	batchTag := ""
+	if signal.Execution != nil && signal.Execution.BatchIndex > 0 {
+		batchTag = fmt.Sprintf("|batch:%d", signal.Execution.BatchIndex)
+	}
+	sum := sha256.Sum256([]byte(signal.CanonicalTokenPayload() + "|" + signal.SentAt + "|" + signal.Ticker + "|binance" + batchTag))
 	short := hex.EncodeToString(sum[:])[:10]
 	return trimClientID(strings.ToUpper(fmt.Sprintf("TV%d%s", time.Now().UTC().UnixMilli(), short)), 32)
 }

@@ -19,6 +19,8 @@ func (s *Store) Get() Config {
 	cfg := s.cfg
 	cfg.Trading.IgnoredCoinpairs = cloneStringList(s.cfg.Trading.IgnoredCoinpairs)
 	cfg.Symbols = cloneSymbols(s.cfg.Symbols)
+	cfg.Trading.BatchOrders.Long = cloneBatchOrderLegs(s.cfg.Trading.BatchOrders.Long)
+	cfg.Trading.BatchOrders.Short = cloneBatchOrderLegs(s.cfg.Trading.BatchOrders.Short)
 	cfg.UI.MenuItems = cloneMenuItems(s.cfg.UI.MenuItems)
 	cfg.UI.TableColumns = cloneTableColumns(s.cfg.UI.TableColumns)
 	return cfg
@@ -30,6 +32,8 @@ func (s *Store) Update(fn func(*Config) error) (Config, error) {
 	next := s.cfg
 	next.Trading.IgnoredCoinpairs = cloneStringList(s.cfg.Trading.IgnoredCoinpairs)
 	next.Symbols = cloneSymbols(s.cfg.Symbols)
+	next.Trading.BatchOrders.Long = cloneBatchOrderLegs(s.cfg.Trading.BatchOrders.Long)
+	next.Trading.BatchOrders.Short = cloneBatchOrderLegs(s.cfg.Trading.BatchOrders.Short)
 	next.UI.MenuItems = cloneMenuItems(s.cfg.UI.MenuItems)
 	next.UI.TableColumns = cloneTableColumns(s.cfg.UI.TableColumns)
 	if err := fn(&next); err != nil {

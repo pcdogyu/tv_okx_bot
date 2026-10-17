@@ -431,6 +431,10 @@ func (s *Server) execute(signalID string, signal trading.Signal, cfg config.Conf
 		_ = s.Orders.MarkFailed(signalID, errors.New("executor is not configured"), s.now())
 		return
 	}
+	if cfg.Trading.BatchOrders.Enabled && signal.PositionEffect == trading.PositionEffectOpen {
+		s.executeBatch(signalID, signal, cfg)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	result, err := s.Executor.ExecuteSignal(ctx, signal, cfg)
@@ -1592,6 +1596,10 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		writeError(w, http.StatusConflict, "not_retriable", "only failed or ignored orders can be retried")
 		return
 	}
+	if source.Status == storage.StatusFailed && source.Result.Batch != nil && source.Result.Batch.Submitted > 0 {
+		writeError(w, http.StatusConflict, "not_retriable", "批量订单已部分提交，不能自动重试以避免重复下单")
+		return
+	}
 	if message := unsupportedOKXInstrumentMessage(source); message != "" {
 		writeError(w, http.StatusConflict, "not_retriable", message)
 		return
@@ -2273,6 +2281,7 @@ type tradingPatch struct {
 	TrailingPct               *float64                      `json:"trailing_pct"`
 	LongLimitPriceMultiplier  *float64                      `json:"long_limit_price_multiplier"`
 	ShortLimitPriceMultiplier *float64                      `json:"short_limit_price_multiplier"`
+	BatchOrders               *config.BatchOrderSettings    `json:"batch_orders"`
 	LossCooldown              *lossCooldownPatch            `json:"loss_cooldown"`
 	FillMonitor               *config.FillMonitorConfig     `json:"fill_monitor"`
 	AutoReentry               *config.AutoReentryConfig     `json:"auto_reentry"`
@@ -2374,6 +2383,9 @@ func applyConfigPatch(c *config.Config, patch configPatch) {
 	}
 	if patch.Trading.ShortLimitPriceMultiplier != nil {
 		c.Trading.ShortLimitPriceMultiplier = *patch.Trading.ShortLimitPriceMultiplier
+	}
+	if patch.Trading.BatchOrders != nil {
+		c.Trading.BatchOrders = *patch.Trading.BatchOrders
 	}
 	if patch.Trading.LossCooldown != nil {
 		if patch.Trading.LossCooldown.Enabled != nil {
