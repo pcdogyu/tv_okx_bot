@@ -150,7 +150,7 @@ func TestMarketTurnoverScopeDefaultsPersistsAndValidates(t *testing.T) {
 
 func TestLossCooldownDefaultsMigrationAndValidation(t *testing.T) {
 	cfg := Default()
-	if !cfg.Trading.LossCooldown.Enabled || cfg.Trading.LossCooldown.Hours != 24 {
+	if !cfg.Trading.LossCooldown.Enabled || cfg.Trading.LossCooldown.Hours != DefaultLossCooldownHours {
 		t.Fatalf("unexpected loss cooldown defaults: %#v", cfg.Trading.LossCooldown)
 	}
 
@@ -162,7 +162,7 @@ func TestLossCooldownDefaultsMigrationAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !legacy.Trading.LossCooldown.Enabled || legacy.Trading.LossCooldown.Hours != 24 {
+	if !legacy.Trading.LossCooldown.Enabled || legacy.Trading.LossCooldown.Hours != DefaultLossCooldownHours {
 		t.Fatalf("legacy config did not receive loss cooldown defaults: %#v", legacy.Trading.LossCooldown)
 	}
 

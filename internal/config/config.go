@@ -29,6 +29,7 @@ const (
 	MarketTurnoverScopeAll    = "all"
 
 	DefaultMarketTurnoverScope = MarketTurnoverScopeTop100
+	DefaultLossCooldownHours   = 1
 )
 
 type Config struct {
@@ -240,7 +241,7 @@ func Default() Config {
 			ShortLimitPriceMultiplier: 1.003,
 			LossCooldown: LossCooldownConfig{
 				Enabled: true,
-				Hours:   24,
+				Hours:   DefaultLossCooldownHours,
 			},
 			FillMonitor: FillMonitorConfig{
 				Enabled:             true,
@@ -400,7 +401,7 @@ func (c *Config) Normalize() {
 		c.Trading.ShortLimitPriceMultiplier = 1.003
 	}
 	if c.Trading.LossCooldown.Hours <= 0 {
-		c.Trading.LossCooldown.Hours = 24
+		c.Trading.LossCooldown.Hours = DefaultLossCooldownHours
 	}
 	if c.Trading.FillMonitor.PollIntervalSeconds <= 0 {
 		c.Trading.FillMonitor.PollIntervalSeconds = 20

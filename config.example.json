@@ -26,7 +26,7 @@
     "short_limit_price_multiplier": 1.003,
     "loss_cooldown": {
       "enabled": true,
-      "hours": 24
+      "hours": 1
     },
     "fill_monitor": {
       "enabled": true,
