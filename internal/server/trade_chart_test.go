@@ -69,6 +69,9 @@ func TestTradeChartDataReturnsDemoLiveCandlesAndMarkers(t *testing.T) {
 	if len(response.Markers) != 2 || response.Markers[0].Kind != "entry" || response.Markers[1].Kind != "exit" {
 		t.Fatalf("unexpected chart markers: %#v", response.Markers)
 	}
+	if response.Bar != tradeChartDefaultBar {
+		t.Fatalf("unexpected default chart bar: %q", response.Bar)
+	}
 	from, err := time.Parse(time.RFC3339Nano, response.From)
 	if err != nil {
 		t.Fatalf("invalid chart from time: %v", err)
@@ -91,7 +94,7 @@ func TestTradeChartPageAndAnalysisTableExposeIndependentChartWindow(t *testing.T
 	pageReq.Header.Set("X-Admin-Token", "admin")
 	page := httptest.NewRecorder()
 	srv.ServeHTTP(page, pageReq)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "模拟盘 K 线") || !strings.Contains(page.Body.String(), "最近8小时") || !strings.Contains(page.Body.String(), `data-hours="8" class="active"`) || !strings.Contains(page.Body.String(), "canvas") {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "模拟盘 K 线") || !strings.Contains(page.Body.String(), "最近8小时") || !strings.Contains(page.Body.String(), `data-hours="8" class="active"`) || !strings.Contains(page.Body.String(), `data-bar="12h"`) || !strings.Contains(page.Body.String(), "成交量") || !strings.Contains(page.Body.String(), `addEventListener("wheel"`) || !strings.Contains(page.Body.String(), "ArrowUp") || !strings.Contains(page.Body.String(), "ArrowLeft") || !strings.Contains(page.Body.String(), "canvas") {
 		t.Fatalf("chart page missing expected markers: status=%d", page.Code)
 	}
 
@@ -101,6 +104,28 @@ func TestTradeChartPageAndAnalysisTableExposeIndependentChartWindow(t *testing.T
 	srv.ServeHTTP(main, mainReq)
 	if main.Code != http.StatusOK || !strings.Contains(main.Body.String(), `data-trade-chart="true"`) || !strings.Contains(main.Body.String(), `window.open("/tvbot/chart?"`) {
 		t.Fatalf("main page is missing chart opener: status=%d", main.Code)
+	}
+}
+
+func TestTradeChartIntervalsAndAggregation(t *testing.T) {
+	for _, bar := range []string{"1m", "2m", "3m", "5m", "10m", "15m", "30m", "1h", "4h", "8h", "12h"} {
+		interval, err := normalizeTradeChartBar(bar)
+		if err != nil || interval.Bar != bar {
+			t.Fatalf("normalizeTradeChartBar(%q)=(%#v,%v)", bar, interval, err)
+		}
+	}
+	if _, err := normalizeTradeChartBar("2d"); err == nil {
+		t.Fatal("unsupported chart bar should be rejected")
+	}
+
+	base := (time.Unix(0, 0).Add(2 * time.Minute)).UnixMilli()
+	interval, _ := normalizeTradeChartBar("2m")
+	got := aggregateTradeChartCandles([]tradeChartCandle{
+		{TS: base, Open: "100", High: "105", Low: "99", Close: "103", Volume: "1.25"},
+		{TS: base + time.Minute.Milliseconds(), Open: "103", High: "108", Low: "101", Close: "106", Volume: "2.75"},
+	}, interval)
+	if len(got) != 1 || got[0].Open != "100" || got[0].High != "108" || got[0].Low != "99" || got[0].Close != "106" || got[0].Volume != "4" {
+		t.Fatalf("unexpected aggregated candle: %#v", got)
 	}
 }
 
