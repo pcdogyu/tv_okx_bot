@@ -69,6 +69,17 @@ func TestTradeChartDataReturnsDemoLiveCandlesAndMarkers(t *testing.T) {
 	if len(response.Markers) != 2 || response.Markers[0].Kind != "entry" || response.Markers[1].Kind != "exit" {
 		t.Fatalf("unexpected chart markers: %#v", response.Markers)
 	}
+	from, err := time.Parse(time.RFC3339Nano, response.From)
+	if err != nil {
+		t.Fatalf("invalid chart from time: %v", err)
+	}
+	to, err := time.Parse(time.RFC3339Nano, response.To)
+	if err != nil {
+		t.Fatalf("invalid chart to time: %v", err)
+	}
+	if got := to.Sub(from); got != tradeChartHours*time.Hour {
+		t.Fatalf("unexpected chart window: %s", got)
+	}
 	if !sawDemo || !sawLive {
 		t.Fatalf("expected demo and live upstream requests demo=%v live=%v", sawDemo, sawLive)
 	}
@@ -80,7 +91,7 @@ func TestTradeChartPageAndAnalysisTableExposeIndependentChartWindow(t *testing.T
 	pageReq.Header.Set("X-Admin-Token", "admin")
 	page := httptest.NewRecorder()
 	srv.ServeHTTP(page, pageReq)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "模拟盘 K 线") || !strings.Contains(page.Body.String(), "canvas") {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "模拟盘 K 线") || !strings.Contains(page.Body.String(), "最近8小时") || !strings.Contains(page.Body.String(), `data-hours="8" class="active"`) || !strings.Contains(page.Body.String(), "canvas") {
 		t.Fatalf("chart page missing expected markers: status=%d", page.Code)
 	}
 

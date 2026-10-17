@@ -17,8 +17,8 @@ import (
 
 const (
 	tradeChartBar        = "1m"
-	tradeChartDays       = 7
-	tradeChartMaxCandles = tradeChartDays * 24 * 60
+	tradeChartHours      = 8
+	tradeChartMaxCandles = tradeChartHours * 60
 )
 
 type tradeChartCandle struct {
@@ -115,13 +115,13 @@ func (s *Server) handleTradeChartData(w http.ResponseWriter, r *http.Request) {
 func tradeChartWindow(now time.Time, entryTS, exitTS int64) (time.Time, time.Time) {
 	now = now.UTC()
 	end := now
-	if exitTS > 0 && exitTS < now.Add(-tradeChartDays*24*time.Hour).UnixMilli() {
+	if exitTS > 0 && exitTS < now.Add(-tradeChartHours*time.Hour).UnixMilli() {
 		end = time.UnixMilli(exitTS).UTC().Add(time.Minute)
 	}
-	if entryTS > 0 && entryTS < end.Add(-tradeChartDays*24*time.Hour).UnixMilli() && entryTS > exitTS {
+	if entryTS > 0 && entryTS < end.Add(-tradeChartHours*time.Hour).UnixMilli() && entryTS > exitTS {
 		end = time.UnixMilli(entryTS).UTC().Add(time.Minute)
 	}
-	return end.Add(-tradeChartDays * 24 * time.Hour), end
+	return end.Add(-tradeChartHours * time.Hour), end
 }
 
 func parseChartTimestamp(raw string) int64 {
@@ -333,14 +333,14 @@ const tradeChartHTML = `<!doctype html>
 <body>
   <main class="page">
     <header>
-      <div><h1 id="title">币对 K 线回看</h1><div class="subtitle">1 分钟周期 · 最近七天 · 模拟盘 / 实盘价格对比</div></div>
+      <div><h1 id="title">币对 K 线回看</h1><div class="subtitle">1 分钟周期 · 最近8小时 · 模拟盘 / 实盘价格对比</div></div>
       <div class="status" id="status">正在加载 K 线数据…</div>
     </header>
     <div class="toolbar" role="group" aria-label="回看周期">
       <span>回看范围：</span>
-      <button type="button" data-days="1">1 天</button>
-      <button type="button" data-days="3">3 天</button>
-      <button type="button" data-days="7" class="active">7 天</button>
+      <button type="button" data-hours="1">1 小时</button>
+      <button type="button" data-hours="4">4 小时</button>
+      <button type="button" data-hours="8" class="active">8 小时</button>
       <span id="window-text"></span>
     </div>
     <div class="legend">
@@ -354,7 +354,7 @@ const tradeChartHTML = `<!doctype html>
   </main>
   <script>
     const params = new URLSearchParams(window.location.search);
-    const state = { data: null, days: 7, hover: null };
+    const state = { data: null, hours: 8, hover: null };
     const canvas = document.getElementById("chart");
     const ctx = canvas.getContext("2d");
     const tooltip = document.getElementById("tooltip");
@@ -390,7 +390,7 @@ const tradeChartHTML = `<!doctype html>
     }
     function currentWindow() {
       const end = new Date(state.data.to).getTime();
-      return { from: end - state.days * 24 * 60 * 60 * 1000, to: end };
+      return { from: end - state.hours * 60 * 60 * 1000, to: end };
     }
     function markerAction(marker) {
       const side = String(marker.side || "").toLowerCase();
@@ -437,7 +437,7 @@ const tradeChartHTML = `<!doctype html>
         const ts = windowRange.from + (windowRange.to - windowRange.from) * i / 6;
         const xx = x(ts);
         ctx.strokeStyle = "#edf1f6"; ctx.beginPath(); ctx.moveTo(xx, top); ctx.lineTo(xx, bottom); ctx.stroke();
-        ctx.fillStyle = "#667085"; ctx.fillText(formatAxisTime(ts, state.days >= 3), Math.max(left, xx - 25), bottom + 23);
+        ctx.fillStyle = "#667085"; ctx.fillText(formatAxisTime(ts, state.hours >= 24), Math.max(left, xx - 25), bottom + 23);
       }
       function drawSeries(items, color, offset) {
         const candleWidth = Math.max(1, Math.min(5, plotWidth / Math.max(items.length, 1) * 0.72));
@@ -499,7 +499,7 @@ const tradeChartHTML = `<!doctype html>
         statusEl.innerHTML = '<span class="error">' + escapeHTML(error.message || error) + '</span>';
       }
     }
-    document.querySelectorAll("button[data-days]").forEach(function (button) { button.addEventListener("click", function () { state.days = Number(button.dataset.days) || 7; document.querySelectorAll("button[data-days]").forEach(function (item) { item.classList.toggle("active", item === button); }); draw(); }); });
+    document.querySelectorAll("button[data-hours]").forEach(function (button) { button.addEventListener("click", function () { state.hours = Number(button.dataset.hours) || 8; document.querySelectorAll("button[data-hours]").forEach(function (item) { item.classList.toggle("active", item === button); }); draw(); }); });
     canvas.addEventListener("mousemove", function (event) {
       if (!state.data) return;
       const rect = canvas.getBoundingClientRect(); const range = currentWindow(); const left = 68, right = rect.width - 76;
