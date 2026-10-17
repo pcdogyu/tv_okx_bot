@@ -889,7 +889,7 @@ func TestTVBotUIIncludesBatchOrderSettings(t *testing.T) {
 		`id="batch-order-long-rows"`,
 		`id="batch-order-short-rows"`,
 		"batch_orders:",
-		"批量设置仅用于 TradingView 开仓信号和人工重试",
+		"批量设置用于 TradingView、清算预警自动开仓信号和人工重试",
 	} {
 		if !strings.Contains(tvbotHTML, marker) {
 			t.Fatalf("tvbot UI missing batch order marker %q", marker)

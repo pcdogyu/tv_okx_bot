@@ -1679,7 +1679,7 @@ const tvbotHTML = `<!doctype html>
             </table>
           </div>
         </div>
-        <div class="muted" style="margin-top:10px">批量设置仅用于 TradingView 开仓信号和人工重试，不影响平仓及自动再入场。每个方向的下单比例合计不能超过 100%。第一档为市价单，第二档严格使用 TradingView 传入价格，其余档位按当前盘口中间价偏移。</div>
+        <div class="muted" style="margin-top:10px">批量设置用于 TradingView、清算预警自动开仓信号和人工重试，不影响平仓及自动再入场。每个方向的下单比例合计不能超过 100%。第一档为市价单，第二档严格使用信号传入价格，其余档位按当前盘口中间价偏移。</div>
       </div>
       <table style="margin-top:14px">
         <tbody id="order-settings-preview"></tbody>
