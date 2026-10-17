@@ -83,6 +83,28 @@ func TestTradeChartDataReturnsDemoLiveCandlesAndMarkers(t *testing.T) {
 	if got := to.Sub(from); got != tradeChartHours*time.Hour {
 		t.Fatalf("unexpected chart window: %s", got)
 	}
+	longReq := httptest.NewRequest(http.MethodGet, query+"&hours=24", nil)
+	longReq.Header.Set("X-Admin-Token", "admin")
+	longRecorder := httptest.NewRecorder()
+	srv.ServeHTTP(longRecorder, longReq)
+	if longRecorder.Code != http.StatusOK {
+		t.Fatalf("24-hour chart status=%d body=%s", longRecorder.Code, longRecorder.Body.String())
+	}
+	var longResponse tradeChartResponse
+	if err := json.Unmarshal(longRecorder.Body.Bytes(), &longResponse); err != nil {
+		t.Fatal(err)
+	}
+	longFrom, err := time.Parse(time.RFC3339Nano, longResponse.From)
+	if err != nil {
+		t.Fatalf("invalid 24-hour chart from time: %v", err)
+	}
+	longTo, err := time.Parse(time.RFC3339Nano, longResponse.To)
+	if err != nil {
+		t.Fatalf("invalid 24-hour chart to time: %v", err)
+	}
+	if longResponse.Hours != 24 || longTo.Sub(longFrom) != 24*time.Hour {
+		t.Fatalf("unexpected 24-hour chart window: hours=%d duration=%s", longResponse.Hours, longTo.Sub(longFrom))
+	}
 	if !sawDemo || !sawLive {
 		t.Fatalf("expected demo and live upstream requests demo=%v live=%v", sawDemo, sawLive)
 	}
@@ -94,7 +116,7 @@ func TestTradeChartPageAndAnalysisTableExposeIndependentChartWindow(t *testing.T
 	pageReq.Header.Set("X-Admin-Token", "admin")
 	page := httptest.NewRecorder()
 	srv.ServeHTTP(page, pageReq)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "模拟盘 K 线") || !strings.Contains(page.Body.String(), "最近8小时") || !strings.Contains(page.Body.String(), `data-hours="8" class="active"`) || !strings.Contains(page.Body.String(), `data-bar="12h"`) || !strings.Contains(page.Body.String(), "成交量") || !strings.Contains(page.Body.String(), `addEventListener("wheel"`) || !strings.Contains(page.Body.String(), "ArrowUp") || !strings.Contains(page.Body.String(), "ArrowLeft") || !strings.Contains(page.Body.String(), "canvas") {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "模拟盘 K 线") || !strings.Contains(page.Body.String(), "最近8小时") || !strings.Contains(page.Body.String(), `data-hours="8" class="active"`) || !strings.Contains(page.Body.String(), `data-hours="12"`) || !strings.Contains(page.Body.String(), `data-hours="24"`) || !strings.Contains(page.Body.String(), `data-bar="12h"`) || !strings.Contains(page.Body.String(), "query.set(\"hours\", String(state.hours))") || !strings.Contains(page.Body.String(), "成交量") || !strings.Contains(page.Body.String(), `addEventListener("wheel"`) || !strings.Contains(page.Body.String(), "ArrowUp") || !strings.Contains(page.Body.String(), "ArrowLeft") || !strings.Contains(page.Body.String(), "canvas") {
 		t.Fatalf("chart page missing expected markers: status=%d", page.Code)
 	}
 
@@ -117,6 +139,14 @@ func TestTradeChartIntervalsAndAggregation(t *testing.T) {
 	if _, err := normalizeTradeChartBar("2d"); err == nil {
 		t.Fatal("unsupported chart bar should be rejected")
 	}
+	for _, hours := range []string{"1", "4", "8", "12", "24"} {
+		if got, err := normalizeTradeChartHours(hours); err != nil || got != intValue(hours) {
+			t.Fatalf("normalizeTradeChartHours(%q)=(%d,%v)", hours, got, err)
+		}
+	}
+	if _, err := normalizeTradeChartHours("48"); err == nil {
+		t.Fatal("unsupported chart hours should be rejected")
+	}
 
 	base := (time.Unix(0, 0).Add(2 * time.Minute)).UnixMilli()
 	interval, _ := normalizeTradeChartBar("2m")
@@ -127,6 +157,11 @@ func TestTradeChartIntervalsAndAggregation(t *testing.T) {
 	if len(got) != 1 || got[0].Open != "100" || got[0].High != "108" || got[0].Low != "99" || got[0].Close != "106" || got[0].Volume != "4" {
 		t.Fatalf("unexpected aggregated candle: %#v", got)
 	}
+}
+
+func intValue(raw string) int {
+	value, _ := strconv.Atoi(raw)
+	return value
 }
 
 func strconvFormatInt(value int64) string {

@@ -21,7 +21,8 @@ const (
 	tradeChartDefaultBar = "1m"
 	tradeChartRawBar     = "1m"
 	tradeChartHours      = 8
-	tradeChartMaxCandles = tradeChartHours * 60
+	tradeChartMaxHours   = 24
+	tradeChartMaxCandles = tradeChartMaxHours * 60
 )
 
 type tradeChartInterval struct {
@@ -72,6 +73,7 @@ type tradeChartResponse struct {
 	Exchange string             `json:"exchange"`
 	InstID   string             `json:"inst_id"`
 	Bar      string             `json:"bar"`
+	Hours    int                `json:"hours"`
 	From     string             `json:"from"`
 	To       string             `json:"to"`
 	Demo     tradeChartSeries   `json:"demo"`
@@ -111,9 +113,14 @@ func (s *Server) handleTradeChartData(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_bar", err.Error())
 		return
 	}
+	hours, err := normalizeTradeChartHours(r.URL.Query().Get("hours"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_hours", err.Error())
+		return
+	}
 
 	now := s.now()
-	windowStart, windowEnd := tradeChartWindow(now, parseChartTimestamp(r.URL.Query().Get("entry_ts")), parseChartTimestamp(r.URL.Query().Get("exit_ts")))
+	windowStart, windowEnd := tradeChartWindowForHours(now, parseChartTimestamp(r.URL.Query().Get("entry_ts")), parseChartTimestamp(r.URL.Query().Get("exit_ts")), hours)
 	markers := tradeChartMarkers(r, exchange)
 	cfg := config.Default()
 	if s.ConfigStore != nil {
@@ -132,12 +139,30 @@ func (s *Server) handleTradeChartData(w http.ResponseWriter, r *http.Request) {
 		Exchange: exchange,
 		InstID:   instID,
 		Bar:      interval.Bar,
+		Hours:    hours,
 		From:     windowStart.UTC().Format(time.RFC3339Nano),
 		To:       windowEnd.UTC().Format(time.RFC3339Nano),
 		Demo:     demo,
 		Live:     live,
 		Markers:  markers,
 	})
+}
+
+func normalizeTradeChartHours(raw string) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return tradeChartHours, nil
+	}
+	hours, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, errors.New("hours must be one of 1, 4, 8, 12, 24")
+	}
+	switch hours {
+	case 1, 4, 8, 12, 24:
+		return hours, nil
+	default:
+		return 0, errors.New("hours must be one of 1, 4, 8, 12, 24")
+	}
 }
 
 func normalizeTradeChartBar(raw string) (tradeChartInterval, error) {
@@ -154,15 +179,19 @@ func normalizeTradeChartBar(raw string) (tradeChartInterval, error) {
 }
 
 func tradeChartWindow(now time.Time, entryTS, exitTS int64) (time.Time, time.Time) {
+	return tradeChartWindowForHours(now, entryTS, exitTS, tradeChartHours)
+}
+
+func tradeChartWindowForHours(now time.Time, entryTS, exitTS int64, hours int) (time.Time, time.Time) {
 	now = now.UTC()
 	end := now
-	if exitTS > 0 && exitTS < now.Add(-tradeChartHours*time.Hour).UnixMilli() {
+	if exitTS > 0 && exitTS < now.Add(-time.Duration(hours)*time.Hour).UnixMilli() {
 		end = time.UnixMilli(exitTS).UTC().Add(time.Minute)
 	}
-	if entryTS > 0 && entryTS < end.Add(-tradeChartHours*time.Hour).UnixMilli() && entryTS > exitTS {
+	if entryTS > 0 && entryTS < end.Add(-time.Duration(hours)*time.Hour).UnixMilli() && entryTS > exitTS {
 		end = time.UnixMilli(entryTS).UTC().Add(time.Minute)
 	}
-	return end.Add(-tradeChartHours * time.Hour), end
+	return end.Add(-time.Duration(hours) * time.Hour), end
 }
 
 func parseChartTimestamp(raw string) int64 {
@@ -448,7 +477,7 @@ const tradeChartHTML = `<!doctype html>
 <body>
   <main class="page">
     <header>
-      <div><h1 id="title">币对 K 线回看</h1><div class="subtitle">1 分钟周期 · 最近8小时 · 模拟盘 / 实盘价格对比</div></div>
+      <div><h1 id="title">币对 K 线回看</h1><div class="subtitle" id="subtitle">1 分钟周期 · 最近8小时 · 模拟盘 / 实盘价格对比</div></div>
       <div class="status" id="status">正在加载 K 线数据…</div>
     </header>
     <div class="toolbar" role="group" aria-label="K线周期">
@@ -470,6 +499,8 @@ const tradeChartHTML = `<!doctype html>
       <button type="button" data-hours="1">1 小时</button>
       <button type="button" data-hours="4">4 小时</button>
       <button type="button" data-hours="8" class="active">8 小时</button>
+      <button type="button" data-hours="12">12 小时</button>
+      <button type="button" data-hours="24">24 小时</button>
       <span id="window-text"></span>
     </div>
     <div class="legend">
@@ -493,6 +524,7 @@ const tradeChartHTML = `<!doctype html>
     const titleEl = document.getElementById("title");
     const infoEl = document.getElementById("trade-info");
     const windowEl = document.getElementById("window-text");
+    const subtitleEl = document.getElementById("subtitle");
     const colors = { demo: "#2f81f7", live: "#f59e0b", entry: "#159957", exit: "#d92d20" };
 
     function escapeHTML(value) {
@@ -515,6 +547,12 @@ const tradeChartHTML = `<!doctype html>
       if (parsed >= 1000) return parsed.toLocaleString("en-US", { maximumFractionDigits: 2 });
       if (parsed >= 1) return parsed.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
       return parsed.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+    }
+    function barLabel() {
+      return ({ "1m":"1 分钟", "2m":"2 分钟", "3m":"3 分钟", "5m":"5 分钟", "10m":"10 分钟", "15m":"15 分钟", "30m":"30 分钟", "1h":"1 小时", "4h":"4 小时", "8h":"8 小时", "12h":"12 小时" })[state.bar] || state.bar;
+    }
+    function updateSubtitle() {
+      subtitleEl.textContent = barLabel() + "周期 · 最近" + state.hours + "小时 · 模拟盘 / 实盘价格对比";
     }
     function seriesPoints(series, from, to) {
       return (series && series.candles || []).filter(function (item) { return item.ts >= from && item.ts <= to; });
@@ -685,6 +723,8 @@ const tradeChartHTML = `<!doctype html>
       try {
         const query = new URLSearchParams(params);
         query.set("bar", state.bar);
+        query.set("hours", String(state.hours));
+        updateSubtitle();
         const response = await fetch("/tvbot/chart/data?" + query.toString(), { headers: { "Accept": "application/json" } });
         const body = await response.json();
         if (!response.ok) throw new Error(body.message || body.error || "K 线数据加载失败");
@@ -697,7 +737,7 @@ const tradeChartHTML = `<!doctype html>
       }
     }
     document.querySelectorAll("button[data-bar]").forEach(function (button) { button.addEventListener("click", function () { state.bar = button.dataset.bar || "1m"; document.querySelectorAll("button[data-bar]").forEach(function (item) { item.classList.toggle("active", item === button); }); resetView(); statusEl.textContent = "正在加载 " + state.bar + " K 线数据…"; load(); }); });
-    document.querySelectorAll("button[data-hours]").forEach(function (button) { button.addEventListener("click", function () { state.hours = Number(button.dataset.hours) || 8; document.querySelectorAll("button[data-hours]").forEach(function (item) { item.classList.toggle("active", item === button); }); resetView(); draw(); }); });
+    document.querySelectorAll("button[data-hours]").forEach(function (button) { button.addEventListener("click", function () { state.hours = Number(button.dataset.hours) || 8; document.querySelectorAll("button[data-hours]").forEach(function (item) { item.classList.toggle("active", item === button); }); resetView(); statusEl.textContent = "正在加载最近" + state.hours + "小时 K 线数据…"; load(); }); });
     canvas.addEventListener("mousemove", function (event) {
       if (!state.data) return;
       const rect = canvas.getBoundingClientRect(); const range = currentWindow(); const left = 68, right = rect.width - 76;
