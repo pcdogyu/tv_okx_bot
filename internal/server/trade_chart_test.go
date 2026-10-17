@@ -72,6 +72,9 @@ func TestTradeChartDataReturnsDemoLiveCandlesAndMarkers(t *testing.T) {
 	if response.Bar != tradeChartDefaultBar {
 		t.Fatalf("unexpected default chart bar: %q", response.Bar)
 	}
+	if response.AccountEnv != config.EnvDemo {
+		t.Fatalf("unexpected chart account environment: %q", response.AccountEnv)
+	}
 	from, err := time.Parse(time.RFC3339Nano, response.From)
 	if err != nil {
 		t.Fatalf("invalid chart from time: %v", err)
@@ -116,7 +119,7 @@ func TestTradeChartPageAndAnalysisTableExposeIndependentChartWindow(t *testing.T
 	pageReq.Header.Set("X-Admin-Token", "admin")
 	page := httptest.NewRecorder()
 	srv.ServeHTTP(page, pageReq)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "模拟盘 K 线") || !strings.Contains(page.Body.String(), "最近8小时") || !strings.Contains(page.Body.String(), `data-hours="8" class="active"`) || !strings.Contains(page.Body.String(), `data-hours="12"`) || !strings.Contains(page.Body.String(), `data-hours="24"`) || !strings.Contains(page.Body.String(), `data-bar="12h"`) || !strings.Contains(page.Body.String(), "query.set(\"hours\", String(state.hours))") || !strings.Contains(page.Body.String(), "成交量") || !strings.Contains(page.Body.String(), `addEventListener("wheel"`) || !strings.Contains(page.Body.String(), `addEventListener("pointerdown"`) || !strings.Contains(page.Body.String(), "setPointerCapture") || !strings.Contains(page.Body.String(), "priceOffset") || !strings.Contains(page.Body.String(), "ArrowUp") || !strings.Contains(page.Body.String(), "ArrowLeft") || !strings.Contains(page.Body.String(), "canvas") {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "模拟盘 K 线") || !strings.Contains(page.Body.String(), "实盘 K 线") || !strings.Contains(page.Body.String(), `data-series-toggle="demo"`) || !strings.Contains(page.Body.String(), `data-series-toggle="live"`) || !strings.Contains(page.Body.String(), "visibilityInitialized") || !strings.Contains(page.Body.String(), "applyAccountVisibility") || !strings.Contains(page.Body.String(), "最近8小时") || !strings.Contains(page.Body.String(), `data-hours="8" class="active"`) || !strings.Contains(page.Body.String(), `data-hours="12"`) || !strings.Contains(page.Body.String(), `data-hours="24"`) || !strings.Contains(page.Body.String(), `data-bar="12h"`) || !strings.Contains(page.Body.String(), "query.set(\"hours\", String(state.hours))") || !strings.Contains(page.Body.String(), "成交量") || !strings.Contains(page.Body.String(), `addEventListener("wheel"`) || !strings.Contains(page.Body.String(), `addEventListener("pointerdown"`) || !strings.Contains(page.Body.String(), "setPointerCapture") || !strings.Contains(page.Body.String(), "priceOffset") || !strings.Contains(page.Body.String(), "ArrowUp") || !strings.Contains(page.Body.String(), "ArrowLeft") || !strings.Contains(page.Body.String(), "canvas") {
 		t.Fatalf("chart page missing expected markers: status=%d", page.Code)
 	}
 
@@ -146,6 +149,12 @@ func TestTradeChartIntervalsAndAggregation(t *testing.T) {
 	}
 	if _, err := normalizeTradeChartHours("48"); err == nil {
 		t.Fatal("unsupported chart hours should be rejected")
+	}
+	if got := tradeChartAccountEnv(config.Config{Trading: config.TradingConfig{Env: config.EnvDemo}}); got != config.EnvDemo {
+		t.Fatalf("demo account environment=%q", got)
+	}
+	if got := tradeChartAccountEnv(config.Config{Trading: config.TradingConfig{Env: config.EnvLive}}); got != config.EnvLive {
+		t.Fatalf("live account environment=%q", got)
 	}
 
 	base := (time.Unix(0, 0).Add(2 * time.Minute)).UnixMilli()

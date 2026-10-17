@@ -69,16 +69,17 @@ type tradeChartMarker struct {
 }
 
 type tradeChartResponse struct {
-	OK       bool               `json:"ok"`
-	Exchange string             `json:"exchange"`
-	InstID   string             `json:"inst_id"`
-	Bar      string             `json:"bar"`
-	Hours    int                `json:"hours"`
-	From     string             `json:"from"`
-	To       string             `json:"to"`
-	Demo     tradeChartSeries   `json:"demo"`
-	Live     tradeChartSeries   `json:"live"`
-	Markers  []tradeChartMarker `json:"markers"`
+	OK         bool               `json:"ok"`
+	Exchange   string             `json:"exchange"`
+	InstID     string             `json:"inst_id"`
+	Bar        string             `json:"bar"`
+	Hours      int                `json:"hours"`
+	AccountEnv string             `json:"account_env"`
+	From       string             `json:"from"`
+	To         string             `json:"to"`
+	Demo       tradeChartSeries   `json:"demo"`
+	Live       tradeChartSeries   `json:"live"`
+	Markers    []tradeChartMarker `json:"markers"`
 }
 
 func (s *Server) handleTradeChartPage(w http.ResponseWriter, r *http.Request) {
@@ -135,17 +136,22 @@ func (s *Server) handleTradeChartData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, tradeChartResponse{
-		OK:       true,
-		Exchange: exchange,
-		InstID:   instID,
-		Bar:      interval.Bar,
-		Hours:    hours,
-		From:     windowStart.UTC().Format(time.RFC3339Nano),
-		To:       windowEnd.UTC().Format(time.RFC3339Nano),
-		Demo:     demo,
-		Live:     live,
-		Markers:  markers,
+		OK:         true,
+		Exchange:   exchange,
+		InstID:     instID,
+		Bar:        interval.Bar,
+		Hours:      hours,
+		AccountEnv: tradeChartAccountEnv(cfg),
+		From:       windowStart.UTC().Format(time.RFC3339Nano),
+		To:         windowEnd.UTC().Format(time.RFC3339Nano),
+		Demo:       demo,
+		Live:       live,
+		Markers:    markers,
 	})
+}
+
+func tradeChartAccountEnv(cfg config.Config) string {
+	return trading.NormalizeTradeEnv(cfg.Trading.Env)
 }
 
 func normalizeTradeChartHours(raw string) (int, error) {
@@ -457,6 +463,10 @@ const tradeChartHTML = `<!doctype html>
     button.active { color:#fff; background:#1f6feb; border-color:#1f6feb; }
     .legend { margin:14px 2px 10px; color:#475467; font-size:13px; }
     .legend-item { display:inline-flex; align-items:center; gap:6px; }
+    .legend-toggle { border-color:#dce3ee; padding:5px 9px; }
+    .legend-toggle.active { background:#f8fafc; color:#344054; border-color:#b8c5d6; }
+    .legend-toggle:not(.active) { color:#98a2b3; opacity:.72; }
+    .legend-toggle:not(.active) .swatch { opacity:.3; filter:grayscale(1); }
     .swatch { width:12px; height:12px; border-radius:3px; display:inline-block; }
     .swatch.demo { background:#2f81f7; }
     .swatch.live { background:#f59e0b; }
@@ -505,8 +515,8 @@ const tradeChartHTML = `<!doctype html>
       <span id="window-text"></span>
     </div>
     <div class="legend">
-      <span class="legend-item"><i class="swatch demo"></i>模拟盘 K 线</span>
-      <span class="legend-item"><i class="swatch live"></i>实盘 K 线</span>
+      <button type="button" class="legend-item legend-toggle active" data-series-toggle="demo" aria-pressed="true"><i class="swatch demo"></i>模拟盘 K 线</button>
+      <button type="button" class="legend-item legend-toggle" data-series-toggle="live" aria-pressed="false"><i class="swatch live"></i>实盘 K 线</button>
       <span class="legend-item"><i class="swatch volume"></i>成交量</span>
       <span class="legend-item"><i class="marker-dot entry"></i>开仓 / 买入</span>
       <span class="legend-item"><i class="marker-dot exit"></i>平仓 / 卖出</span>
@@ -516,7 +526,7 @@ const tradeChartHTML = `<!doctype html>
   </main>
   <script>
     const params = new URLSearchParams(window.location.search);
-    const state = { data: null, bar: "1m", hours: 8, hover: null, viewFrom: null, viewTo: null, priceZoom: 1, priceOffset: 0, priceRange: 1, pricePlotHeight: 1, drag: null };
+    const state = { data: null, bar: "1m", hours: 8, hover: null, viewFrom: null, viewTo: null, priceZoom: 1, priceOffset: 0, priceRange: 1, pricePlotHeight: 1, drag: null, showDemo: true, showLive: false, accountEnv: "demo", visibilityInitialized: false };
     let loadToken = 0;
     const canvas = document.getElementById("chart");
     const ctx = canvas.getContext("2d");
@@ -615,8 +625,8 @@ const tradeChartHTML = `<!doctype html>
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       ctx.clearRect(0, 0, width, height);
       const windowRange = currentWindow();
-      const demo = seriesPoints(state.data.demo, windowRange.from, windowRange.to);
-      const live = seriesPoints(state.data.live, windowRange.from, windowRange.to);
+      const demo = state.showDemo ? seriesPoints(state.data.demo, windowRange.from, windowRange.to) : [];
+      const live = state.showLive ? seriesPoints(state.data.live, windowRange.from, windowRange.to) : [];
       const points = demo.concat(live);
       const markers = (state.data.markers || []).filter(function (item) { return item.ts >= windowRange.from && item.ts <= windowRange.to; });
       const left = 68, right = width - 76, top = 22, bottom = height - 48;
@@ -720,7 +730,23 @@ const tradeChartHTML = `<!doctype html>
       const errors = [];
       if (state.data.demo && state.data.demo.error) errors.push("模拟盘：" + state.data.demo.error);
       if (state.data.live && state.data.live.error) errors.push("实盘：" + state.data.live.error);
-      statusEl.innerHTML = errors.length ? '<span class="error">' + escapeHTML(errors.join("；")) + '</span>' : "已加载模拟盘 " + demoCount + " 根 / 实盘 " + liveCount + " 根 " + escapeHTML(state.data.bar || state.bar) + " K 线";
+      const accountLabel = state.accountEnv === "live" ? "实盘" : "模拟盘";
+      statusEl.innerHTML = errors.length ? '<span class="error">' + escapeHTML(errors.join("；")) + '</span>' : "当前账户：" + accountLabel + " · 已加载模拟盘 " + demoCount + " 根 / 实盘 " + liveCount + " 根 " + escapeHTML(state.data.bar || state.bar) + " K 线";
+    }
+    function updateSeriesToggleButtons() {
+      document.querySelectorAll("button[data-series-toggle]").forEach(function (button) {
+        const active = button.dataset.seriesToggle === "live" ? state.showLive : state.showDemo;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    }
+    function applyAccountVisibility(body) {
+      if (state.visibilityInitialized) return;
+      state.accountEnv = body.account_env === "live" ? "live" : "demo";
+      state.showDemo = state.accountEnv !== "live";
+      state.showLive = state.accountEnv === "live";
+      state.visibilityInitialized = true;
+      updateSeriesToggleButtons();
     }
     async function load() {
       const token = ++loadToken;
@@ -734,6 +760,7 @@ const tradeChartHTML = `<!doctype html>
         if (!response.ok) throw new Error(body.message || body.error || "K 线数据加载失败");
         if (token !== loadToken) return;
         state.data = body;
+        applyAccountVisibility(body);
         titleEl.textContent = (body.exchange === "binance" ? "Binance " : "OKX ") + body.inst_id + " K 线回看";
         renderInfo(); setStatus(); draw();
       } catch (error) {
@@ -742,6 +769,7 @@ const tradeChartHTML = `<!doctype html>
     }
     document.querySelectorAll("button[data-bar]").forEach(function (button) { button.addEventListener("click", function () { state.bar = button.dataset.bar || "1m"; document.querySelectorAll("button[data-bar]").forEach(function (item) { item.classList.toggle("active", item === button); }); resetView(); statusEl.textContent = "正在加载 " + state.bar + " K 线数据…"; load(); }); });
     document.querySelectorAll("button[data-hours]").forEach(function (button) { button.addEventListener("click", function () { state.hours = Number(button.dataset.hours) || 8; document.querySelectorAll("button[data-hours]").forEach(function (item) { item.classList.toggle("active", item === button); }); resetView(); statusEl.textContent = "正在加载最近" + state.hours + "小时 K 线数据…"; load(); }); });
+    document.querySelectorAll("button[data-series-toggle]").forEach(function (button) { button.addEventListener("click", function () { if (button.dataset.seriesToggle === "live") state.showLive = !state.showLive; else state.showDemo = !state.showDemo; updateSeriesToggleButtons(); state.hover = null; tooltip.style.display = "none"; draw(); }); });
     function finishDrag() {
       if (!state.drag) return;
       state.drag = null;
@@ -775,7 +803,7 @@ const tradeChartHTML = `<!doctype html>
       const rect = canvas.getBoundingClientRect(); const range = currentWindow(); const left = 68, right = rect.width - 76;
       const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left - left) / Math.max(1, right - left)));
       const ts = range.from + (range.to - range.from) * ratio;
-      const all = (state.data.demo.candles || []).concat(state.data.live.candles || []);
+      const all = (state.showDemo ? state.data.demo.candles || [] : []).concat(state.showLive ? state.data.live.candles || [] : []);
       let nearest = null;
       all.forEach(function (item) { if (!nearest || Math.abs(item.ts - ts) < Math.abs(nearest.ts - ts)) nearest = item; });
       state.hover = nearest;
