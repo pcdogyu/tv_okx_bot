@@ -1683,13 +1683,25 @@ func (s *Server) handleOrderRetry(w http.ResponseWriter, r *http.Request, path s
 		})
 		return
 	}
-	go s.execute(record.SignalID, signal, executeCfg)
+	go s.executeRetry(record.SignalID, signal, executeCfg)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"status":    "accepted",
 		"signal_id": record.SignalID,
 		"retry_of":  source.SignalID,
 		"price":     trading.NormalizeFloat(signal.Price.Value),
 	})
+}
+
+// executeRetry preserves the original execution path. Position-close signals
+// must go through the position-aware close executor; sending them through the
+// regular executor would turn a failed close_long retry into a new opening
+// order in the opposite direction.
+func (s *Server) executeRetry(signalID string, signal trading.Signal, cfg config.Config) {
+	if signal.PositionEffect == trading.PositionEffectClose {
+		s.executePositionCloseSignal(signalID, signal, cfg)
+		return
+	}
+	s.execute(signalID, signal, cfg)
 }
 
 func ignoredOrderCanRetry(rec storage.OrderRecord) bool {

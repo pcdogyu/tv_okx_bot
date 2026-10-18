@@ -227,6 +227,32 @@ func TestTVOrderCloseIntentConflictFailsBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestOrderRetryPreservesPositionCloseExecutionPath(t *testing.T) {
+	srv := newTestServer(t)
+	signal := validSignal(t, srv)
+	signal.TargetExchange = trading.ExchangeBinance
+	signal.TradeEnv = trading.TradeEnvDemo
+	signal.PositionEffect = trading.PositionEffectClose
+	signal.PositionSide = trading.PositionSideLong
+	signal.OrderIntent = "exit_long"
+	signal.Normalize()
+
+	record, duplicate, err := srv.Orders.RecordAccepted(signal, "close-retry-path", srv.now())
+	if err != nil || duplicate {
+		t.Fatalf("seed close retry record: duplicate=%v err=%v", duplicate, err)
+	}
+	srv.executeRetry(record.SignalID, signal, srv.ConfigStore.Get())
+	updated := waitOrderStatus(t, srv.Orders, record.SignalID, storage.StatusFailed)
+	if updated.PositionEffect != trading.PositionEffectClose || updated.PositionSide != trading.PositionSideLong {
+		t.Fatalf("close retry semantics not preserved: %#v", updated)
+	}
+	select {
+	case got := <-srv.Executor.(fakeExecutor).calls:
+		t.Fatalf("close retry must not use opening executor: %#v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestTVOrderEntryIntentStillUsesOpeningExecutor(t *testing.T) {
 	srv := newTestServer(t)
 	signal := validSignal(t, srv)
