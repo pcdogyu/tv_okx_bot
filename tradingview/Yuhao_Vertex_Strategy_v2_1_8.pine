@@ -1,10 +1,11 @@
 //@version=5
-strategy("Yuhao Vertex Strategy v2.1.8", overlay=true, max_labels_count=500, max_boxes_count=50, max_lines_count=50, pyramiding=2, process_orders_on_close=true, default_qty_type=strategy.percent_of_equity, default_qty_value=50)
+strategy("Yuhao Vertex Strategy v2.1.8", overlay=true, max_labels_count=500, max_boxes_count=500, max_lines_count=50, pyramiding=2, process_orders_on_close=true, default_qty_type=strategy.percent_of_equity, default_qty_value=50)
 
 // v2.1.8 更新：
 // 1) VRVP 改为按交易时段累计：默认从中国时间 08:00 开始。
 // 2) 每个纽约交易日 09:30（America/New_York）重置，自动处理美国夏令时：对应中国时间夏令时 21:30、冬令时 22:30。
 // 3) Top 3 改为分别找出 POC 下方/上方成交量最大的三个价格分桶，再合并成一个连续价格区间用于多空过滤。
+// 4) 增加右侧 VRVP 成交量分布绘制，直接使用同一批价格分桶数据。
 //
 // v2.1.7 更新：
 // 1) 新增“启用tvbot订单执行自动下单”开关，默认开启；关闭后所有策略订单仍参与回测，但不会触发tvbot订单执行报警。
@@ -230,6 +231,12 @@ vrvpStartHour   = input.int(8, "VRVP 开始小时（中国时间）", minval=0, 
 vrvpStartMinute = input.int(0, "VRVP 开始分钟（中国时间）", minval=0, maxval=59)
 vrvpResetHour   = input.int(9, "VRVP 重置小时（纽约时间）", minval=0, maxval=23)
 vrvpResetMinute = input.int(30, "VRVP 重置分钟（纽约时间）", minval=0, maxval=59)
+showVRVPProfile       = input.bool(true, "显示 VRVP 成交量分布")
+vrvpProfileRightBars  = input.int(18, "VRVP 分布右侧偏移 K 线数", minval=1, maxval=100)
+vrvpProfileMaxWidth   = input.int(18, "VRVP 分布最大宽度 K 线数", minval=1, maxval=100)
+vrvpProfileColor      = input.color(color.gray, "VRVP 非价值区颜色")
+vrvpProfileValueColor = input.color(color.teal, "VRVP 价值区颜色")
+vrvpProfilePocColor   = input.color(color.orange, "VRVP POC 颜色")
 //========================
 // 颜色
 //========================
@@ -404,6 +411,7 @@ var float top3AbovePocLow  = na
 var float top3AbovePocHigh = na
 var float[] priceArr = array.new_float()
 var float[] volArr   = array.new_float()
+var float[] vpBins   = array.new_float()
 
 if vrvpSessionStarted or vrvpSessionReset
     dayHigh := na
@@ -470,7 +478,7 @@ f_find_top3_zone(_bins, _startIdx, _endIdx, _lo, _rowH) =>
 
     [_zoneLow, _zoneHigh]
 
-f_calc_vp_levels(_prices, _vols, _lo, _hi, _rows, _vaPct) =>
+f_calc_vp_levels(_prices, _vols, _lo, _hi, _rows, _vaPct, _outBins) =>
     float _vah = na
     float _val = na
     float _poc = na
@@ -480,6 +488,7 @@ f_calc_vp_levels(_prices, _vols, _lo, _hi, _rows, _vaPct) =>
     float _belowHigh = na
     float _aboveLow = na
     float _aboveHigh = na
+    array.clear(_outBins)
     int n = array.size(_prices)
     float priceRange = _hi - _lo
     if n > 0 and priceRange > syminfo.mintick
@@ -493,6 +502,9 @@ f_calc_vp_levels(_prices, _vols, _lo, _hi, _rows, _vaPct) =>
             idx := math.max(0, math.min(_rows - 1, idx))
             array.set(bins, idx, array.get(bins, idx) + v)
             totalVol += v
+
+        for r = 0 to _rows - 1
+            array.push(_outBins, array.get(bins, r))
 
         int pocIdx = 0
         float maxVol = array.get(bins, 0)
@@ -574,7 +586,7 @@ f_calc_vp_levels(_prices, _vols, _lo, _hi, _rows, _vaPct) =>
         _aboveHigh := aboveZoneHigh
     [_vah, _val, _poc, _top3Low, _top3High, _belowLow, _belowHigh, _aboveLow, _aboveHigh]
 
-[vahCalc, valCalc, pocCalc, top3LowCalc, top3HighCalc, belowLowCalc, belowHighCalc, aboveLowCalc, aboveHighCalc] = f_calc_vp_levels(priceArr, volArr, dayLow, dayHigh, vpRows, valueAreaPct)
+[vahCalc, valCalc, pocCalc, top3LowCalc, top3HighCalc, belowLowCalc, belowHighCalc, aboveLowCalc, aboveHighCalc] = f_calc_vp_levels(priceArr, volArr, dayLow, dayHigh, vpRows, valueAreaPct, vpBins)
 vah := vahCalc
 val := valCalc
 poc := pocCalc
@@ -584,6 +596,52 @@ top3BelowPocLow := belowLowCalc
 top3BelowPocHigh := belowHighCalc
 top3AbovePocLow := aboveLowCalc
 top3AbovePocHigh := aboveHighCalc
+
+//========================
+// VRVP 成交量分布绘制
+// 每个价格桶绘制为右侧横向柱；宽度按该桶成交量 / 最大桶成交量缩放。
+// 只在最后一根 K 线绘制，避免历史每根 K 线重复创建图形对象。
+//========================
+var box[] vrvpProfileBoxes = array.new_box()
+
+if barstate.islast
+    int oldBoxCount = array.size(vrvpProfileBoxes)
+    if oldBoxCount > 0
+        for i = 0 to oldBoxCount - 1
+            box.delete(array.get(vrvpProfileBoxes, i))
+        array.clear(vrvpProfileBoxes)
+
+    bool profileReady = showVRVPProfile and vrvpSessionActive and array.size(vpBins) > 0 and not na(dayLow) and not na(dayHigh) and dayHigh > dayLow
+    if profileReady
+        int binCount = array.size(vpBins)
+        float profileRowHeight = (dayHigh - dayLow) / binCount
+        float maxBinVolume = 0.0
+        for i = 0 to binCount - 1
+            maxBinVolume := math.max(maxBinVolume, array.get(vpBins, i))
+
+        if maxBinVolume > 0
+            int profileRightX = bar_index + vrvpProfileRightBars
+            for i = 0 to binCount - 1
+                float binVolume = array.get(vpBins, i)
+                if binVolume > 0
+                    float volumeRatio = binVolume / maxBinVolume
+                    int profileWidth = math.max(1, int(math.round(volumeRatio * vrvpProfileMaxWidth)))
+                    float rowBottom = dayLow + i * profileRowHeight
+                    float rowTop = rowBottom + profileRowHeight
+                    bool isPocRow = not na(poc) and poc >= rowBottom and poc < rowTop
+                    bool isValueAreaRow = not na(val) and not na(vah) and rowTop > val and rowBottom < vah
+                    color rowBaseColor = isPocRow ? vrvpProfilePocColor : isValueAreaRow ? vrvpProfileValueColor : vrvpProfileColor
+                    int rowTransparency = math.max(10, math.min(90, 85 - int(math.round(volumeRatio * 65))))
+                    box profileBox = box.new(
+                         left=profileRightX - profileWidth,
+                         top=rowTop,
+                         right=profileRightX,
+                         bottom=rowBottom,
+                         xloc=xloc.bar_index,
+                         border_width=0,
+                         border_color=color.new(rowBaseColor, 100),
+                         bgcolor=color.new(rowBaseColor, rowTransparency))
+                    array.push(vrvpProfileBoxes, profileBox)
 
 priceAboveVAH = not useVRVPFilter or (not na(vah) and close > vah)
 priceBelowVAL = not useVRVPFilter or (not na(val) and close < val)
